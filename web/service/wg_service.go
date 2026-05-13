@@ -79,6 +79,19 @@ func (s *WgService) SaveServer(server *model.WgServer) error {
 		server.ListenPort = port
 	}
 
+	// Detect Xray-integration changes so we can force a full interface
+	// bring-down/up (syncconf does not re-execute PostUp/PostDown) and ask
+	// Xray to restart so it picks up the dokodemo-door inbound additions.
+	xrayDirty := false
+	var prev model.WgServer
+	if err := db.First(&prev, server.Id).Error; err == nil {
+		if prev.RouteViaXray != server.RouteViaXray ||
+			prev.XrayInboundTag != server.XrayInboundTag ||
+			prev.XrayTproxyPort != server.XrayTproxyPort {
+			xrayDirty = true
+		}
+	}
+
 	server.UpdatedAt = time.Now().UnixMilli()
 	if err := db.Save(server).Error; err != nil {
 		return err
@@ -87,7 +100,17 @@ func (s *WgService) SaveServer(server *model.WgServer) error {
 	// Sync listen port to the WG inbound record
 	s.syncInboundPort(db, server.ListenPort)
 
+	if xrayDirty {
+		(&XrayService{}).SetToNeedRestart()
+	}
+
 	if server.Enable {
+		if xrayDirty && wg.IsInterfaceUp(server.InterfaceName) {
+			// Re-execute PostDown/PostUp by bouncing the interface.
+			if err := wg.InterfaceDown(server.InterfaceName); err != nil {
+				logger.Warning("WG bounce: InterfaceDown failed:", err)
+			}
+		}
 		return s.applyServerConfig(server)
 	}
 	return nil

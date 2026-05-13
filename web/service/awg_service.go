@@ -78,6 +78,19 @@ func (s *AwgService) SaveServer(server *model.AwgServer) error {
 		server.ListenPort = port
 	}
 
+	// Detect Xray-integration changes so we can force a full interface
+	// bring-down/up (syncconf does not re-execute PostUp/PostDown) and ask
+	// Xray to restart so it picks up the dokodemo-door inbound additions.
+	xrayDirty := false
+	var prev model.AwgServer
+	if err := db.First(&prev, server.Id).Error; err == nil {
+		if prev.RouteViaXray != server.RouteViaXray ||
+			prev.XrayInboundTag != server.XrayInboundTag ||
+			prev.XrayTproxyPort != server.XrayTproxyPort {
+			xrayDirty = true
+		}
+	}
+
 	server.UpdatedAt = time.Now().UnixMilli()
 	if err := db.Save(server).Error; err != nil {
 		return err
@@ -86,7 +99,17 @@ func (s *AwgService) SaveServer(server *model.AwgServer) error {
 	// Sync listen port to the AWG inbound record so the inbounds page shows the real port
 	s.syncInboundPort(db, server.ListenPort)
 
+	if xrayDirty {
+		(&XrayService{}).SetToNeedRestart()
+	}
+
 	if server.Enable {
+		if xrayDirty && awg.IsInterfaceUp(server.InterfaceName) {
+			// Re-execute PostDown/PostUp by bouncing the interface.
+			if err := awg.InterfaceDown(server.InterfaceName); err != nil {
+				logger.Warning("AWG bounce: InterfaceDown failed:", err)
+			}
+		}
 		return s.applyServerConfig(server)
 	}
 	return nil
