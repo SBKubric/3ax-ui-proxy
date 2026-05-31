@@ -704,6 +704,41 @@ func (t *Tgbot) answerCommand(message *telego.Message, chatId int64, isAdmin boo
 		} else {
 			handleUnknownCommand()
 		}
+	case "proxy":
+		onlyMessage = true
+		switch {
+		case !isAdmin:
+			handleUnknownCommand()
+		case len(commandArgs) == 0:
+			enabled, _ := t.settingService.GetProxyOverrideEnable()
+			host, _ := t.settingService.GetProxyOverrideHost()
+			state := "off"
+			if enabled {
+				state = "on"
+			}
+			if host == "" {
+				host = "—"
+			}
+			msg += t.I18nBot("tgbot.commands.proxyStatus", "State=="+state, "Host=="+html.EscapeString(host))
+			msg += t.I18nBot("tgbot.commands.proxyUsage")
+		case strings.EqualFold(commandArgs[0], "off"):
+			if err := t.settingService.SetProxyOverrideEnable(false); err != nil {
+				msg += t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error())
+			} else {
+				msg += t.I18nBot("tgbot.commands.proxyDisabled")
+			}
+		default:
+			host := strings.TrimSpace(commandArgs[0])
+			err := t.settingService.SetProxyOverrideHost(host)
+			if err == nil {
+				err = t.settingService.SetProxyOverrideEnable(true)
+			}
+			if err != nil {
+				msg += t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error())
+			} else {
+				msg += t.I18nBot("tgbot.commands.proxyEnabled", "Host=="+html.EscapeString(host))
+			}
+		}
 	default:
 		handleUnknownCommand()
 	}
