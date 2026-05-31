@@ -14,6 +14,7 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/config"
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/logger"
+	"github.com/coinman-dev/3ax-ui/v2/proxy"
 	"github.com/coinman-dev/3ax-ui/v2/sub"
 	"github.com/coinman-dev/3ax-ui/v2/util/crypto"
 	"github.com/coinman-dev/3ax-ui/v2/util/sys"
@@ -456,6 +457,7 @@ func main() {
 		fmt.Println("    run            run web panel")
 		fmt.Println("    migrate        migrate form other/old x-ui")
 		fmt.Println("    setting        set settings")
+		fmt.Println("    proxy          run sacrificial proxy front (dokodemo relay + sub)")
 	}
 
 	flag.Parse()
@@ -510,6 +512,25 @@ func main() {
 			updateCert("", "")
 		} else {
 			updateCert(webCertFile, webKeyFile)
+		}
+	case "proxy":
+		proxyCmd := flag.NewFlagSet("proxy", flag.ExitOnError)
+		var proxyConfigPath string
+		proxyCmd.StringVar(&proxyConfigPath, "c", "", "path to the proxy-front config JSON")
+		if err := proxyCmd.Parse(os.Args[2:]); err != nil {
+			fmt.Println(err)
+			return
+		}
+		if proxyConfigPath == "" {
+			fmt.Println("proxy: -c <config.json> is required")
+			return
+		}
+		cfg, err := proxy.LoadConfig(proxyConfigPath)
+		if err != nil {
+			log.Fatalf("proxy: %v", err)
+		}
+		if err := proxy.Run(cfg); err != nil {
+			log.Fatalf("proxy: %v", err)
 		}
 	default:
 		fmt.Println("Invalid subcommands")
