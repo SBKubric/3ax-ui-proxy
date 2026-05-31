@@ -10,10 +10,9 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/xray"
 )
 
-// Run starts the proxy front — the dokodemo-door relay to the real server — and
-// blocks until a termination signal is received. The subscription server (live
-// fetch from the real panel + custom page) is added on top of this in a later
-// step.
+// Run starts the proxy front — the dokodemo-door relay to the real server and,
+// when configured, the subscription server that proxies the real panel's /sub
+// and /json — then blocks until a termination signal is received.
 func Run(cfg *Config) error {
 	binPath := xray.GetBinaryPath()
 	if _, err := os.Stat(binPath); err != nil {
@@ -34,14 +33,31 @@ func Run(cfg *Config) error {
 	}
 	logger.Infof("proxy-front: relaying ports %v -> %s via dokodemo-door (L4 passthrough)", relay.Ports(), cfg.UpstreamHost)
 
-	// TODO: start the subscription server here — live-fetch /sub/:id from
-	// cfg.UpstreamSubURL and render the custom proxy page (apps + copy-JSON).
+	var sub *SubServer
+	if cfg.SubEnabled() {
+		sub, err = NewSubServer(cfg)
+		if err != nil {
+			relay.Stop()
+			return err
+		}
+		if err := sub.Start(); err != nil {
+			relay.Stop()
+			return fmt.Errorf("start sub server: %w", err)
+		}
+	} else {
+		logger.Info("proxy-front: subscription server disabled (no upstreamBase configured); relay only")
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 
 	logger.Info("proxy-front: shutting down")
+	if sub != nil {
+		if err := sub.Stop(); err != nil {
+			logger.Warning("proxy-front: error stopping sub server:", err)
+		}
+	}
 	if err := relay.Stop(); err != nil {
 		logger.Warning("proxy-front: error stopping relay:", err)
 	}
