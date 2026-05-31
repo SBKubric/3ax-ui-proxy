@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0f1115; color:#e6e6e6; font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; }
+  .wrap { max-width:680px; margin:0 auto; padding:24px 16px 56px; }
+  h1 { font-size:20px; margin:0 0 16px; }
+  h2 { font-size:13px; color:#9aa4b2; margin:28px 0 8px; text-transform:uppercase; letter-spacing:.06em; }
+  .card { background:#171a21; border:1px solid #232733; border-radius:12px; padding:16px; margin:12px 0; }
+  .stats { display:flex; gap:24px; flex-wrap:wrap; }
+  .stat b { display:block; font-size:18px; }
+  .stat span { color:#9aa4b2; font-size:12px; }
+  .qr { text-align:center; }
+  .qr img { width:220px; height:220px; background:#fff; padding:8px; border-radius:8px; }
+  .url { word-break:break-all; background:#0f1115; border:1px solid #232733; border-radius:8px; padding:10px; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; margin-top:12px; }
+  button { background:#2d6cdf; color:#fff; border:0; border-radius:8px; padding:10px 14px; font-size:14px; cursor:pointer; margin:10px 6px 0 0; }
+  button.secondary { background:#2a2f3a; }
+  .cfg { word-break:break-all; background:#0f1115; border:1px solid #232733; border-radius:8px; padding:8px; font-family:ui-monospace,SFMono-Regular,monospace; font-size:11px; }
+  a.app { display:inline-block; background:#2a2f3a; color:#e6e6e6; text-decoration:none; border-radius:8px; padding:10px 14px; margin:6px 6px 0 0; }
+  a.app span { color:#9aa4b2; font-size:12px; margin-left:4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>{{.Title}}</h1>
+
+  {{if .Used}}
+  <div class="card stats">
+    <div class="stat"><b>{{.Used}}</b><span>Used</span></div>
+    <div class="stat"><b>{{.Total}}</b><span>Total</span></div>
+    {{if .Expire}}<div class="stat"><b>{{.Expire}}</b><span>Expires</span></div>{{end}}
+  </div>
+  {{end}}
+
+  <div class="card qr">
+    {{if .QR}}<img src="{{.QR}}" alt="Subscription QR">{{end}}
+    <div class="url" id="suburl">{{.SubURL}}</div>
+    <button onclick="copyText(document.getElementById('suburl').innerText, this)">Copy subscription</button>
+    <button class="secondary" data-json="{{.JsonURL}}" onclick="copyJSON(this)">Copy VLESS JSON</button>
+  </div>
+
+  {{if .Configs}}
+  <h2>Configs</h2>
+  {{range .Configs}}
+  <div class="card">
+    <div class="cfg">{{.}}</div>
+    <button class="secondary" onclick="copyText(this.previousElementSibling.innerText, this)">Copy</button>
+  </div>
+  {{end}}
+  {{end}}
+
+  <h2>Apps</h2>
+  <div class="card">
+    {{range .Apps}}
+    <a class="app" href="{{.URL}}" target="_blank" rel="noopener">{{.Name}}<span>{{.Platform}}</span></a>
+    {{end}}
+  </div>
+</div>
+
+<script>
+  function flash(btn, text) {
+    var prev = btn.innerText;
+    btn.innerText = text;
+    setTimeout(function () { btn.innerText = prev; }, 1200);
+  }
+  function copyText(text, btn) {
+    navigator.clipboard.writeText(text).then(function () { flash(btn, 'Copied'); });
+  }
+  function copyJSON(btn) {
+    fetch(btn.getAttribute('data-json'))
+      .then(function (r) { return r.text(); })
+      .then(function (t) { return navigator.clipboard.writeText(t); })
+      .then(function () { flash(btn, 'Copied'); })
+      .catch(function () { flash(btn, 'Failed'); });
+  }
+</script>
+</body>
+</html>
