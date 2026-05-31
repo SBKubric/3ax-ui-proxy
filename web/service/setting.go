@@ -83,6 +83,11 @@ var defaultValueMap = map[string]string{
 	"externalTrafficInformURI":    "",
 	"xrayOutboundTestUrl":         "https://www.google.com/generate_204",
 
+	// Proxy-front override (anti-blocking): when enabled, proxyOverrideHost is
+	// substituted as the connection address in generated client configs / sub links.
+	"proxyOverrideEnable": "false",
+	"proxyOverrideHost":   "",
+
 	// LDAP defaults
 	"ldapEnable":            "false",
 	"ldapHost":              "",
@@ -294,6 +299,45 @@ func (s *SettingService) SetListen(ip string) error {
 
 func (s *SettingService) GetWebDomain() (string, error) {
 	return s.getString("webDomain")
+}
+
+// GetProxyOverrideEnable reports whether the proxy-front host override is enabled.
+func (s *SettingService) GetProxyOverrideEnable() (bool, error) {
+	return s.getBool("proxyOverrideEnable")
+}
+
+// SetProxyOverrideEnable enables or disables the proxy-front host override.
+func (s *SettingService) SetProxyOverrideEnable(value bool) error {
+	return s.setBool("proxyOverrideEnable", value)
+}
+
+// GetProxyOverrideHost returns the host (IP or domain) substituted into generated
+// client configs and subscription links when the proxy-front override is enabled.
+func (s *SettingService) GetProxyOverrideHost() (string, error) {
+	return s.getString("proxyOverrideHost")
+}
+
+// SetProxyOverrideHost sets the proxy-front override host.
+func (s *SettingService) SetProxyOverrideHost(value string) error {
+	return s.setString("proxyOverrideHost", value)
+}
+
+// GetProxyOverride returns the proxy-front override host and whether the override is
+// active (enabled with a non-empty host). It centralizes the enable+trim check shared
+// by the subscription service and the Telegram bot.
+func (s *SettingService) GetProxyOverride() (string, bool) {
+	enabled, err := s.GetProxyOverrideEnable()
+	if err != nil || !enabled {
+		return "", false
+	}
+	host, err := s.GetProxyOverrideHost()
+	if err != nil {
+		return "", false
+	}
+	if host = strings.TrimSpace(host); host == "" {
+		return "", false
+	}
+	return host, true
 }
 
 func (s *SettingService) GetTgBotToken() (string, error) {

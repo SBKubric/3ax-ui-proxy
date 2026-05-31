@@ -23,6 +23,8 @@ import (
 // SubService provides business logic for generating subscription links and managing subscription data.
 type SubService struct {
 	address        string
+	overrideHost   string
+	overrideOn     bool
 	showInfo       bool
 	remarkModel    string
 	datepicker     string
@@ -49,9 +51,24 @@ func NewSubService(showInfo bool, remarkModel string, subTheme string) *SubServi
 	}
 }
 
+// effectiveAddress picks the address used in a generated config link: the proxy
+// override host when enabled, otherwise the inbound's own Listen (falling back to
+// the request host for wildcard binds). The override is resolved once per request
+// in GetSubs and cached on the service.
+func (s *SubService) effectiveAddress(inbound *model.Inbound) string {
+	if s.overrideOn {
+		return s.overrideHost
+	}
+	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
+		return s.address
+	}
+	return inbound.Listen
+}
+
 // GetSubs retrieves subscription links for a given subscription ID and host.
 func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.ClientTraffic, error) {
 	s.address = host
+	s.overrideHost, s.overrideOn = s.settingService.GetProxyOverride()
 	var result []string
 	var traffic xray.ClientTraffic
 	var lastOnline int64
@@ -190,12 +207,7 @@ func (s *SubService) genVmessLink(inbound *model.Inbound, email string) string {
 	if inbound.Protocol != model.VMESS {
 		return ""
 	}
-	var address string
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		address = s.address
-	} else {
-		address = inbound.Listen
-	}
+	address := s.effectiveAddress(inbound)
 	obj := map[string]any{
 		"v":    "2",
 		"add":  address,
@@ -331,12 +343,7 @@ func (s *SubService) genVmessLink(inbound *model.Inbound, email string) string {
 }
 
 func (s *SubService) genVlessLink(inbound *model.Inbound, email string) string {
-	var address string
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		address = s.address
-	} else {
-		address = inbound.Listen
-	}
+	address := s.effectiveAddress(inbound)
 
 	if inbound.Protocol != model.VLESS {
 		return ""
@@ -535,12 +542,7 @@ func (s *SubService) genVlessLink(inbound *model.Inbound, email string) string {
 }
 
 func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string {
-	var address string
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		address = s.address
-	} else {
-		address = inbound.Listen
-	}
+	address := s.effectiveAddress(inbound)
 	if inbound.Protocol != model.Trojan {
 		return ""
 	}
@@ -731,12 +733,7 @@ func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string 
 }
 
 func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) string {
-	var address string
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		address = s.address
-	} else {
-		address = inbound.Listen
-	}
+	address := s.effectiveAddress(inbound)
 	if inbound.Protocol != model.Shadowsocks {
 		return ""
 	}
@@ -1102,6 +1099,13 @@ func (s *SubService) BuildURLs(scheme, hostWithPort, subPath, subJsonPath, subId
 	configuredSubURI, _ := s.settingService.GetSubURI()
 	configuredSubJsonURI, _ := s.settingService.GetSubJsonURI()
 
+	// Proxy-front: the host override takes precedence over any configured absolute
+	// sub URI, so the page advertises the proxy subscription instead of the real one.
+	if s.overrideOn {
+		configuredSubURI = ""
+		configuredSubJsonURI = ""
+	}
+
 	// Determine base scheme and host (cached to avoid duplicate calls)
 	var baseScheme, baseHostWithPort string
 	if configuredSubURI == "" || configuredSubJsonURI == "" {
@@ -1119,9 +1123,17 @@ func (s *SubService) BuildURLs(scheme, hostWithPort, subPath, subJsonPath, subId
 
 // getBaseSchemeAndHost determines the base scheme and host from settings or falls back to request values
 func (s *SubService) getBaseSchemeAndHost(requestScheme, requestHostWithPort string) (string, string) {
-	subDomain, err := s.settingService.GetSubDomain()
-	if err != nil || subDomain == "" {
-		return requestScheme, requestHostWithPort
+	// Proxy-front: when the override is enabled, advertise the proxy host.
+	baseHost := ""
+	if s.overrideOn {
+		baseHost = s.overrideHost
+	}
+	if baseHost == "" {
+		subDomain, err := s.settingService.GetSubDomain()
+		if err != nil || subDomain == "" {
+			return requestScheme, requestHostWithPort
+		}
+		baseHost = subDomain
 	}
 
 	// Get port and TLS settings
@@ -1136,7 +1148,7 @@ func (s *SubService) getBaseSchemeAndHost(requestScheme, requestHostWithPort str
 	}
 
 	// Build host:port, always include port for clarity
-	hostWithPort := fmt.Sprintf("%s:%d", subDomain, subPort)
+	hostWithPort := fmt.Sprintf("%s:%d", baseHost, subPort)
 
 	return scheme, hostWithPort
 }
