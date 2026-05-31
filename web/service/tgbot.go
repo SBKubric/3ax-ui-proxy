@@ -2375,6 +2375,14 @@ func (t *Tgbot) buildSubscriptionURLs(email string) (string, string, error) {
 		}
 	}
 
+	// Proxy-front: when the host override is enabled, hand out the proxy's
+	// subscription URL instead of the real panel's (overrides any configured subURI).
+	if oh, ok := t.settingService.GetProxyOverride(); ok {
+		subDomain = oh
+		subURI = ""
+		subJsonURI = ""
+	}
+
 	host := subDomain
 	// The front-end comes first: with nginx publishing the subscriptions under
 	// the site's domain, that is the address to hand out, port and all — which

@@ -25,6 +25,8 @@ import (
 // SubService provides business logic for generating subscription links and managing subscription data.
 type SubService struct {
 	address        string
+	overrideHost   string
+	overrideOn     bool
 	showInfo       bool
 	remarkModel    string
 	datepicker     string
@@ -67,6 +69,7 @@ func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.C
 func (s *SubService) buildSubs(subId string, host string) ([]string, int64, xray.ClientTraffic, error) {
 	s.address = host
 	s.hiddifyCompat, _ = s.settingService.GetXrayHiddifyCompat()
+	s.overrideHost, s.overrideOn = s.settingService.GetProxyOverride()
 	var result []string
 	var traffic xray.ClientTraffic
 	var lastOnline int64
@@ -539,7 +542,7 @@ func (s *SubService) genHysteriaLink(inbound *model.Inbound, email string) strin
 	}
 
 	// No external proxy configured — fall back to the request host.
-	link := fmt.Sprintf("%s://%s@%s:%d", protocol, auth, wrapIPv6(s.address), inbound.LinkPort())
+	link := fmt.Sprintf("%s://%s@%s:%d", protocol, auth, wrapIPv6(s.resolveInboundAddress(inbound)), inbound.LinkPort())
 	url, _ := url.Parse(link)
 	q := url.Query()
 	for k, v := range params {
@@ -558,6 +561,11 @@ func (s *SubService) genHysteriaLink(inbound *model.Inbound, email string) strin
 // front-end modes — and is reachable at 127.0.0.1 from nowhere but the server
 // itself, so putting it in a link hands out something that cannot connect.
 func (s *SubService) resolveInboundAddress(inbound *model.Inbound) string {
+	// Proxy-front: the override host replaces the connection address everywhere,
+	// leaving SNI / serverName / Host untouched for L4 passthrough.
+	if s.overrideOn {
+		return s.overrideHost
+	}
 	if isPublicListenAddress(inbound.Listen) {
 		return inbound.Listen
 	}
@@ -1449,6 +1457,14 @@ func (s *SubService) BuildURLs(scheme, hostWithPort, subPath, subJsonPath, subCl
 	configuredSubJsonURI, _ := s.settingService.GetSubJsonURI()
 	configuredSubClashURI, _ := s.settingService.GetSubClashURI()
 
+	// Proxy-front: the host override takes precedence over any configured absolute
+	// sub URI, so the page advertises the proxy subscription instead of the real one.
+	if s.overrideOn {
+		configuredSubURI = ""
+		configuredSubJsonURI = ""
+		configuredSubClashURI = ""
+	}
+
 	var baseScheme, baseHostWithPort string
 	if configuredSubURI == "" || configuredSubJsonURI == "" || configuredSubClashURI == "" {
 		baseScheme, baseHostWithPort = s.getBaseSchemeAndHost(scheme, hostWithPort)
@@ -1463,16 +1479,25 @@ func (s *SubService) BuildURLs(scheme, hostWithPort, subPath, subJsonPath, subCl
 
 // getBaseSchemeAndHost determines the base scheme and host from settings or falls back to request values
 func (s *SubService) getBaseSchemeAndHost(requestScheme, requestHostWithPort string) (string, string) {
-	// The front-end comes first: when nginx publishes the subscriptions under
-	// the site's domain, that is the only address a client outside can be sure
-	// of reaching, whatever port the subscription server itself is on.
-	if scheme, host, ok := service.PublicSubBase(); ok {
-		return scheme, host
+	// Proxy-front: when the override is enabled, advertise the proxy host. It
+	// wins over the nginx front-end and the configured sub domain alike.
+	baseHost := ""
+	if s.overrideOn {
+		baseHost = s.overrideHost
 	}
+	if baseHost == "" {
+		// The front-end comes first: when nginx publishes the subscriptions under
+		// the site's domain, that is the only address a client outside can be sure
+		// of reaching, whatever port the subscription server itself is on.
+		if scheme, host, ok := service.PublicSubBase(); ok {
+			return scheme, host
+		}
 
-	subDomain, err := s.settingService.GetSubDomain()
-	if err != nil || subDomain == "" {
-		return requestScheme, requestHostWithPort
+		subDomain, err := s.settingService.GetSubDomain()
+		if err != nil || subDomain == "" {
+			return requestScheme, requestHostWithPort
+		}
+		baseHost = subDomain
 	}
 
 	// Get port and TLS settings
@@ -1487,7 +1512,7 @@ func (s *SubService) getBaseSchemeAndHost(requestScheme, requestHostWithPort str
 	}
 
 	// Build host:port, always include port for clarity
-	hostWithPort := fmt.Sprintf("%s:%d", subDomain, subPort)
+	hostWithPort := fmt.Sprintf("%s:%d", baseHost, subPort)
 
 	return scheme, hostWithPort
 }
