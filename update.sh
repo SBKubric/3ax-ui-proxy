@@ -772,6 +772,10 @@ config_debug_mode_after_update() {
 }
 
 config_after_update() {
+    if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+        echo -e "${green}Proxy-front mode — keeping /etc/x-ui/proxy.json unchanged.${plain}"
+        return
+    fi
     if [[ "${XUI_DEBUG_MODE:-}" == "1" ]]; then
         config_debug_mode_after_update
         return
@@ -1316,7 +1320,59 @@ update_x-ui() {
 # Installs and starts the OS service unit during update. Prefers files
 # embedded in ${xui_folder}/ (delivered both by the release tarball and by
 # the local-source build); falls back to GitHub raw if missing.
+# Regenerates the proxy-front service unit on update (panel boxes use the
+# templated unit shipped in the tarball instead).
+write_proxy_service_unit() {
+    if [[ $release == "alpine" ]]; then
+        cat >/etc/init.d/x-ui <<EOF
+#!/sbin/openrc-run
+command="${xui_folder}/x-ui"
+command_args="proxy -c /etc/x-ui/proxy.json"
+command_background=true
+pidfile="/run/x-ui.pid"
+description="x-ui proxy front"
+procname="x-ui"
+depend() {
+    need net
+}
+start_pre(){
+    cd ${xui_folder}
+}
+EOF
+        chmod +x /etc/init.d/x-ui >/dev/null 2>&1
+        rc-update add x-ui >/dev/null 2>&1
+        rc-service x-ui restart >/dev/null 2>&1
+        return
+    fi
+    echo -e "${green}Installing proxy-front systemd unit...${plain}"
+    cat >${xui_service}/x-ui.service <<EOF
+[Unit]
+Description=x-ui (proxy front)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${xui_folder}/
+ExecStart=${xui_folder}/x-ui proxy -c /etc/x-ui/proxy.json
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chown root:root ${xui_service}/x-ui.service >/dev/null 2>&1
+    chmod 644 ${xui_service}/x-ui.service >/dev/null 2>&1
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable x-ui >/dev/null 2>&1
+    systemctl restart x-ui >/dev/null 2>&1
+}
+
 update_x-ui_install_service() {
+    if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+        write_proxy_service_unit
+        return
+    fi
     if [[ $release == "alpine" ]]; then
         if [ -f "${xui_folder}/x-ui.rc" ]; then
             cp -f "${xui_folder}/x-ui.rc" /etc/init.d/x-ui >/dev/null 2>&1
@@ -1468,7 +1524,18 @@ detect_debug_mode_from_existing_install() {
     fi
 }
 
-detect_debug_mode_from_existing_install
+# Proxy-front boxes carry /etc/x-ui/proxy.json; update them in proxy mode
+# (replace the binary, keep proxy.json + the proxy unit) and skip the panel /
+# WireGuard steps.
+if [[ -f /etc/x-ui/proxy.json ]]; then
+    export XUI_PROXY_MODE=1
+    echo -e "${yellow}Detected proxy-front install (/etc/x-ui/proxy.json) — updating in proxy mode.${plain}"
+fi
+if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
+    detect_debug_mode_from_existing_install
+fi
 install_base
-ensure_wireguard_native
+if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
+    ensure_wireguard_native
+fi
 update_x-ui $1

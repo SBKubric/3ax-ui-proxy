@@ -1848,6 +1848,16 @@ install_x-ui_finalize() {
     mv -f /usr/bin/x-ui-temp /usr/bin/x-ui
     chmod +x /usr/bin/x-ui
     mkdir -p /var/log/x-ui
+
+    # Proxy-front install: write proxy.json + a `x-ui proxy` service unit and skip
+    # all panel / AmneziaWG / WireGuard configuration.
+    if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+        config_proxy_mode
+        install_x-ui_proxy_service_unit
+        print_proxy_footer
+        return
+    fi
+
     config_after_install
     config_awg_defaults
     config_wg_defaults
@@ -2106,12 +2116,172 @@ prompt_debug_mode() {
     esac
 }
 
+# --- Proxy-front install mode -------------------------------------------------
+# Installs this host as a sacrificial "proxy front": it runs `x-ui proxy` — a
+# dokodemo-door relay to the real (hidden) server plus a subscription server that
+# proxies the real panel — instead of the web panel. No DB, no AmneziaWG/WireGuard,
+# no panel web UI. Activated by XUI_PROXY_MODE=1 (or the interactive prompt below);
+# parameters come from PROXY_* env vars, with prompts for missing required ones on
+# a TTY. The real panel's exported xray config.json must be present on this box so
+# the relay knows which ports to forward.
+prompt_proxy_mode() {
+    if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
+        if [[ -t 0 && "${XUI_DEBUG_MODE:-}" != "1" ]]; then
+            echo ""
+            echo -e "${yellow}Install this host as a PROXY FRONT (traffic relay + subscription proxy, no web panel)? [y/N]${plain}"
+            read -rp "Proxy mode? [y/N]: " __proxy_choice
+            case "${__proxy_choice,,}" in
+                y | yes) export XUI_PROXY_MODE=1 ;;
+                *)
+                    export XUI_PROXY_MODE=0
+                    return
+                    ;;
+            esac
+        else
+            export XUI_PROXY_MODE=0
+            return
+        fi
+    fi
+
+    echo -e "${green}Proxy-front mode enabled.${plain}"
+
+    if [[ -z "${PROXY_UPSTREAM_HOST:-}" && -t 0 ]]; then
+        echo -en "${yellow}Real (hidden) server address to relay traffic to: ${plain}"
+        read -r PROXY_UPSTREAM_HOST
+    fi
+    if [[ -z "${PROXY_XRAY_CONFIG:-}" && -t 0 ]]; then
+        echo -en "${yellow}Path to the real panel's exported xray config.json: ${plain}"
+        read -r PROXY_XRAY_CONFIG
+    fi
+    if [[ -z "${PROXY_UPSTREAM_BASE:-}" && -t 0 ]]; then
+        echo -en "${yellow}Real panel subscription base URL (e.g. https://1.2.3.4:2096), blank = no sub server: ${plain}"
+        read -r PROXY_UPSTREAM_BASE
+    fi
+    if [[ -z "${PROXY_DOMAIN:-}" && -t 0 ]]; then
+        echo -en "${yellow}Proxy public domain advertised in sub URLs (optional): ${plain}"
+        read -r PROXY_DOMAIN
+    fi
+
+    : "${PROXY_SUB_PORT:=2096}"
+    : "${PROXY_SUB_PATH:=/sub/}"
+    : "${PROXY_JSON_PATH:=/json/}"
+    export PROXY_UPSTREAM_HOST PROXY_XRAY_CONFIG PROXY_UPSTREAM_BASE PROXY_DOMAIN
+    export PROXY_SUB_PORT PROXY_SUB_PATH PROXY_JSON_PATH PROXY_CERT PROXY_KEY
+
+    if [[ -z "${PROXY_UPSTREAM_HOST}" || -z "${PROXY_XRAY_CONFIG}" ]]; then
+        echo -e "${red}Proxy mode requires PROXY_UPSTREAM_HOST and PROXY_XRAY_CONFIG (env vars or prompts).${plain}"
+        exit 1
+    fi
+    if ! [[ "${PROXY_SUB_PORT}" =~ ^[0-9]+$ ]]; then
+        echo -e "${yellow}PROXY_SUB_PORT '${PROXY_SUB_PORT}' is not numeric — defaulting to 2096.${plain}"
+        PROXY_SUB_PORT=2096
+    fi
+}
+
+# Writes /etc/x-ui/proxy.json (and stages the panel's xray config) from the
+# PROXY_* values gathered by prompt_proxy_mode.
+config_proxy_mode() {
+    mkdir -p /etc/x-ui
+    local panel_xray="/etc/x-ui/panel-xray.json"
+    if [[ -f "${PROXY_XRAY_CONFIG}" ]]; then
+        cp -f "${PROXY_XRAY_CONFIG}" "${panel_xray}"
+        echo -e "${green}Copied panel xray config → ${panel_xray}${plain}"
+    else
+        echo -e "${yellow}⚠ '${PROXY_XRAY_CONFIG}' not found. Copy the real panel's bin/config.json to ${panel_xray}, then run: systemctl restart x-ui${plain}"
+    fi
+
+    cat >/etc/x-ui/proxy.json <<EOF
+{
+  "upstreamHost": "${PROXY_UPSTREAM_HOST}",
+  "xrayConfigPath": "${panel_xray}",
+  "upstreamBase": "${PROXY_UPSTREAM_BASE}",
+  "domain": "${PROXY_DOMAIN}",
+  "subListen": "",
+  "subPort": ${PROXY_SUB_PORT},
+  "subPath": "${PROXY_SUB_PATH}",
+  "jsonPath": "${PROXY_JSON_PATH}",
+  "cert": "${PROXY_CERT:-}",
+  "key": "${PROXY_KEY:-}"
+}
+EOF
+    chmod 600 /etc/x-ui/proxy.json
+    echo -e "${green}Wrote /etc/x-ui/proxy.json${plain}"
+}
+
+# Installs a service unit whose ExecStart runs `x-ui proxy` instead of the panel.
+install_x-ui_proxy_service_unit() {
+    if [[ $release == "alpine" ]]; then
+        cat >/etc/init.d/x-ui <<EOF
+#!/sbin/openrc-run
+command="${xui_folder}/x-ui"
+command_args="proxy -c /etc/x-ui/proxy.json"
+command_background=true
+pidfile="/run/x-ui.pid"
+description="x-ui proxy front"
+procname="x-ui"
+depend() {
+    need net
+}
+start_pre(){
+    cd ${xui_folder}
+}
+EOF
+        chmod +x /etc/init.d/x-ui
+        rc-update add x-ui
+        rc-service x-ui start
+        return
+    fi
+
+    echo -e "${green}Setting up proxy-front systemd unit...${plain}"
+    cat >${xui_service}/x-ui.service <<EOF
+[Unit]
+Description=x-ui (proxy front)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${xui_folder}/
+ExecStart=${xui_folder}/x-ui proxy -c /etc/x-ui/proxy.json
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chown root:root ${xui_service}/x-ui.service >/dev/null 2>&1
+    chmod 644 ${xui_service}/x-ui.service >/dev/null 2>&1
+    systemctl daemon-reload
+    systemctl enable x-ui
+    systemctl start x-ui
+}
+
+print_proxy_footer() {
+    echo -e "${green}x-ui ${tag_version}${plain} installed as a PROXY FRONT — running now."
+    echo -e ""
+    echo -e "  Relay target (real server): ${blue}${PROXY_UPSTREAM_HOST}${plain}"
+    echo -e "  Subscription upstream:      ${blue}${PROXY_UPSTREAM_BASE:-<disabled>}${plain}"
+    echo -e "  Proxy config:               ${blue}/etc/x-ui/proxy.json${plain}"
+    echo -e "  Panel xray config:          ${blue}/etc/x-ui/panel-xray.json${plain}"
+    echo -e ""
+    echo -e "  ${yellow}On the REAL panel, enable the host override (GUI → subscription settings, or${plain}"
+    echo -e "  ${yellow}'/proxy <this-host>' in the Telegram bot) so client configs point here.${plain}"
+    echo -e ""
+    echo -e "  ${blue}x-ui status${plain}   ${blue}x-ui log${plain}   ${blue}systemctl restart x-ui${plain}"
+}
+
 echo -e "${green}Running...${plain}"
-prompt_debug_mode
-install_base
-install_amneziawg
-install_wireguard_native
-install_x-ui $1
+prompt_proxy_mode
+if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+    install_base
+    install_x-ui $1
+else
+    prompt_debug_mode
+    install_base
+    install_amneziawg
+    install_wireguard_native
+    install_x-ui $1
+fi
 
 # Secure Boot warning
 # Try mokutil first, fall back to reading EFI variable directly
