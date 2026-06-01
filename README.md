@@ -168,6 +168,46 @@ On `y` the panel binds to `127.0.0.1`, runs over plain HTTP on the chosen port, 
 
 VPN protocol stacks (AmneziaWG, native WireGuard, xray) install normally in debug mode — only the panel's web access is restricted to the loopback.
 
+### 11. Proxy front (anti-blocking)
+
+When a server's IP or domain gets blocked you normally have to migrate the whole panel. **3AX-UI** can instead hide the real server behind a cheap, disposable **proxy front**: clients only ever see the proxy, so when it gets blocked you throw it away and spin up a new one — the real server (with all your inbounds, clients and traffic history) keeps running untouched and its address is never exposed.
+
+It has two halves:
+
+**a) Host override (on the real panel).** A global toggle that substitutes a proxy host into every generated client config and subscription link, so configs point at the proxy instead of the real server. SNI / TLS / Reality identity is left untouched. Set it in **Panel Settings → Subscription** (the *Proxy front* section), or from the Telegram bot:
+
+```
+/proxy                 show current state + host
+/proxy <ip|domain>     set the proxy host and enable the override
+/proxy off             disable
+```
+
+With the override on, the Telegram bot also hands out the **proxy** subscription URL automatically.
+
+**b) Proxy run mode (`x-ui proxy`).** A separate, disposable box runs the same binary in proxy mode and does two things:
+
+- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every public inbound port to the real server (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on the proxy**.
+- **Serves subscriptions** — it fetches `/sub` and `/json` from the real panel and re-serves them: apps get the raw subscription, browsers get a custom page (traffic stats, QR, a **Copy VLESS JSON** button, and a curated app list).
+
+**Deploying a proxy front:**
+
+1. On the real panel, copy its xray config (`/usr/local/x-ui/bin/config.json`) to the proxy box (e.g. `/root/panel-config.json`) — the relay reads the inbound ports from it.
+2. On the proxy box, run the installer in proxy mode:
+
+```bash
+PROXY_UPSTREAM_HOST=<real-server-ip> \
+PROXY_UPSTREAM_BASE=https://<real-server-ip>:2096 \
+PROXY_XRAY_CONFIG=/root/panel-config.json \
+PROXY_DOMAIN=proxy.example.com \
+XUI_PROXY_MODE=1 bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh)
+```
+
+(or run `install.sh` on a terminal and answer the **"Install as PROXY FRONT?"** prompt). Settings live in `/etc/x-ui/proxy.json`; the box runs `x-ui proxy` as the `x-ui` service, and `update.sh` auto-detects a proxy box and updates it in proxy mode.
+
+3. On the real panel, point the host override at the proxy's domain/IP (step **a**).
+
+> **Note:** the real server sees all proxied connections coming from the proxy's IP, so per-client IP-limit and the IP log won't reflect real client IPs for proxied traffic.
+
 ---
 
 ## Server requirements
