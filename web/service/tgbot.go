@@ -251,12 +251,19 @@ func (t *Tgbot) Start(i18nFS embed.FS) error {
 	}
 
 	// After bot initialization, set up bot commands with localized descriptions
+	// proxyDesc is only translated in some locales; guard against an empty
+	// description, which Telegram rejects (and would fail the whole call).
+	proxyDesc := t.I18nBot("tgbot.commands.proxyDesc")
+	if proxyDesc == "" {
+		proxyDesc = "Manage the proxy-front host override"
+	}
 	err = bot.SetMyCommands(context.Background(), &telego.SetMyCommandsParams{
 		Commands: []telego.BotCommand{
 			{Command: "start", Description: t.I18nBot("tgbot.commands.startDesc")},
 			{Command: "help", Description: t.I18nBot("tgbot.commands.helpDesc")},
 			{Command: "status", Description: t.I18nBot("tgbot.commands.statusDesc")},
 			{Command: "id", Description: t.I18nBot("tgbot.commands.idDesc")},
+			{Command: "proxy", Description: proxyDesc},
 		},
 	})
 	if err != nil {

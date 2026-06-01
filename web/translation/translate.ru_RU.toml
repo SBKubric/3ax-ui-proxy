@@ -801,7 +801,7 @@
 "status" = "✅ Бот функционирует нормально."
 "usage" = "❗ Пожалуйста, укажите email для поиска."
 "getID" = "🆔 Ваш User ID: <code>{{ .ID }}</code>"
-"helpAdminCommands" = "🔃 Для перезапуска Xray Core:\r\n<code>/restart</code>\r\n\r\n🔎 Для поиска клиента по email:\r\n<code>/usage [Email]</code>\r\n\r\n📊 Для поиска входящих подключений (со статистикой клиентов):\r\n<code>/inbound [имя подключения]</code>\r\n\r\n🆔 Ваш Telegram User ID:\r\n<code>/id</code>"
+"helpAdminCommands" = "🔃 Для перезапуска Xray Core:\r\n<code>/restart</code>\r\n\r\n🔎 Для поиска клиента по email:\r\n<code>/usage [Email]</code>\r\n\r\n📊 Для поиска входящих подключений (со статистикой клиентов):\r\n<code>/inbound [имя подключения]</code>\r\n\r\n🆔 Ваш Telegram User ID:\r\n<code>/id</code>\r\n\r\n🛰 Подмена хоста (прокси-фронт):\r\n<code>/proxy [хост|off]</code>"
 "helpClientCommands" = "💲 Для просмотра информации о вашей подписке используйте команду:\r\n<code>/usage [Email]</code>\r\n\r\n🆔 Ваш Telegram User ID:\r\n<code>/id</code>"
 "restartUsage" = "\r\n\r\n<code>/restart</code>"
 "restartSuccess" = "✅ Ядро Xray успешно перезапущено."
@@ -816,6 +816,7 @@
 "helpDesc" = "Справка по боту"
 "statusDesc" = "Проверить статус бота"
 "idDesc" = "Показать ваш Telegram ID"
+"proxyDesc" = "Управление подменой хоста прокси-фронта (админ)"
 
 [tgbot.messages]
 "cpuThreshold" = "🔴 Загрузка процессора составляет {{ .Percent }}%, что превышает пороговое значение {{ .Threshold }}%"
