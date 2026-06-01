@@ -24,7 +24,7 @@ func TestBuildRelayConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, ports, err := BuildRelayConfig(path, "1.2.3.4")
+	cfg, ports, err := BuildRelayConfig(path, "1.2.3.4", "::")
 	if err != nil {
 		t.Fatalf("BuildRelayConfig: %v", err)
 	}
@@ -45,6 +45,9 @@ func TestBuildRelayConfig(t *testing.T) {
 	for _, in := range cfg.InboundConfigs {
 		if in.Protocol != "dokodemo-door" {
 			t.Errorf("port %d: protocol = %q, want dokodemo-door", in.Port, in.Protocol)
+		}
+		if string(in.Listen) != `"::"` {
+			t.Errorf("port %d: listen = %s, want dual-stack \"::\"", in.Port, in.Listen)
 		}
 		var s struct {
 			Address string `json:"address"`
@@ -73,7 +76,7 @@ func TestBuildRelayConfigNoInbounds(t *testing.T) {
 	if err := os.WriteFile(path, []byte(panelCfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := BuildRelayConfig(path, "1.2.3.4"); err == nil {
+	if _, _, err := BuildRelayConfig(path, "1.2.3.4", "::"); err == nil {
 		t.Fatal("expected error when there are no relayable inbounds, got nil")
 	}
 }
