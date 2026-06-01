@@ -47,7 +47,12 @@ func relayable(in panelInbound) bool {
 // dokodemo-door relay config that L4-forwards every public inbound port to
 // upstreamHost (raw TCP+UDP, so the real server still terminates TLS/Reality and
 // no keys live on the proxy). It returns the config plus the relayed ports.
-func BuildRelayConfig(panelXrayCfgPath, upstreamHost string) (*xray.Config, []int, error) {
+func BuildRelayConfig(panelXrayCfgPath, upstreamHost, listen string) (*xray.Config, []int, error) {
+	if listen == "" {
+		listen = "::"
+	}
+	listenJSON, _ := json.Marshal(listen)
+
 	data, err := os.ReadFile(panelXrayCfgPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read panel xray config %q: %w", panelXrayCfgPath, err)
@@ -72,7 +77,7 @@ func BuildRelayConfig(panelXrayCfgPath, upstreamHost string) (*xray.Config, []in
 
 		settings := fmt.Sprintf(`{"address":%q,"port":%d,"network":"tcp,udp","followRedirect":false}`, upstreamHost, in.Port)
 		inbounds = append(inbounds, xray.InboundConfig{
-			Listen:   json_util.RawMessage(`"0.0.0.0"`),
+			Listen:   json_util.RawMessage(listenJSON),
 			Port:     in.Port,
 			Protocol: "dokodemo-door",
 			Settings: json_util.RawMessage(settings),
@@ -101,7 +106,7 @@ type Relay struct {
 // NewRelay builds the relay config from cfg and prepares (but does not start) the
 // xray process.
 func NewRelay(cfg *Config) (*Relay, error) {
-	xrayCfg, ports, err := BuildRelayConfig(cfg.XrayConfigPath, cfg.UpstreamHost)
+	xrayCfg, ports, err := BuildRelayConfig(cfg.XrayConfigPath, cfg.UpstreamHost, cfg.RelayListen)
 	if err != nil {
 		return nil, err
 	}

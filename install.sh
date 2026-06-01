@@ -2194,6 +2194,7 @@ config_proxy_mode() {
 {
   "upstreamHost": "${PROXY_UPSTREAM_HOST}",
   "xrayConfigPath": "${panel_xray}",
+  "relayListen": "${PROXY_RELAY_LISTEN:-::}",
   "upstreamBase": "${PROXY_UPSTREAM_BASE}",
   "domain": "${PROXY_DOMAIN}",
   "subListen": "",

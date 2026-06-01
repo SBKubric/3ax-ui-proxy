@@ -26,6 +26,11 @@ type Config struct {
 	// inbound ports are read from it, to build the dokodemo-door relay.
 	XrayConfigPath string `json:"xrayConfigPath"`
 
+	// RelayListen is the address the dokodemo-door relay binds on. Defaults to
+	// "::" (dual-stack — accepts both IPv4 and IPv6); set "0.0.0.0" on hosts with
+	// IPv6 disabled.
+	RelayListen string `json:"relayListen"`
+
 	// --- Subscription server: the proxy's own /sub + /json endpoints, proxied
 	// from the real panel. Enabled when UpstreamBase is set. ---
 
@@ -73,6 +78,11 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.XrayConfigPath == "" {
 		return nil, fmt.Errorf("proxy config %q: xrayConfigPath is required", path)
+	}
+
+	cfg.RelayListen = strings.TrimSpace(cfg.RelayListen)
+	if cfg.RelayListen == "" {
+		cfg.RelayListen = "::"
 	}
 
 	if cfg.SubEnabled() {
