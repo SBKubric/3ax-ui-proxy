@@ -82,6 +82,11 @@ type AllSetting struct {
 	SubJsonMux                  string `json:"subJsonMux" form:"subJsonMux"`                                   // JSON subscription mux configuration
 	SubJsonRules                string `json:"subJsonRules" form:"subJsonRules"`
 
+	// Proxy-front override (anti-blocking): substitute this host as the connection
+	// address in generated client configs / subscription links.
+	ProxyOverrideEnable bool   `json:"proxyOverrideEnable" form:"proxyOverrideEnable"`
+	ProxyOverrideHost   string `json:"proxyOverrideHost" form:"proxyOverrideHost"`
+
 	// LDAP settings
 	LdapEnable     bool   `json:"ldapEnable" form:"ldapEnable"`
 	LdapHost       string `json:"ldapHost" form:"ldapHost"`

@@ -38,6 +38,10 @@ else
     REPO_BRANCH="main"
 fi
 
+# GitHub repo (owner/name) to fetch the release binary, wrapper and service
+# files from. Override with XUI_REPO=owner/name to update from a fork.
+XUI_REPO="${XUI_REPO:-SBKubric/3ax-ui-proxy}"
+
 # Don't edit this config
 b_source="${BASH_SOURCE[0]}"
 while [ -h "$b_source" ]; do
@@ -772,6 +776,10 @@ config_debug_mode_after_update() {
 }
 
 config_after_update() {
+    if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+        echo -e "${green}Proxy-front mode — keeping /etc/x-ui/proxy.json unchanged.${plain}"
+        return
+    fi
     if [[ "${XUI_DEBUG_MODE:-}" == "1" ]]; then
         config_debug_mode_after_update
         return
@@ -1178,27 +1186,27 @@ update_x-ui() {
     echo -e "${green}Downloading new x-ui version...${plain}"
 
     if [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
-        tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/coinman-dev/3ax-ui/releases" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
+        tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/${XUI_REPO}/releases" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
         if [[ ! -n "$tag_version" ]]; then
             echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-            tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/coinman-dev/3ax-ui/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
+            tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
         fi
         echo -e "Got x-ui latest pre-release version: ${tag_version}, beginning the installation..."
     else
-        tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/coinman-dev/3ax-ui/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$tag_version" ]]; then
             echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-            tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/coinman-dev/3ax-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         fi
         echo -e "Got x-ui latest version: ${tag_version}, beginning the installation..."
     fi
     if [[ ! -n "$tag_version" ]]; then
         _fail "ERROR: Failed to fetch x-ui version, it may be due to GitHub API restrictions, please try it later"
     fi
-    ${curl_bin} -fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/coinman-dev/3ax-ui/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
+    ${curl_bin} -fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-        ${curl_bin} -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/coinman-dev/3ax-ui/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
+        ${curl_bin} -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
         if [[ $? -ne 0 ]]; then
             _fail "ERROR: Failed to download x-ui, please be sure that your server can access GitHub"
         fi
@@ -1287,10 +1295,10 @@ update_x-ui() {
     fi
     
     echo -e "${green}Downloading and installing x-ui.sh script...${plain}"
-    ${curl_bin} -fLRo /usr/bin/x-ui https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.sh >/dev/null 2>&1
+    ${curl_bin} -fLRo /usr/bin/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh >/dev/null 2>&1
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}Trying to fetch x-ui with IPv4...${plain}"
-        ${curl_bin} -4fLRo /usr/bin/x-ui https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.sh >/dev/null 2>&1
+        ${curl_bin} -4fLRo /usr/bin/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh >/dev/null 2>&1
         if [[ $? -ne 0 ]]; then
             _fail "ERROR: Failed to download x-ui.sh script, please be sure that your server can access GitHub"
         fi
@@ -1316,14 +1324,66 @@ update_x-ui() {
 # Installs and starts the OS service unit during update. Prefers files
 # embedded in ${xui_folder}/ (delivered both by the release tarball and by
 # the local-source build); falls back to GitHub raw if missing.
+# Regenerates the proxy-front service unit on update (panel boxes use the
+# templated unit shipped in the tarball instead).
+write_proxy_service_unit() {
+    if [[ $release == "alpine" ]]; then
+        cat >/etc/init.d/x-ui <<EOF
+#!/sbin/openrc-run
+command="${xui_folder}/x-ui"
+command_args="proxy -c /etc/x-ui/proxy.json"
+command_background=true
+pidfile="/run/x-ui.pid"
+description="x-ui proxy front"
+procname="x-ui"
+depend() {
+    need net
+}
+start_pre(){
+    cd ${xui_folder}
+}
+EOF
+        chmod +x /etc/init.d/x-ui >/dev/null 2>&1
+        rc-update add x-ui >/dev/null 2>&1
+        rc-service x-ui restart >/dev/null 2>&1
+        return
+    fi
+    echo -e "${green}Installing proxy-front systemd unit...${plain}"
+    cat >${xui_service}/x-ui.service <<EOF
+[Unit]
+Description=x-ui (proxy front)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${xui_folder}/
+ExecStart=${xui_folder}/x-ui proxy -c /etc/x-ui/proxy.json
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chown root:root ${xui_service}/x-ui.service >/dev/null 2>&1
+    chmod 644 ${xui_service}/x-ui.service >/dev/null 2>&1
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable x-ui >/dev/null 2>&1
+    systemctl restart x-ui >/dev/null 2>&1
+}
+
 update_x-ui_install_service() {
+    if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+        write_proxy_service_unit
+        return
+    fi
     if [[ $release == "alpine" ]]; then
         if [ -f "${xui_folder}/x-ui.rc" ]; then
             cp -f "${xui_folder}/x-ui.rc" /etc/init.d/x-ui >/dev/null 2>&1
         else
-            ${curl_bin} -fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.rc >/dev/null 2>&1
+            ${curl_bin} -fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc >/dev/null 2>&1
             if [[ $? -ne 0 ]]; then
-                ${curl_bin} -4fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.rc >/dev/null 2>&1
+                ${curl_bin} -4fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc >/dev/null 2>&1
                 [[ $? -ne 0 ]] && _fail "ERROR: Failed to download startup unit x-ui.rc"
             fi
         fi
@@ -1366,13 +1426,13 @@ update_x-ui_install_service() {
         echo -e "${yellow}Service files not found locally, downloading from GitHub...${plain}"
         case "${release}" in
             ubuntu | debian | armbian)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.service.debian >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian >/dev/null 2>&1
             ;;
             arch | manjaro | parch)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.service.arch >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch >/dev/null 2>&1
             ;;
             *)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.service.rhel >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel >/dev/null 2>&1
             ;;
         esac
         [[ $? -ne 0 ]] && _fail "ERROR: Failed to install x-ui.service from GitHub"
@@ -1468,7 +1528,18 @@ detect_debug_mode_from_existing_install() {
     fi
 }
 
-detect_debug_mode_from_existing_install
+# Proxy-front boxes carry /etc/x-ui/proxy.json; update them in proxy mode
+# (replace the binary, keep proxy.json + the proxy unit) and skip the panel /
+# WireGuard steps.
+if [[ -f /etc/x-ui/proxy.json ]]; then
+    export XUI_PROXY_MODE=1
+    echo -e "${yellow}Detected proxy-front install (/etc/x-ui/proxy.json) — updating in proxy mode.${plain}"
+fi
+if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
+    detect_debug_mode_from_existing_install
+fi
 install_base
-ensure_wireguard_native
+if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
+    ensure_wireguard_native
+fi
 update_x-ui $1

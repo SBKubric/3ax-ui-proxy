@@ -251,12 +251,19 @@ func (t *Tgbot) Start(i18nFS embed.FS) error {
 	}
 
 	// After bot initialization, set up bot commands with localized descriptions
+	// proxyDesc is only translated in some locales; guard against an empty
+	// description, which Telegram rejects (and would fail the whole call).
+	proxyDesc := t.I18nBot("tgbot.commands.proxyDesc")
+	if proxyDesc == "" {
+		proxyDesc = "Manage the proxy-front host override"
+	}
 	err = bot.SetMyCommands(context.Background(), &telego.SetMyCommandsParams{
 		Commands: []telego.BotCommand{
 			{Command: "start", Description: t.I18nBot("tgbot.commands.startDesc")},
 			{Command: "help", Description: t.I18nBot("tgbot.commands.helpDesc")},
 			{Command: "status", Description: t.I18nBot("tgbot.commands.statusDesc")},
 			{Command: "id", Description: t.I18nBot("tgbot.commands.idDesc")},
+			{Command: "proxy", Description: proxyDesc},
 		},
 	})
 	if err != nil {
@@ -703,6 +710,41 @@ func (t *Tgbot) answerCommand(message *telego.Message, chatId int64, isAdmin boo
 			}
 		} else {
 			handleUnknownCommand()
+		}
+	case "proxy":
+		onlyMessage = true
+		switch {
+		case !isAdmin:
+			handleUnknownCommand()
+		case len(commandArgs) == 0:
+			enabled, _ := t.settingService.GetProxyOverrideEnable()
+			host, _ := t.settingService.GetProxyOverrideHost()
+			state := "off"
+			if enabled {
+				state = "on"
+			}
+			if host == "" {
+				host = "—"
+			}
+			msg += t.I18nBot("tgbot.commands.proxyStatus", "State=="+state, "Host=="+html.EscapeString(host))
+			msg += t.I18nBot("tgbot.commands.proxyUsage")
+		case strings.EqualFold(commandArgs[0], "off"):
+			if err := t.settingService.SetProxyOverrideEnable(false); err != nil {
+				msg += t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error())
+			} else {
+				msg += t.I18nBot("tgbot.commands.proxyDisabled")
+			}
+		default:
+			host := strings.TrimSpace(commandArgs[0])
+			err := t.settingService.SetProxyOverrideHost(host)
+			if err == nil {
+				err = t.settingService.SetProxyOverrideEnable(true)
+			}
+			if err != nil {
+				msg += t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error())
+			} else {
+				msg += t.I18nBot("tgbot.commands.proxyEnabled", "Host=="+html.EscapeString(host))
+			}
 		}
 	default:
 		handleUnknownCommand()
@@ -2364,6 +2406,14 @@ func (t *Tgbot) buildSubscriptionURLs(email string) (string, string, error) {
 		} else {
 			subDomain = "localhost"
 		}
+	}
+
+	// Proxy-front: when the host override is enabled, hand out the proxy's
+	// subscription URL instead of the real panel's (overrides any configured subURI).
+	if oh, ok := t.settingService.GetProxyOverride(); ok {
+		subDomain = oh
+		subURI = ""
+		subJsonURI = ""
 	}
 
 	host := subDomain

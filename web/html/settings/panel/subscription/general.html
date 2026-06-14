@@ -55,6 +55,22 @@
                     v-model="allSetting.subURI"></a-input>
             </template>
         </a-setting-list-item>
+        <a-divider>{{ i18n "pages.settings.proxyOverride"}}</a-divider>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.proxyOverrideEnable"}}</template>
+            <template #description>{{ i18n "pages.settings.proxyOverrideEnableDesc"}}</template>
+            <template #control>
+                <a-switch v-model="allSetting.proxyOverrideEnable"></a-switch>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.proxyOverrideHost"}}</template>
+            <template #description>{{ i18n "pages.settings.proxyOverrideHostDesc"}}</template>
+            <template #control>
+                <a-input type="text" v-model="allSetting.proxyOverrideHost"
+                    placeholder="proxy.example.com"></a-input>
+            </template>
+        </a-setting-list-item>
     </a-collapse-panel>
     <a-collapse-panel key="2" header='{{ i18n "pages.settings.information" }}'>
         <a-setting-list-item paddings="small">

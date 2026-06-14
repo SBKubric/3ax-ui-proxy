@@ -1,5 +1,5 @@
 #!/bin/bash
-# coinman-dev/3ax-ui
+# SBKubric/3ax-ui-proxy
 
 red='\033[0;31m'
 green='\033[0;32m'
@@ -43,6 +43,10 @@ if [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
 else
     REPO_BRANCH="main"
 fi
+
+# GitHub repo (owner/name) to fetch the release binary, wrapper and service
+# files from. Override with XUI_REPO=owner/name to install from a fork.
+XUI_REPO="${XUI_REPO:-SBKubric/3ax-ui-proxy}"
 
 # check root
 [[ $EUID -ne 0 ]] && echo -e "${red}Fatal error: ${plain} Please run this script with root privilege \n " && exit 1
@@ -791,9 +795,11 @@ prompt_and_setup_ssl() {
     esac
 }
 
-# Localhost-only debug install. Plain HTTP, listen=127.0.0.1, port and
-# credentials decided up-front by prompt_debug_mode(), no SSL prompt,
-# no public-IP detection, no IPv6.
+# Localhost-only debug install. Plain HTTP, port and credentials decided
+# up-front by prompt_debug_mode(), no SSL prompt, no public-IP detection,
+# no IPv6. Binds 127.0.0.1 by default; set XUI_DEBUG_LISTEN (e.g. 0.0.0.0
+# for IPv4, or "::" for dual-stack) to expose the panel on an intranet for
+# testing — e.g. a proxy-front box plus the real panel on the same LAN.
 config_debug_mode() {
     local existing_hasDefaultCredential=$(${xui_folder}/x-ui setting -show true | grep -Eo 'hasDefaultCredential: .+' | awk '{print $2}')
     local existing_webBasePath=$(${xui_folder}/x-ui setting -show true | grep -Eo 'webBasePath: .+' | awk '{print $2}' | sed 's#^/##')
@@ -813,8 +819,9 @@ config_debug_mode() {
         ${xui_folder}/x-ui setting -port "${config_port}"
     fi
 
-    # Bind to loopback only.
-    ${xui_folder}/x-ui setting -listenIP "127.0.0.1"
+    # Bind to loopback by default; XUI_DEBUG_LISTEN overrides for intranet testing.
+    local config_listen="${XUI_DEBUG_LISTEN:-127.0.0.1}"
+    ${xui_folder}/x-ui setting -listenIP "${config_listen}"
 
     ${xui_folder}/x-ui migrate
 
@@ -830,11 +837,18 @@ config_debug_mode() {
     fi
     echo -e "${green}Port:        ${config_port}${plain}"
     echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
-    echo -e "${green}Listen:      127.0.0.1 (loopback only)${plain}"
-    echo -e "${green}Access URL:  http://127.0.0.1:${config_port}/${config_webBasePath}${plain}"
-    echo -e "${green}             http://localhost:${config_port}/${config_webBasePath}${plain}"
-    echo -e "${green}═══════════════════════════════════════════${plain}"
-    echo -e "${yellow}⚠ Plain HTTP, no certificate, no remote access. For local diagnostics only.${plain}"
+    if [[ "${config_listen}" == "127.0.0.1" || "${config_listen}" == "::1" ]]; then
+        echo -e "${green}Listen:      ${config_listen} (loopback only)${plain}"
+        echo -e "${green}Access URL:  http://127.0.0.1:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}             http://localhost:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}═══════════════════════════════════════════${plain}"
+        echo -e "${yellow}⚠ Plain HTTP, no certificate, no remote access. For local diagnostics only.${plain}"
+    else
+        echo -e "${yellow}Listen:      ${config_listen} (exposed on the network)${plain}"
+        echo -e "${green}Access URL:  http://<this-host-ip>:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}═══════════════════════════════════════════${plain}"
+        echo -e "${red}⚠ Plain HTTP with NO certificate, exposed on ${config_listen}. Intranet testing only — never on a public network.${plain}"
+    fi
 }
 
 config_after_install() {
@@ -1848,6 +1862,16 @@ install_x-ui_finalize() {
     mv -f /usr/bin/x-ui-temp /usr/bin/x-ui
     chmod +x /usr/bin/x-ui
     mkdir -p /var/log/x-ui
+
+    # Proxy-front install: write proxy.json + a `x-ui proxy` service unit and skip
+    # all panel / AmneziaWG / WireGuard configuration.
+    if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+        config_proxy_mode
+        install_x-ui_proxy_service_unit
+        print_proxy_footer
+        return
+    fi
+
     config_after_install
     config_awg_defaults
     config_wg_defaults
@@ -1878,7 +1902,7 @@ install_x-ui_service_unit() {
         if [ -f "${xui_folder}/x-ui.rc" ]; then
             cp -f "${xui_folder}/x-ui.rc" /etc/init.d/x-ui
         else
-            curl -4fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.rc
+            curl -4fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc
             if [[ $? -ne 0 ]]; then
                 echo -e "${red}Failed to download x-ui.rc${plain}"
                 exit 1
@@ -1926,13 +1950,13 @@ install_x-ui_service_unit() {
         echo -e "${yellow}Service files not found locally, downloading from GitHub...${plain}"
         case "${release}" in
             ubuntu | debian | armbian)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.service.debian >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian >/dev/null 2>&1
             ;;
             arch | manjaro | parch)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.service.arch >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch >/dev/null 2>&1
             ;;
             *)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.service.rhel >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel >/dev/null 2>&1
             ;;
         esac
         if [[ $? -ne 0 ]]; then
@@ -1997,34 +2021,34 @@ install_x-ui() {
 
     # Download resources
     if [ $# == 0 ]; then
-        tag_version=$(curl -Ls "https://api.github.com/repos/coinman-dev/3ax-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        tag_version=$(curl -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$tag_version" ]]; then
             echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-            tag_version=$(curl -4 -Ls "https://api.github.com/repos/coinman-dev/3ax-ui/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            tag_version=$(curl -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
             if [[ ! -n "$tag_version" ]]; then
                 echo -e "${red}Failed to fetch x-ui version, it may be due to GitHub API restrictions, please try it later${plain}"
                 exit 1
             fi
         fi
         echo -e "Got x-ui latest stable version: ${tag_version}, beginning the installation..."
-        curl -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/coinman-dev/3ax-ui/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz
+        curl -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz
         if [[ $? -ne 0 ]]; then
             echo -e "${red}Downloading x-ui failed, please be sure that your server can access GitHub ${plain}"
             exit 1
         fi
     elif [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
         echo -e "${yellow}Installing latest pre-release version...${plain}"
-        tag_version=$(curl -Ls "https://api.github.com/repos/coinman-dev/3ax-ui/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
+        tag_version=$(curl -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
         if [[ ! -n "$tag_version" ]]; then
             echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-            tag_version=$(curl -4 -Ls "https://api.github.com/repos/coinman-dev/3ax-ui/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
+            tag_version=$(curl -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
             if [[ ! -n "$tag_version" ]]; then
                 echo -e "${red}Failed to fetch x-ui version, it may be due to GitHub API restrictions, please try it later${plain}"
                 exit 1
             fi
         fi
         echo -e "Got x-ui latest pre-release version: ${tag_version}, beginning the installation..."
-        curl -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/coinman-dev/3ax-ui/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz
+        curl -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz
         if [[ $? -ne 0 ]]; then
             echo -e "${red}Downloading x-ui failed, please be sure that your server can access GitHub ${plain}"
             exit 1
@@ -2039,7 +2063,7 @@ install_x-ui() {
             exit 1
         fi
 
-        url="https://github.com/coinman-dev/3ax-ui/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz"
+        url="https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz"
         echo -e "Beginning to install x-ui $1"
         curl -4fLRo ${xui_folder}-linux-$(arch).tar.gz ${url}
         if [[ $? -ne 0 ]]; then
@@ -2047,7 +2071,7 @@ install_x-ui() {
             exit 1
         fi
     fi
-    curl -4fLRo /usr/bin/x-ui-temp https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH}/x-ui.sh
+    curl -4fLRo /usr/bin/x-ui-temp https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh
     if [[ $? -ne 0 ]]; then
         echo -e "${red}Failed to download x-ui.sh${plain}"
         exit 1
@@ -2072,6 +2096,8 @@ install_x-ui() {
 # WireGuard Native, xray) are still installed normally — only the
 # panel's web access is restricted. Activated either by the interactive
 # prompt below or by pre-setting XUI_DEBUG_MODE=1 in the environment.
+# Override the panel bind address with XUI_DEBUG_LISTEN (e.g. 0.0.0.0) to
+# reach it from an intranet for testing — see config_debug_mode().
 prompt_debug_mode() {
     if [[ "${XUI_DEBUG_MODE:-}" == "1" ]]; then
         echo -e "${yellow}Debug mode enabled via XUI_DEBUG_MODE=1.${plain}"
@@ -2106,12 +2132,173 @@ prompt_debug_mode() {
     esac
 }
 
+# --- Proxy-front install mode -------------------------------------------------
+# Installs this host as a sacrificial "proxy front": it runs `x-ui proxy` — a
+# dokodemo-door relay to the real (hidden) server plus a subscription server that
+# proxies the real panel — instead of the web panel. No DB, no AmneziaWG/WireGuard,
+# no panel web UI. Activated by XUI_PROXY_MODE=1 (or the interactive prompt below);
+# parameters come from PROXY_* env vars, with prompts for missing required ones on
+# a TTY. The real panel's exported xray config.json must be present on this box so
+# the relay knows which ports to forward.
+prompt_proxy_mode() {
+    if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
+        if [[ -t 0 && "${XUI_DEBUG_MODE:-}" != "1" ]]; then
+            echo ""
+            echo -e "${yellow}Install this host as a PROXY FRONT (traffic relay + subscription proxy, no web panel)? [y/N]${plain}"
+            read -rp "Proxy mode? [y/N]: " __proxy_choice
+            case "${__proxy_choice,,}" in
+                y | yes) export XUI_PROXY_MODE=1 ;;
+                *)
+                    export XUI_PROXY_MODE=0
+                    return
+                    ;;
+            esac
+        else
+            export XUI_PROXY_MODE=0
+            return
+        fi
+    fi
+
+    echo -e "${green}Proxy-front mode enabled.${plain}"
+
+    if [[ -z "${PROXY_UPSTREAM_HOST:-}" && -t 0 ]]; then
+        echo -en "${yellow}Real (hidden) server address to relay traffic to: ${plain}"
+        read -r PROXY_UPSTREAM_HOST
+    fi
+    if [[ -z "${PROXY_XRAY_CONFIG:-}" && -t 0 ]]; then
+        echo -en "${yellow}Path to the real panel's exported xray config.json: ${plain}"
+        read -r PROXY_XRAY_CONFIG
+    fi
+    if [[ -z "${PROXY_UPSTREAM_BASE:-}" && -t 0 ]]; then
+        echo -en "${yellow}Real panel subscription base URL (e.g. https://1.2.3.4:2096), blank = no sub server: ${plain}"
+        read -r PROXY_UPSTREAM_BASE
+    fi
+    if [[ -z "${PROXY_DOMAIN:-}" && -t 0 ]]; then
+        echo -en "${yellow}Proxy public domain advertised in sub URLs (optional): ${plain}"
+        read -r PROXY_DOMAIN
+    fi
+
+    : "${PROXY_SUB_PORT:=2096}"
+    : "${PROXY_SUB_PATH:=/sub/}"
+    : "${PROXY_JSON_PATH:=/json/}"
+    export PROXY_UPSTREAM_HOST PROXY_XRAY_CONFIG PROXY_UPSTREAM_BASE PROXY_DOMAIN
+    export PROXY_SUB_PORT PROXY_SUB_PATH PROXY_JSON_PATH PROXY_CERT PROXY_KEY
+
+    if [[ -z "${PROXY_UPSTREAM_HOST}" || -z "${PROXY_XRAY_CONFIG}" ]]; then
+        echo -e "${red}Proxy mode requires PROXY_UPSTREAM_HOST and PROXY_XRAY_CONFIG (env vars or prompts).${plain}"
+        exit 1
+    fi
+    if ! [[ "${PROXY_SUB_PORT}" =~ ^[0-9]+$ ]]; then
+        echo -e "${yellow}PROXY_SUB_PORT '${PROXY_SUB_PORT}' is not numeric — defaulting to 2096.${plain}"
+        PROXY_SUB_PORT=2096
+    fi
+}
+
+# Writes /etc/x-ui/proxy.json (and stages the panel's xray config) from the
+# PROXY_* values gathered by prompt_proxy_mode.
+config_proxy_mode() {
+    mkdir -p /etc/x-ui
+    local panel_xray="/etc/x-ui/panel-xray.json"
+    if [[ -f "${PROXY_XRAY_CONFIG}" ]]; then
+        cp -f "${PROXY_XRAY_CONFIG}" "${panel_xray}"
+        echo -e "${green}Copied panel xray config → ${panel_xray}${plain}"
+    else
+        echo -e "${yellow}⚠ '${PROXY_XRAY_CONFIG}' not found. Copy the real panel's bin/config.json to ${panel_xray}, then run: systemctl restart x-ui${plain}"
+    fi
+
+    cat >/etc/x-ui/proxy.json <<EOF
+{
+  "upstreamHost": "${PROXY_UPSTREAM_HOST}",
+  "xrayConfigPath": "${panel_xray}",
+  "relayListen": "${PROXY_RELAY_LISTEN:-::}",
+  "upstreamBase": "${PROXY_UPSTREAM_BASE}",
+  "domain": "${PROXY_DOMAIN}",
+  "subListen": "",
+  "subPort": ${PROXY_SUB_PORT},
+  "subPath": "${PROXY_SUB_PATH}",
+  "jsonPath": "${PROXY_JSON_PATH}",
+  "cert": "${PROXY_CERT:-}",
+  "key": "${PROXY_KEY:-}"
+}
+EOF
+    chmod 600 /etc/x-ui/proxy.json
+    echo -e "${green}Wrote /etc/x-ui/proxy.json${plain}"
+}
+
+# Installs a service unit whose ExecStart runs `x-ui proxy` instead of the panel.
+install_x-ui_proxy_service_unit() {
+    if [[ $release == "alpine" ]]; then
+        cat >/etc/init.d/x-ui <<EOF
+#!/sbin/openrc-run
+command="${xui_folder}/x-ui"
+command_args="proxy -c /etc/x-ui/proxy.json"
+command_background=true
+pidfile="/run/x-ui.pid"
+description="x-ui proxy front"
+procname="x-ui"
+depend() {
+    need net
+}
+start_pre(){
+    cd ${xui_folder}
+}
+EOF
+        chmod +x /etc/init.d/x-ui
+        rc-update add x-ui
+        rc-service x-ui start
+        return
+    fi
+
+    echo -e "${green}Setting up proxy-front systemd unit...${plain}"
+    cat >${xui_service}/x-ui.service <<EOF
+[Unit]
+Description=x-ui (proxy front)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${xui_folder}/
+ExecStart=${xui_folder}/x-ui proxy -c /etc/x-ui/proxy.json
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chown root:root ${xui_service}/x-ui.service >/dev/null 2>&1
+    chmod 644 ${xui_service}/x-ui.service >/dev/null 2>&1
+    systemctl daemon-reload
+    systemctl enable x-ui
+    systemctl start x-ui
+}
+
+print_proxy_footer() {
+    echo -e "${green}x-ui ${tag_version}${plain} installed as a PROXY FRONT — running now."
+    echo -e ""
+    echo -e "  Relay target (real server): ${blue}${PROXY_UPSTREAM_HOST}${plain}"
+    echo -e "  Subscription upstream:      ${blue}${PROXY_UPSTREAM_BASE:-<disabled>}${plain}"
+    echo -e "  Proxy config:               ${blue}/etc/x-ui/proxy.json${plain}"
+    echo -e "  Panel xray config:          ${blue}/etc/x-ui/panel-xray.json${plain}"
+    echo -e ""
+    echo -e "  ${yellow}On the REAL panel, enable the host override (GUI → subscription settings, or${plain}"
+    echo -e "  ${yellow}'/proxy <this-host>' in the Telegram bot) so client configs point here.${plain}"
+    echo -e ""
+    echo -e "  ${blue}x-ui status${plain}   ${blue}x-ui log${plain}   ${blue}systemctl restart x-ui${plain}"
+}
+
 echo -e "${green}Running...${plain}"
-prompt_debug_mode
-install_base
-install_amneziawg
-install_wireguard_native
-install_x-ui $1
+prompt_proxy_mode
+if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+    install_base
+    install_x-ui $1
+else
+    prompt_debug_mode
+    install_base
+    install_amneziawg
+    install_wireguard_native
+    install_x-ui $1
+fi
 
 # Secure Boot warning
 # Try mokutil first, fall back to reading EFI variable directly

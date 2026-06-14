@@ -72,6 +72,7 @@ func NewSubJsonService(fragment string, noises string, mux string, rules string,
 
 // GetJson generates a JSON subscription configuration for the given subscription ID and host.
 func (s *SubJsonService) GetJson(subId string, host string) (string, string, error) {
+	s.SubService.overrideHost, s.SubService.overrideOn = s.SubService.settingService.GetProxyOverride()
 	inbounds, err := s.SubService.getInboundsBySubId(subId)
 	if err != nil || len(inbounds) == 0 {
 		return "", "", err
@@ -170,6 +171,10 @@ func (s *SubJsonService) getConfig(inbound *model.Inbound, client model.Client, 
 		extPrxy := ep.(map[string]any)
 		inbound.Listen = extPrxy["dest"].(string)
 		inbound.Port = int(extPrxy["port"].(float64))
+		// Proxy-front override: force the connection address to the proxy host.
+		if s.SubService.overrideOn {
+			inbound.Listen = s.SubService.overrideHost
+		}
 		newStream := stream
 		switch extPrxy["forceTls"].(string) {
 		case "tls":
