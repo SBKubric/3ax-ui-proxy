@@ -791,9 +791,11 @@ prompt_and_setup_ssl() {
     esac
 }
 
-# Localhost-only debug install. Plain HTTP, listen=127.0.0.1, port and
-# credentials decided up-front by prompt_debug_mode(), no SSL prompt,
-# no public-IP detection, no IPv6.
+# Localhost-only debug install. Plain HTTP, port and credentials decided
+# up-front by prompt_debug_mode(), no SSL prompt, no public-IP detection,
+# no IPv6. Binds 127.0.0.1 by default; set XUI_DEBUG_LISTEN (e.g. 0.0.0.0
+# for IPv4, or "::" for dual-stack) to expose the panel on an intranet for
+# testing — e.g. a proxy-front box plus the real panel on the same LAN.
 config_debug_mode() {
     local existing_hasDefaultCredential=$(${xui_folder}/x-ui setting -show true | grep -Eo 'hasDefaultCredential: .+' | awk '{print $2}')
     local existing_webBasePath=$(${xui_folder}/x-ui setting -show true | grep -Eo 'webBasePath: .+' | awk '{print $2}' | sed 's#^/##')
@@ -813,8 +815,9 @@ config_debug_mode() {
         ${xui_folder}/x-ui setting -port "${config_port}"
     fi
 
-    # Bind to loopback only.
-    ${xui_folder}/x-ui setting -listenIP "127.0.0.1"
+    # Bind to loopback by default; XUI_DEBUG_LISTEN overrides for intranet testing.
+    local config_listen="${XUI_DEBUG_LISTEN:-127.0.0.1}"
+    ${xui_folder}/x-ui setting -listenIP "${config_listen}"
 
     ${xui_folder}/x-ui migrate
 
@@ -830,11 +833,18 @@ config_debug_mode() {
     fi
     echo -e "${green}Port:        ${config_port}${plain}"
     echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
-    echo -e "${green}Listen:      127.0.0.1 (loopback only)${plain}"
-    echo -e "${green}Access URL:  http://127.0.0.1:${config_port}/${config_webBasePath}${plain}"
-    echo -e "${green}             http://localhost:${config_port}/${config_webBasePath}${plain}"
-    echo -e "${green}═══════════════════════════════════════════${plain}"
-    echo -e "${yellow}⚠ Plain HTTP, no certificate, no remote access. For local diagnostics only.${plain}"
+    if [[ "${config_listen}" == "127.0.0.1" || "${config_listen}" == "::1" ]]; then
+        echo -e "${green}Listen:      ${config_listen} (loopback only)${plain}"
+        echo -e "${green}Access URL:  http://127.0.0.1:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}             http://localhost:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}═══════════════════════════════════════════${plain}"
+        echo -e "${yellow}⚠ Plain HTTP, no certificate, no remote access. For local diagnostics only.${plain}"
+    else
+        echo -e "${yellow}Listen:      ${config_listen} (exposed on the network)${plain}"
+        echo -e "${green}Access URL:  http://<this-host-ip>:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}═══════════════════════════════════════════${plain}"
+        echo -e "${red}⚠ Plain HTTP with NO certificate, exposed on ${config_listen}. Intranet testing only — never on a public network.${plain}"
+    fi
 }
 
 config_after_install() {
@@ -2082,6 +2092,8 @@ install_x-ui() {
 # WireGuard Native, xray) are still installed normally — only the
 # panel's web access is restricted. Activated either by the interactive
 # prompt below or by pre-setting XUI_DEBUG_MODE=1 in the environment.
+# Override the panel bind address with XUI_DEBUG_LISTEN (e.g. 0.0.0.0) to
+# reach it from an intranet for testing — see config_debug_mode().
 prompt_debug_mode() {
     if [[ "${XUI_DEBUG_MODE:-}" == "1" ]]; then
         echo -e "${yellow}Debug mode enabled via XUI_DEBUG_MODE=1.${plain}"
