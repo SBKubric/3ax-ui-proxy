@@ -268,7 +268,7 @@ Install panel in debug / diagnostic mode (localhost only)? [y/N]
 
 **б) Режим запуска `x-ui proxy`.** Отдельная одноразовая машина запускает тот же бинарь в режиме прокси и делает две вещи:
 
-- **Релеит трафик** — xray `dokodemo-door` (L4 passthrough) форвардит каждый публичный порт инбаунда на реальный сервер (сырой TCP+UDP, dual-stack). TLS/Reality терминируются на реальном сервере, поэтому **ключей на прокси нет**.
+- **Релеит трафик** — xray `dokodemo-door` (L4 passthrough) форвардит каждый публичный порт инбаунда на реальный сервер (сырой TCP+UDP, dual-stack). TLS/Reality терминируются на реальном сервере, поэтому **ключей на прокси нет**. Порты, которые реальный сервер обслуживает *вне* xray (AmneziaWG / WireGuard, сайдкар MTProto), в его xray-конфиге не появляются — их нужно перечислить как **extra ports** (`"extraPorts": ["51820/udp"]` в `proxy.json` или `PROXY_EXTRA_PORTS=51820/udp,51821/udp` при установке); суффикс протокола обязателен, а extra port не может совпадать с портом xray-инбаунда.
 - **Раздаёт подписку** — ходит за `/sub` и `/json` в реальную панель и отдаёт их: приложения получают сырую подписку, браузеры — кастомную страницу (статистика трафика, QR, кнопка **Copy VLESS JSON** и список приложений).
 
 **Развёртывание прокси-фронта:**
@@ -281,6 +281,7 @@ PROXY_UPSTREAM_HOST=<ip-реального-сервера> \
 PROXY_UPSTREAM_BASE=https://<ip-реального-сервера>:2096 \
 PROXY_XRAY_CONFIG=/root/panel-config.json \
 PROXY_DOMAIN=proxy.example.com \
+PROXY_EXTRA_PORTS=51820/udp \
 XUI_PROXY_MODE=1 bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh)
 ```
 

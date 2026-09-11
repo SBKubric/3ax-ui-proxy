@@ -268,7 +268,7 @@ With the override on, the Telegram bot also hands out the **proxy** subscription
 
 **b) Proxy run mode (`x-ui proxy`).** A separate, disposable box runs the same binary in proxy mode and does two things:
 
-- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every public inbound port to the real server (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on the proxy**.
+- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every public inbound port to the real server (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on the proxy**. Ports the real server serves *outside* xray (AmneziaWG / WireGuard listeners, the MTProto sidecar) are not in its xray config, so list them as **extra ports** (`"extraPorts": ["51820/udp"]` in `proxy.json`, or `PROXY_EXTRA_PORTS=51820/udp,51821/udp` at install time); the protocol suffix is mandatory and an extra port may not double an xray inbound port.
 - **Serves subscriptions** — it fetches `/sub` and `/json` from the real panel and re-serves them: apps get the raw subscription, browsers get a custom page (traffic stats, QR, a **Copy VLESS JSON** button, and a curated app list).
 
 **Deploying a proxy front:**
@@ -281,6 +281,7 @@ PROXY_UPSTREAM_HOST=<real-server-ip> \
 PROXY_UPSTREAM_BASE=https://<real-server-ip>:2096 \
 PROXY_XRAY_CONFIG=/root/panel-config.json \
 PROXY_DOMAIN=proxy.example.com \
+PROXY_EXTRA_PORTS=51820/udp \
 XUI_PROXY_MODE=1 bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh)
 ```
 

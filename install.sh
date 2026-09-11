@@ -2666,11 +2666,15 @@ prompt_proxy_mode() {
         echo -en "${yellow}Proxy public domain advertised in sub URLs (optional): ${plain}"
         read -r PROXY_DOMAIN
     fi
+    if [[ -z "${PROXY_EXTRA_PORTS:-}" && -t 0 ]]; then
+        echo -en "${yellow}Extra ports served outside xray on the real server (AmneziaWG/WireGuard/MTProto), e.g. 51820/udp,51821/udp — blank = none: ${plain}"
+        read -r PROXY_EXTRA_PORTS
+    fi
 
     : "${PROXY_SUB_PORT:=2096}"
     : "${PROXY_SUB_PATH:=/sub/}"
     : "${PROXY_JSON_PATH:=/json/}"
-    export PROXY_UPSTREAM_HOST PROXY_XRAY_CONFIG PROXY_UPSTREAM_BASE PROXY_DOMAIN
+    export PROXY_UPSTREAM_HOST PROXY_XRAY_CONFIG PROXY_UPSTREAM_BASE PROXY_DOMAIN PROXY_EXTRA_PORTS
     export PROXY_SUB_PORT PROXY_SUB_PATH PROXY_JSON_PATH PROXY_CERT PROXY_KEY
 
     if [[ -z "${PROXY_UPSTREAM_HOST}" || -z "${PROXY_XRAY_CONFIG}" ]]; then
@@ -2681,6 +2685,22 @@ prompt_proxy_mode() {
         echo -e "${yellow}PROXY_SUB_PORT '${PROXY_SUB_PORT}' is not numeric — defaulting to 2096.${plain}"
         PROXY_SUB_PORT=2096
     fi
+    local __ep
+    for __ep in ${PROXY_EXTRA_PORTS//,/ }; do
+        if ! [[ "${__ep}" =~ ^[0-9]+/(tcp|udp|tcp\+udp)$ ]]; then
+            echo -e "${red}PROXY_EXTRA_PORTS entry '${__ep}' is invalid — use <port>/tcp, <port>/udp or <port>/tcp+udp.${plain}"
+            exit 1
+        fi
+    done
+}
+
+# Renders PROXY_EXTRA_PORTS ("51820/udp,8443/tcp") as a JSON string array.
+proxy_extra_ports_json() {
+    local out="" __ep
+    for __ep in ${PROXY_EXTRA_PORTS//,/ }; do
+        out+="${out:+, }\"${__ep}\""
+    done
+    echo "[${out}]"
 }
 
 # Writes /etc/x-ui/proxy.json (and stages the panel's xray config) from the
@@ -2700,6 +2720,7 @@ config_proxy_mode() {
   "upstreamHost": "${PROXY_UPSTREAM_HOST}",
   "xrayConfigPath": "${panel_xray}",
   "relayListen": "${PROXY_RELAY_LISTEN:-::}",
+  "extraPorts": $(proxy_extra_ports_json),
   "upstreamBase": "${PROXY_UPSTREAM_BASE}",
   "domain": "${PROXY_DOMAIN}",
   "subListen": "",

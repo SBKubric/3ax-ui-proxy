@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/coinman-dev/3ax-ui/v2/util/json_util"
 )
 
 func TestBuildRelayConfig(t *testing.T) {
@@ -24,7 +26,7 @@ func TestBuildRelayConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, ports, err := BuildRelayConfig(path, "1.2.3.4", "::")
+	cfg, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", nil)
 	if err != nil {
 		t.Fatalf("BuildRelayConfig: %v", err)
 	}
@@ -76,7 +78,79 @@ func TestBuildRelayConfigNoInbounds(t *testing.T) {
 	if err := os.WriteFile(path, []byte(panelCfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := BuildRelayConfig(path, "1.2.3.4", "::"); err == nil {
+	if _, _, err := BuildRelayConfig(path, "1.2.3.4", "::", nil); err == nil {
 		t.Fatal("expected error when there are no relayable inbounds, got nil")
+	}
+}
+
+func writePanelCfg(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func relaySettings(t *testing.T, in json_util.RawMessage) (port int, network string) {
+	t.Helper()
+	var s struct {
+		Port    int    `json:"port"`
+		Network string `json:"network"`
+	}
+	if err := json.Unmarshal([]byte(in), &s); err != nil {
+		t.Fatalf("settings unmarshal: %v", err)
+	}
+	return s.Port, s.Network
+}
+
+func TestBuildRelayConfigExtraPorts(t *testing.T) {
+	// An AmneziaWG listener lives on the host, not in the xray config, so the
+	// panel config alone yields one relayed port; extraPorts adds the UDP one
+	// with its own network selector and the TCP-only one likewise.
+	path := writePanelCfg(t, `{"inbounds":[{"port":443,"protocol":"vless","tag":"inbound-443"}]}`)
+	extra := []ExtraPort{{Port: 51820, Network: "udp"}, {Port: 8443, Network: "tcp"}}
+
+	cfg, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", extra)
+	if err != nil {
+		t.Fatalf("BuildRelayConfig: %v", err)
+	}
+	if len(ports) != 3 {
+		t.Fatalf("relayed ports = %v, want 443, 51820 and 8443", ports)
+	}
+	want := map[int]string{443: "tcp,udp", 51820: "udp", 8443: "tcp"}
+	for _, in := range cfg.InboundConfigs {
+		fwdPort, network := relaySettings(t, in.Settings)
+		if fwdPort != in.Port {
+			t.Errorf("port %d: forward port = %d, want same port", in.Port, fwdPort)
+		}
+		if network != want[in.Port] {
+			t.Errorf("port %d: network = %q, want %q", in.Port, network, want[in.Port])
+		}
+		delete(want, in.Port)
+	}
+	if len(want) != 0 {
+		t.Errorf("ports missing from relay config: %v", want)
+	}
+}
+
+func TestBuildRelayConfigExtraPortsOnly(t *testing.T) {
+	// A panel whose only inbound is internal still relays when extraPorts is set.
+	path := writePanelCfg(t, `{"inbounds":[{"listen":"127.0.0.1","port":62789,"protocol":"dokodemo-door","tag":"api"}]}`)
+	_, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", []ExtraPort{{Port: 51820, Network: "udp"}})
+	if err != nil {
+		t.Fatalf("BuildRelayConfig: %v", err)
+	}
+	if len(ports) != 1 || ports[0] != 51820 {
+		t.Fatalf("relayed ports = %v, want [51820]", ports)
+	}
+}
+
+func TestBuildRelayConfigExtraPortCollision(t *testing.T) {
+	// One port, one source: an extra port that is also an xray inbound is a
+	// config mistake, not something to merge silently.
+	path := writePanelCfg(t, `{"inbounds":[{"port":443,"protocol":"vless","tag":"inbound-443"}]}`)
+	if _, _, err := BuildRelayConfig(path, "1.2.3.4", "::", []ExtraPort{{Port: 443, Network: "udp"}}); err == nil {
+		t.Fatal("expected error when an extra port collides with an xray inbound port, got nil")
 	}
 }

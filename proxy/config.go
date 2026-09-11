@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -31,6 +32,15 @@ type Config struct {
 	// IPv6 disabled.
 	RelayListen string `json:"relayListen"`
 
+	// ExtraPorts lists the real server's public ports that are not xray inbounds
+	// and therefore never appear in XrayConfigPath — AmneziaWG / WireGuard
+	// listeners, the MTProto sidecar — but must be relayed all the same. Each
+	// entry is "<port>/<tcp|udp|tcp+udp>"; the protocol suffix is mandatory. A
+	// port that is also an xray inbound in the panel config is an error.
+	ExtraPorts []string `json:"extraPorts"`
+
+	extraPorts []ExtraPort
+
 	// --- Subscription server: the proxy's own /sub + /json endpoints, proxied
 	// from the real panel. Enabled when UpstreamBase is set. ---
 
@@ -49,6 +59,63 @@ type Config struct {
 	CertFile  string `json:"cert"`
 	KeyFile   string `json:"key"`
 }
+
+// ExtraPort is one relayed port that the real server serves outside xray
+// (see Config.ExtraPorts). Network is the dokodemo-door network selector:
+// "tcp", "udp" or "tcp,udp".
+type ExtraPort struct {
+	Port    int
+	Network string
+}
+
+// ParseExtraPort parses a "<port>/<tcp|udp|tcp+udp>" entry.
+func ParseExtraPort(s string) (ExtraPort, error) {
+	s = strings.TrimSpace(s)
+	portStr, proto, ok := strings.Cut(s, "/")
+	if !ok {
+		return ExtraPort{}, fmt.Errorf("extra port %q: protocol suffix required (e.g. \"51820/udp\")", s)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
+	if err != nil || port < 1 || port > 65535 {
+		return ExtraPort{}, fmt.Errorf("extra port %q: port must be 1-65535", s)
+	}
+	var network string
+	switch strings.ToLower(strings.TrimSpace(proto)) {
+	case "tcp":
+		network = "tcp"
+	case "udp":
+		network = "udp"
+	case "tcp+udp", "udp+tcp":
+		network = "tcp,udp"
+	default:
+		return ExtraPort{}, fmt.Errorf("extra port %q: protocol must be tcp, udp or tcp+udp", s)
+	}
+	return ExtraPort{Port: port, Network: network}, nil
+}
+
+// parseExtraPorts parses every entry and rejects duplicate ports.
+func parseExtraPorts(entries []string) ([]ExtraPort, error) {
+	seen := make(map[int]bool, len(entries))
+	out := make([]ExtraPort, 0, len(entries))
+	for _, e := range entries {
+		if strings.TrimSpace(e) == "" {
+			continue
+		}
+		ep, err := ParseExtraPort(e)
+		if err != nil {
+			return nil, err
+		}
+		if seen[ep.Port] {
+			return nil, fmt.Errorf("extra port %d listed twice", ep.Port)
+		}
+		seen[ep.Port] = true
+		out = append(out, ep)
+	}
+	return out, nil
+}
+
+// ExtraRelayPorts returns the parsed ExtraPorts entries.
+func (c *Config) ExtraRelayPorts() []ExtraPort { return c.extraPorts }
 
 // SubEnabled reports whether the subscription server should run, i.e. an upstream
 // base to fetch subscriptions from has been configured.
@@ -84,6 +151,12 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.RelayListen == "" {
 		cfg.RelayListen = "::"
 	}
+
+	extra, err := parseExtraPorts(cfg.ExtraPorts)
+	if err != nil {
+		return nil, fmt.Errorf("proxy config %q: %w", path, err)
+	}
+	cfg.extraPorts = extra
 
 	if cfg.SubEnabled() {
 		cfg.SubPath = normalizePath(cfg.SubPath, "/sub/")

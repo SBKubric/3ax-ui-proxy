@@ -43,11 +43,26 @@ func relayable(in panelInbound) bool {
 	return true
 }
 
+// relayInbound builds one dokodemo-door inbound forwarding port to upstreamHost.
+func relayInbound(listenJSON []byte, upstreamHost string, port int, network string) xray.InboundConfig {
+	settings := fmt.Sprintf(`{"address":%q,"port":%d,"network":%q,"followRedirect":false}`, upstreamHost, port, network)
+	return xray.InboundConfig{
+		Listen:   json_util.RawMessage(listenJSON),
+		Port:     port,
+		Protocol: "dokodemo-door",
+		Settings: json_util.RawMessage(settings),
+		Tag:      fmt.Sprintf("relay-%d", port),
+	}
+}
+
 // BuildRelayConfig reads the real panel's exported xray config and builds a
 // dokodemo-door relay config that L4-forwards every public inbound port to
 // upstreamHost (raw TCP+UDP, so the real server still terminates TLS/Reality and
-// no keys live on the proxy). It returns the config plus the relayed ports.
-func BuildRelayConfig(panelXrayCfgPath, upstreamHost, listen string) (*xray.Config, []int, error) {
+// no keys live on the proxy), plus every extra port the real server serves
+// outside xray (AmneziaWG/WireGuard, MTProto). An extra port that is also an
+// xray inbound is rejected: one port, one source. It returns the config plus
+// the relayed ports.
+func BuildRelayConfig(panelXrayCfgPath, upstreamHost, listen string, extra []ExtraPort) (*xray.Config, []int, error) {
 	if listen == "" {
 		listen = "::"
 	}
@@ -74,19 +89,20 @@ func BuildRelayConfig(panelXrayCfgPath, upstreamHost, listen string) (*xray.Conf
 		}
 		seen[in.Port] = true
 		ports = append(ports, in.Port)
+		inbounds = append(inbounds, relayInbound(listenJSON, upstreamHost, in.Port, "tcp,udp"))
+	}
 
-		settings := fmt.Sprintf(`{"address":%q,"port":%d,"network":"tcp,udp","followRedirect":false}`, upstreamHost, in.Port)
-		inbounds = append(inbounds, xray.InboundConfig{
-			Listen:   json_util.RawMessage(listenJSON),
-			Port:     in.Port,
-			Protocol: "dokodemo-door",
-			Settings: json_util.RawMessage(settings),
-			Tag:      fmt.Sprintf("relay-%d", in.Port),
-		})
+	for _, ep := range extra {
+		if seen[ep.Port] {
+			return nil, nil, fmt.Errorf("extra port %d is already an xray inbound in %q", ep.Port, panelXrayCfgPath)
+		}
+		seen[ep.Port] = true
+		ports = append(ports, ep.Port)
+		inbounds = append(inbounds, relayInbound(listenJSON, upstreamHost, ep.Port, ep.Network))
 	}
 
 	if len(inbounds) == 0 {
-		return nil, nil, fmt.Errorf("no relayable inbounds found in %q", panelXrayCfgPath)
+		return nil, nil, fmt.Errorf("no relayable inbounds found in %q and no extraPorts configured", panelXrayCfgPath)
 	}
 
 	cfg := &xray.Config{
@@ -106,7 +122,7 @@ type Relay struct {
 // NewRelay builds the relay config from cfg and prepares (but does not start) the
 // xray process.
 func NewRelay(cfg *Config) (*Relay, error) {
-	xrayCfg, ports, err := BuildRelayConfig(cfg.XrayConfigPath, cfg.UpstreamHost, cfg.RelayListen)
+	xrayCfg, ports, err := BuildRelayConfig(cfg.XrayConfigPath, cfg.UpstreamHost, cfg.RelayListen, cfg.ExtraRelayPorts())
 	if err != nil {
 		return nil, err
 	}
