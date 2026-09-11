@@ -80,9 +80,6 @@ func skipReason(in panelInbound) string {
 	return ""
 }
 
-// relayable reports whether a panel inbound should be L4-forwarded by the proxy.
-func relayable(in panelInbound) bool { return skipReason(in) == "" }
-
 // relayInbound builds one dokodemo-door inbound forwarding port to upstreamHost.
 func relayInbound(listenJSON []byte, upstreamHost string, port int, network string) xray.InboundConfig {
 	settings := fmt.Sprintf(`{"address":%q,"port":%d,"network":%q,"followRedirect":false}`, upstreamHost, port, network)
