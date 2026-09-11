@@ -146,6 +146,51 @@ func TestBuildRelayConfigExtraPortsOnly(t *testing.T) {
 	}
 }
 
+func TestBuildRelayConfigSkipsTransparentInbounds(t *testing.T) {
+	// The panel adds a synthetic dokodemo-door TPROXY inbound per tunnel routed
+	// via Xray. It listens on "::" like a public inbound but only ever receives
+	// kernel-redirected packets, so it must not become a relayed port. Both the
+	// semantic markers and the default tag suffix identify it.
+	panelCfg := `{
+		"inbounds": [
+			{"port":443,"protocol":"vless","tag":"inbound-443"},
+			{"listen":"::","port":12345,"protocol":"dokodemo-door","tag":"my-tunnel",
+			 "settings":{"network":"tcp,udp","followRedirect":true},
+			 "streamSettings":{"sockopt":{"tproxy":"tproxy"}}},
+			{"listen":"::","port":12346,"protocol":"dokodemo-door","tag":"redir",
+			 "settings":{"followRedirect":true}},
+			{"listen":"::","port":12347,"protocol":"dokodemo-door","tag":"renamed",
+			 "streamSettings":{"sockopt":{"tproxy":"redirect"}}},
+			{"listen":"::","port":12348,"protocol":"dokodemo-door","tag":"wg-tproxy-in"}
+		]
+	}`
+	path := writePanelCfg(t, panelCfg)
+	_, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", nil)
+	if err != nil {
+		t.Fatalf("BuildRelayConfig: %v", err)
+	}
+	if len(ports) != 1 || ports[0] != 443 {
+		t.Fatalf("relayed ports = %v, want [443] only (TPROXY inbounds skipped)", ports)
+	}
+}
+
+func TestSkipReason(t *testing.T) {
+	plain := panelInbound{Port: 443, Protocol: "vless", Tag: "inbound-443"}
+	if r := skipReason(plain); r != "" {
+		t.Errorf("public inbound skipped: %q", r)
+	}
+	// A plain dokodemo-door port map (no redirect, no tproxy) is a real public
+	// inbound and must still be relayed.
+	portMap := panelInbound{Port: 8080, Protocol: "dokodemo-door", Tag: "portmap"}
+	if r := skipReason(portMap); r != "" {
+		t.Errorf("dokodemo port map skipped: %q", r)
+	}
+	tagged := panelInbound{Port: 12345, Protocol: "dokodemo-door", Tag: "awg-tproxy-in"}
+	if r := skipReason(tagged); r == "" {
+		t.Error("awg-tproxy-in not skipped")
+	}
+}
+
 func TestBuildRelayConfigExtraPortCollision(t *testing.T) {
 	// One port, one source: an extra port that is also an xray inbound is a
 	// config mistake, not something to merge silently.

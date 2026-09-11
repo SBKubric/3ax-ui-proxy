@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/coinman-dev/3ax-ui/v2/config"
+	"github.com/coinman-dev/3ax-ui/v2/logger"
 	"github.com/coinman-dev/3ax-ui/v2/util/json_util"
 	"github.com/coinman-dev/3ax-ui/v2/xray"
 )
@@ -23,25 +24,64 @@ type panelInbound struct {
 	Port     int    `json:"port"`
 	Protocol string `json:"protocol"`
 	Tag      string `json:"tag"`
+	Settings struct {
+		FollowRedirect bool `json:"followRedirect"`
+	} `json:"settings"`
+	StreamSettings struct {
+		Sockopt struct {
+			Tproxy string `json:"tproxy"`
+		} `json:"sockopt"`
+	} `json:"streamSettings"`
 }
 
-// relayable reports whether a panel inbound should be L4-forwarded by the proxy.
-// Internal inbounds (the gRPC api tunnel, loopback binds, unix-socket fallbacks)
-// are skipped — only public-facing ports are relayed.
-func relayable(in panelInbound) bool {
-	if in.Port <= 0 || in.Tag == "api" {
-		return false
+// tproxyTagSuffix is what the panel names its synthetic transparent-proxy
+// inbounds by default ("awg-tproxy-in", "wg-tproxy-in"). Used as a belt to the
+// semantic braces below, since the tag is user-editable.
+const tproxyTagSuffix = "-tproxy-in"
+
+// transparent reports whether an inbound only receives traffic the kernel
+// redirects into it (TPROXY / REDIRECT). The panel adds one per tunnel whose
+// traffic is routed via Xray; nothing outside can dial it, so relaying it would
+// just open a dead port on the proxy front.
+func transparent(in panelInbound) bool {
+	if in.Protocol == "dokodemo-door" {
+		switch strings.ToLower(in.StreamSettings.Sockopt.Tproxy) {
+		case "tproxy", "redirect":
+			return true
+		}
+		if in.Settings.FollowRedirect {
+			return true
+		}
+	}
+	return strings.HasSuffix(in.Tag, tproxyTagSuffix)
+}
+
+// skipReason explains why a panel inbound is not relayed, or returns "" when it
+// should be. Only public-facing ports are relayed: the gRPC api tunnel, loopback
+// binds, unix-socket fallbacks and transparent-proxy inbounds are skipped.
+func skipReason(in panelInbound) string {
+	if in.Port <= 0 {
+		return "no port"
+	}
+	if in.Tag == "api" {
+		return "internal api inbound"
 	}
 	listen := strings.TrimSpace(in.Listen)
 	switch listen {
 	case "127.0.0.1", "::1", "localhost":
-		return false
+		return "loopback bind"
 	}
 	if strings.HasPrefix(listen, "@") { // unix-socket fallback master
-		return false
+		return "unix-socket fallback"
 	}
-	return true
+	if transparent(in) {
+		return "transparent-proxy (TPROXY) inbound"
+	}
+	return ""
 }
+
+// relayable reports whether a panel inbound should be L4-forwarded by the proxy.
+func relayable(in panelInbound) bool { return skipReason(in) == "" }
 
 // relayInbound builds one dokodemo-door inbound forwarding port to upstreamHost.
 func relayInbound(listenJSON []byte, upstreamHost string, port int, network string) xray.InboundConfig {
@@ -84,7 +124,11 @@ func BuildRelayConfig(panelXrayCfgPath, upstreamHost, listen string, extra []Ext
 	var ports []int
 	seen := make(map[int]bool)
 	for _, in := range parsed.Inbounds {
-		if !relayable(in) || seen[in.Port] {
+		if reason := skipReason(in); reason != "" {
+			logger.Infof("proxy-front: not relaying inbound %q (port %d): %s", in.Tag, in.Port, reason)
+			continue
+		}
+		if seen[in.Port] {
 			continue
 		}
 		seen[in.Port] = true
