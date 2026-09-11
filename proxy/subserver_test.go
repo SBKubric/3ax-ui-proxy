@@ -1,8 +1,12 @@
 package proxy
 
 import (
+	"net/http"
+	"net/http/httptest"
+
 	"bytes"
 	"encoding/base64"
+	"github.com/gin-gonic/gin"
 	"strings"
 	"testing"
 )
@@ -67,5 +71,54 @@ func TestPageRenders(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered page missing %q", want)
 		}
+	}
+}
+
+// The panel stamps Profile-Web-Page-Url with the host it was fetched by — the
+// real server — so raw subscriptions relayed by the proxy must carry the
+// proxy's own address instead, or apps would link straight to the hidden box.
+func TestPublicURLAndProfileHeaderRewrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s, err := NewSubServer(&Config{
+		UpstreamHost: "1.2.3.4", XrayConfigPath: "x", UpstreamBase: "https://1.2.3.4:2096",
+		SubPath: "/sub/", JsonPath: "/json/", SubPort: 2096,
+	})
+	if err != nil {
+		t.Fatalf("NewSubServer: %v", err)
+	}
+
+	newCtx := func() (*gin.Context, *httptest.ResponseRecorder) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/sub/abc", nil)
+		c.Request.Host = "5.6.7.8:2096"
+		return c, w
+	}
+
+	c, _ := newCtx()
+	if got := s.publicURL(c, s.cfg.SubPath, "abc"); got != "http://5.6.7.8:2096/sub/abc" {
+		t.Errorf("publicURL without domain = %q", got)
+	}
+	s.cfg.Domain = "proxy.example.com"
+	s.cfg.CertFile, s.cfg.KeyFile = "c", "k"
+	if got := s.publicURL(c, s.cfg.JsonPath, "abc"); got != "https://proxy.example.com/json/abc" {
+		t.Errorf("publicURL with domain+TLS = %q", got)
+	}
+	s.cfg.Domain, s.cfg.CertFile, s.cfg.KeyFile = "", "", ""
+
+	// The header copied from the panel names the real server; after
+	// copyHeaders + rewrite the client must see the proxy instead.
+	c, w := newCtx()
+	upstream := http.Header{}
+	upstream.Set("Profile-Web-Page-Url", "https://1.2.3.4:2096/sub/abc")
+	upstream.Set("Subscription-Userinfo", "upload=0; download=0; total=0; expire=0")
+	copyHeaders(c, upstream)
+	c.Header("Profile-Web-Page-Url", s.publicURL(c, s.cfg.SubPath, "abc"))
+	c.String(http.StatusOK, "ok")
+	if got := w.Header().Get("Profile-Web-Page-Url"); got != "http://5.6.7.8:2096/sub/abc" {
+		t.Errorf("Profile-Web-Page-Url = %q, want the proxy's own URL", got)
+	}
+	if got := w.Header().Get("Subscription-Userinfo"); got == "" {
+		t.Error("Subscription-Userinfo was not passed through")
 	}
 }

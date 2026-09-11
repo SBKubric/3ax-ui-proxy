@@ -124,6 +124,7 @@ func (s *SubServer) handleSub(c *gin.Context) {
 		return
 	}
 	copyHeaders(c, header)
+	c.Header("Profile-Web-Page-Url", s.publicURL(c, s.cfg.SubPath, c.Param("subid")))
 	c.String(http.StatusOK, string(body))
 }
 
@@ -135,7 +136,26 @@ func (s *SubServer) handleJson(c *gin.Context) {
 		return
 	}
 	copyHeaders(c, header)
+	c.Header("Profile-Web-Page-Url", s.publicURL(c, s.cfg.SubPath, c.Param("subid")))
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
+}
+
+// publicURL is the address of this proxy's own subscription endpoint as a
+// client outside sees it: the configured Domain, else the Host the request
+// came in on. The panel builds its Profile-Web-Page-Url from the Host it was
+// fetched by — the real server's address — so the proxy must replace that
+// header with its own identity, or every subscription app would carry a link
+// to the hidden server.
+func (s *SubServer) publicURL(c *gin.Context, path, subid string) string {
+	scheme := "http"
+	if s.cfg.TLS() {
+		scheme = "https"
+	}
+	host := s.cfg.Domain
+	if host == "" {
+		host = c.Request.Host
+	}
+	return scheme + "://" + host + path + subid
 }
 
 // fetchUpstream GETs the raw subscription (not the panel's HTML page) for the
@@ -184,16 +204,8 @@ type pageData struct {
 }
 
 func (s *SubServer) renderPage(c *gin.Context, subid string, body []byte, header http.Header) {
-	scheme := "http"
-	if s.cfg.TLS() {
-		scheme = "https"
-	}
-	host := s.cfg.Domain
-	if host == "" {
-		host = c.Request.Host
-	}
-	subURL := scheme + "://" + host + s.cfg.SubPath + subid
-	jsonURL := scheme + "://" + host + s.cfg.JsonPath + subid
+	subURL := s.publicURL(c, s.cfg.SubPath, subid)
+	jsonURL := s.publicURL(c, s.cfg.JsonPath, subid)
 
 	used, total, expire := parseUserinfo(header.Get("Subscription-Userinfo"))
 
