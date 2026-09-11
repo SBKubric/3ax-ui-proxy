@@ -811,11 +811,7 @@ func (s *TunnelService[K]) GetClientConfig(id int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	server, err := s.GetServer()
-	if err != nil {
-		return "", err
-	}
-	return tunnel.GenerateClientConfig(s.kind(), server, *client), nil
+	return s.renderClientConfig(*client)
 }
 
 // GetClientConfigByUUID returns config text for a client identified by UUID.
@@ -824,11 +820,31 @@ func (s *TunnelService[K]) GetClientConfigByUUID(clientUUID string) (string, err
 	if err != nil {
 		return "", err
 	}
+	return s.renderClientConfig(*client)
+}
+
+// renderClientConfig is the one place client .conf text is produced — the
+// panel GUI, the per-client UUID link and the Telegram bot all come through
+// here — so the proxy-front host override is applied once, right here.
+func (s *TunnelService[K]) renderClientConfig(client tunnel.Client) (string, error) {
 	server, err := s.GetServer()
 	if err != nil {
 		return "", err
 	}
-	return tunnel.GenerateClientConfig(s.kind(), server, *client), nil
+	host, on := (&SettingService{}).GetProxyOverride()
+	return tunnel.GenerateClientConfig(s.kind(), withProxyOverride(server, host, on), client), nil
+}
+
+// withProxyOverride returns server as-is when the override is off, otherwise a
+// copy whose Endpoint points at the proxy front. The port is kept: the relay
+// forwards it unchanged. The stored server row is never modified.
+func withProxyOverride(server *tunnel.Server, host string, on bool) *tunnel.Server {
+	if !on || host == "" {
+		return server
+	}
+	overridden := *server
+	overridden.Endpoint = tunnel.ReplaceEndpointHost(server.Endpoint, host)
+	return &overridden
 }
 
 // ResetClientTraffic resets upload/download counters for a client.

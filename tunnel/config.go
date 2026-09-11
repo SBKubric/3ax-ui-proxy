@@ -201,6 +201,25 @@ func GenerateServerConfig(k Kind, server *Server, clients []Client) string {
 	return b.String()
 }
 
+// ReplaceEndpointHost swaps the host part of a client Endpoint ("host",
+// "host:port" or "[v6]:port") for host, keeping whatever port it carried. An
+// empty endpoint becomes just host, so GenerateClientConfig appends the
+// server's listen port as usual. Used by the proxy-front host override: the
+// relay forwards the same port, so only the host changes.
+func ReplaceEndpointHost(endpoint, host string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		host = "[" + host + "]"
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return host
+	}
+	if _, port, err := net.SplitHostPort(endpoint); err == nil {
+		return host + ":" + port
+	}
+	return host
+}
+
 // GenerateClientConfig builds a client .conf file content.
 func GenerateClientConfig(k Kind, server *Server, client Client) string {
 	var b strings.Builder

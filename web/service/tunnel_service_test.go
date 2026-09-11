@@ -273,3 +273,33 @@ func TestFreshAwgServerIsBornObfuscated(t *testing.T) {
 		t.Errorf("obfuscation leaked into a WireGuard server: %+v", wg)
 	}
 }
+
+// The proxy-front host override must reach tunnel client configs: with it on,
+// the Endpoint names the proxy front (same port), and the stored server row is
+// left untouched so switching the override off restores the real endpoint.
+func TestWithProxyOverrideRewritesEndpointOnly(t *testing.T) {
+	server := &tunnel.Server{Endpoint: "1.2.3.4:51820", ListenPort: 51820}
+
+	if got := withProxyOverride(server, "proxy.example.com", false); got != server {
+		t.Fatal("override off: expected the same server pointer back")
+	}
+	if got := withProxyOverride(server, "", true); got != server {
+		t.Fatal("override on with empty host: expected the same server pointer back")
+	}
+
+	got := withProxyOverride(server, "proxy.example.com", true)
+	if got.Endpoint != "proxy.example.com:51820" {
+		t.Errorf("Endpoint = %q, want proxy.example.com:51820", got.Endpoint)
+	}
+	if server.Endpoint != "1.2.3.4:51820" {
+		t.Errorf("stored server mutated: Endpoint = %q", server.Endpoint)
+	}
+
+	conf := tunnel.GenerateClientConfig(tunnel.AWG, got, tunnel.Client{IPv4Address: "10.0.0.2/32"})
+	if !strings.Contains(conf, "Endpoint = proxy.example.com:51820\n") {
+		t.Errorf("client conf does not carry the proxy endpoint:\n%s", conf)
+	}
+	if strings.Contains(conf, "1.2.3.4") {
+		t.Errorf("client conf leaks the real server address:\n%s", conf)
+	}
+}

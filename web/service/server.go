@@ -133,7 +133,11 @@ type Status struct {
 		IPv4 string `json:"ipv4"`
 		IPv6 string `json:"ipv6"`
 	} `json:"publicIP"`
-	AppStats struct {
+	// ProxyOverride reports whether the proxy-front host override is on, so
+	// the GUI never offers a "use the real public IP" variant of a client
+	// config while clients are meant to see only the proxy front.
+	ProxyOverride bool `json:"proxyOverride"`
+	AppStats      struct {
 		Threads uint32 `json:"threads"`
 		Mem     uint64 `json:"mem"`
 		Uptime  uint64 `json:"uptime"`
@@ -466,6 +470,7 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 
 	status.PublicIP.IPv4 = s.cachedIPv4
 	status.PublicIP.IPv6 = s.cachedIPv6
+	_, status.ProxyOverride = (&SettingService{}).GetProxyOverride()
 
 	// Xray status
 	if s.xrayService.IsXrayRunning() {

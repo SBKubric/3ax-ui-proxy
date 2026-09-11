@@ -22,7 +22,7 @@
                             <b>[[ row.remark ]]</b>
                             <a-space
                                 direction="horizontal"
-                                v-if="!qrModal.inbound || qrModal.inbound.protocol != Protocols.MTPROTO"
+                                v-if="(!qrModal.inbound || qrModal.inbound.protocol != Protocols.MTPROTO) && !(serverStatus && serverStatus.proxyOverride)"
                             >
                                 <a-switch
                                     size="small"

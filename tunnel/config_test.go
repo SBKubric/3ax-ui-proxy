@@ -139,3 +139,20 @@ func trunc(s string) string {
 	}
 	return s
 }
+
+func TestReplaceEndpointHost(t *testing.T) {
+	cases := []struct{ endpoint, host, want string }{
+		{"1.2.3.4", "proxy.example.com", "proxy.example.com"},
+		{"1.2.3.4:51820", "proxy.example.com", "proxy.example.com:51820"},
+		{"real.example.com:51820", "5.6.7.8", "5.6.7.8:51820"},
+		{"[2001:db8::1]:51820", "5.6.7.8", "5.6.7.8:51820"},
+		{"1.2.3.4:51820", "2001:db8::2", "[2001:db8::2]:51820"},
+		{"", "5.6.7.8", "5.6.7.8"},
+		{"  1.2.3.4:51820 ", "5.6.7.8", "5.6.7.8:51820"},
+	}
+	for _, c := range cases {
+		if got := ReplaceEndpointHost(c.endpoint, c.host); got != c.want {
+			t.Errorf("ReplaceEndpointHost(%q, %q) = %q, want %q", c.endpoint, c.host, got, c.want)
+		}
+	}
+}
