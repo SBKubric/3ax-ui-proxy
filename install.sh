@@ -2613,7 +2613,7 @@ check_existing_install() {
                 if is_local_source_install && [[ -f ./update.sh ]]; then
                     bash ./update.sh "$@"
                 else
-                    bash <(curl -Ls "https://raw.githubusercontent.com/coinman-dev/3ax-ui/${REPO_BRANCH:-main}/update.sh") "$@"
+                    bash <(curl -Ls "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH:-main}/update.sh") "$@"
                 fi
                 exit $?
                 ;;
