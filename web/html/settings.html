@@ -104,6 +104,7 @@
 {{template "component/aThemeSwitch" .}}
 {{template "component/aSettingListItem" .}}
 {{template "modals/twoFactorModal" .}}
+{{template "modals/textModal" .}}
 <script>
   const app = new Vue({
     delimiters: ['[[', ']]'],
@@ -324,6 +325,13 @@
         } else {
           this.inboundOptions = [];
         }
+      },
+      async showRelayManifest() {
+        this.loading(true);
+        const msg = await HttpUtil.get("/panel/api/server/getRelayManifest");
+        this.loading(false);
+        if (!msg.success) return;
+        txtModal.show('{{ i18n "pages.settings.relayManifest" }}', msg.obj, 'relay-manifest.json');
       },
       async updateAllSetting() {
         this.loading(true);

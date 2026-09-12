@@ -7,9 +7,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/coinman-dev/3ax-ui/v2/config"
+	"github.com/coinman-dev/3ax-ui/v2/relaymanifest"
 	"github.com/coinman-dev/3ax-ui/v2/web/global"
 	"github.com/coinman-dev/3ax-ui/v2/web/service"
 	"github.com/coinman-dev/3ax-ui/v2/web/websocket"
+	"github.com/coinman-dev/3ax-ui/v2/xray"
 
 	"github.com/gin-gonic/gin"
 )
@@ -47,6 +50,7 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.GET("/getPanelUpdateInfo", a.getPanelUpdateInfo)
 	g.GET("/getConfigJson", a.getConfigJson)
 	g.GET("/getDb", a.getDb)
+	g.GET("/getRelayManifest", a.getRelayManifest)
 	g.GET("/getNewUUID", a.getNewUUID)
 	g.GET("/getNewX25519Cert", a.getNewX25519Cert)
 	g.GET("/getNewmldsa65", a.getNewmldsa65)
@@ -291,6 +295,19 @@ func (a *ServerController) getDb(c *gin.Context) {
 
 	// Write the file contents to the response
 	c.Writer.Write(db)
+}
+
+// getRelayManifest hands out the relay manifest for a proxy front: the
+// sanitised excerpt of bin/config.json (ports and TPROXY markers only, no
+// keys) built by the same producer as `x-ui relay-manifest`. The UI shows it
+// for copy/paste into the proxy front's setup page or download.
+func (a *ServerController) getRelayManifest(c *gin.Context) {
+	data, err := relaymanifest.FromFile(xray.GetConfigPath(), config.GetVersion())
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.relayManifestError"), err)
+		return
+	}
+	jsonObj(c, string(data), nil)
 }
 
 func isValidFilename(filename string) bool {

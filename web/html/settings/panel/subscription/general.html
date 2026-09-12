@@ -86,6 +86,15 @@
                     placeholder="proxy.example.com"></a-input>
             </template>
         </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.relayManifest"}}</template>
+            <template #description>{{ i18n "pages.settings.relayManifestDesc"}}</template>
+            <template #control>
+                <a-button type="primary" icon="file-text" @click="showRelayManifest()">
+                    {{ i18n "pages.settings.relayManifestShow"}}
+                </a-button>
+            </template>
+        </a-setting-list-item>
     </a-collapse-panel>
     <a-collapse-panel key="2" header='{{ i18n "pages.settings.information" }}'>
         <a-setting-list-item paddings="small">

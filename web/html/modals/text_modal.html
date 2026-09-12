@@ -28,9 +28,10 @@
         show: function(title = '', content = '', fileName = '') {
             this.title = title;
             this.content = content;
-            // Downloaded exports are plain text — ensure a .txt extension.
+            // Downloaded exports are plain text — ensure a .txt extension
+            // (a .json export keeps its own).
             this.fileName = fileName
-                ? (fileName.toLowerCase().endsWith('.txt') ? fileName : fileName + '.txt')
+                ? (/\.(txt|json)$/i.test(fileName) ? fileName : fileName + '.txt')
                 : '';
             this.width = Math.min(1000, window.innerWidth - 48);
             this.visible = true;
