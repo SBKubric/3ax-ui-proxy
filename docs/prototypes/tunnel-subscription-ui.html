@@ -1,0 +1,372 @@
+<title>Tunnel Subscription UI</title>
+<!--
+  PROTOTYPE, throwaway. Three variants of the tunnel-subscription UI, switchable via ?variant=A|B|C
+  (and ← → keys), mounted as a storyboard of the four real surfaces: AWG/WG client modal,
+  clients table, panel subscription page, proxy-front subscription page.
+  Question it answers: wayfinder ticket #35 of map #30 (SBKubric/3ax-ui-proxy).
+-->
+<style>
+  :root {
+    /* panel (Ant Design Vue look) */
+    --pn-bg: #f0f2f5; --pn-card: #ffffff; --pn-text: rgba(0,0,0,.85); --pn-muted: rgba(0,0,0,.45);
+    --pn-border: #d9d9d9; --pn-line: #f0f0f0; --pn-primary: #1890ff; --pn-primary-soft: #e6f4ff;
+    --pn-ok: #52c41a; --pn-ok-soft: #f6ffed; --pn-warn: #faad14; --pn-warn-soft: #fffbe6; --pn-tag: #fafafa;
+    /* proxy front page (fork's dark card page) */
+    --px-bg: #0f1115; --px-card: #171a21; --px-text: #e8eaf0; --px-muted: #8b93a5; --px-btn: #2d6cdf; --px-btn2: #2a2f3a;
+    /* prototype chrome */
+    --ch-ink: #111; --ch-paper: #fffdf7; --ch-accent: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --pn-bg: #141414; --pn-card: #1f1f1f; --pn-text: rgba(255,255,255,.85); --pn-muted: rgba(255,255,255,.45);
+      --pn-border: #434343; --pn-line: #303030; --pn-primary: #177ddc; --pn-primary-soft: #111d2c;
+      --pn-ok: #49aa19; --pn-ok-soft: #162312; --pn-warn: #d89614; --pn-warn-soft: #2b2111; --pn-tag: #262626;
+      --ch-ink: #f2f2f2; --ch-paper: #1a1814; --ch-accent: #ff6b5e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --pn-bg: #141414; --pn-card: #1f1f1f; --pn-text: rgba(255,255,255,.85); --pn-muted: rgba(255,255,255,.45);
+    --pn-border: #434343; --pn-line: #303030; --pn-primary: #177ddc; --pn-primary-soft: #111d2c;
+    --pn-ok: #49aa19; --pn-ok-soft: #162312; --pn-warn: #d89614; --pn-warn-soft: #2b2111; --pn-tag: #262626;
+    --ch-ink: #f2f2f2; --ch-paper: #1a1814; --ch-accent: #ff6b5e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--pn-bg); color: var(--pn-text); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 24px 16px 96px; }
+  h1, h2, h3 { margin: 0; font-weight: 600; text-wrap: balance; }
+  .wrap { max-width: 1040px; margin: 0 auto; display: grid; gap: 28px; }
+  /* prototype chrome: deliberately not Ant, so it reads as scaffolding */
+  .intro { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ch-ink); background: var(--ch-paper); border: 1px dashed var(--ch-accent); padding: 12px 16px; font-size: 13px; }
+  .intro b { color: var(--ch-accent); }
+  .surface { display: grid; gap: 10px; }
+  .surface > .label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ch-accent); display: flex; gap: 10px; align-items: baseline; }
+  .surface > .label span { color: var(--pn-muted); letter-spacing: 0; text-transform: none; font-family: inherit; }
+  .switcher { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; background: var(--ch-ink); color: var(--ch-paper); border-radius: 999px; padding: 6px 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); font-family: ui-monospace, Menlo, monospace; font-size: 13px; z-index: 50; }
+  .switcher button { background: transparent; color: inherit; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; width: 32px; height: 32px; cursor: pointer; font-size: 16px; }
+  .switcher button:focus-visible { outline: 2px solid var(--ch-accent); }
+  .switcher .lbl { padding: 0 10px; min-width: 190px; text-align: center; }
+  .switcher .lbl b { color: var(--ch-accent); }
+
+  /* ---- panel primitives (Ant-ish) ---- */
+  .card { background: var(--pn-card); border: 1px solid var(--pn-line); border-radius: 4px; }
+  .modal { max-width: 560px; }
+  .modal .hd { padding: 14px 20px; border-bottom: 1px solid var(--pn-line); font-weight: 600; display:flex; justify-content: space-between; }
+  .modal .bd { padding: 20px; display: grid; gap: 14px; }
+  .modal .ft { padding: 10px 16px; border-top: 1px solid var(--pn-line); display: flex; justify-content: flex-end; gap: 8px; }
+  .fi { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: center; }
+  .fi label { text-align: right; color: var(--pn-text); }
+  .fi label::after { content: ":"; margin-left: 2px; }
+  .in { display: flex; align-items: center; gap: 6px; border: 1px solid var(--pn-border); border-radius: 4px; padding: 4px 10px; background: var(--pn-card); color: var(--pn-text); min-height: 32px; }
+  .in.sel::after { content: "▾"; margin-left: auto; color: var(--pn-muted); }
+  .in .ph { color: var(--pn-muted); }
+  .in .ico { margin-left: auto; color: var(--pn-primary); cursor: pointer; }
+  .hint { color: var(--pn-muted); font-size: 12px; grid-column: 2; margin-top: -8px; }
+  .sw { width: 36px; height: 20px; border-radius: 10px; background: var(--pn-border); position: relative; display:inline-block; vertical-align: middle; }
+  .sw.on { background: var(--pn-primary); }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+  .sw.on::after { left: 18px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--pn-border); background: var(--pn-card); color: var(--pn-text); border-radius: 4px; padding: 4px 14px; height: 32px; cursor: pointer; font: inherit; }
+  .btn.primary { background: var(--pn-primary); border-color: var(--pn-primary); color: #fff; }
+  .btn.sm { height: 24px; padding: 0 8px; font-size: 12px; }
+  .btn:focus-visible { outline: 2px solid var(--pn-primary); outline-offset: 2px; }
+  .tag { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--pn-border); background: var(--pn-tag); border-radius: 4px; padding: 0 7px; font-size: 12px; line-height: 20px; white-space: nowrap; }
+  .tag.blue { color: var(--pn-primary); background: var(--pn-primary-soft); border-color: transparent; }
+  .tag.ok { color: var(--pn-ok); background: var(--pn-ok-soft); border-color: transparent; }
+  .tag.warn { color: var(--pn-warn); background: var(--pn-warn-soft); border-color: transparent; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .tbl-wrap { overflow-x: auto; }
+  table.tbl { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; min-width: 640px; }
+  .tbl th { text-align: left; font-weight: 500; background: var(--pn-tag); padding: 10px 12px; border-bottom: 1px solid var(--pn-line); white-space: nowrap; }
+  .tbl td { padding: 10px 12px; border-bottom: 1px solid var(--pn-line); vertical-align: middle; }
+  .tbl tr.group td { background: var(--pn-primary-soft); font-weight: 500; }
+  .tbl .ops { display: flex; gap: 6px; }
+  .dot { display:inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--pn-ok); margin-right: 6px; }
+  .dot.off { background: var(--pn-border); }
+  /* panel subscription page */
+  .subpage { max-width: 640px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+  .subpage .title { display:flex; justify-content: space-between; align-items: baseline; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stats div { background: var(--pn-tag); border-radius: 4px; padding: 8px 12px; }
+  .stats b { display:block; font-size: 16px; }
+  .stats span { color: var(--pn-muted); font-size: 12px; }
+  .qrbox { display: grid; place-items: center; gap: 6px; }
+  .qrbox .qr { background: #fff; padding: 8px; border-radius: 4px; border: 1px solid var(--pn-line); }
+  .qrbox .qr canvas, .qrbox .qr img { display: block; max-width: 100%; }
+  .qrbox small { color: var(--pn-muted); }
+  .linkbox { border: 1px dashed var(--pn-border); border-radius: 4px; padding: 8px 10px; word-break: break-all; }
+  .cfgcard { border: 1px solid var(--pn-line); border-radius: 4px; padding: 12px; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; }
+  .cfgcard .meta { display: grid; gap: 6px; }
+  .cfgcard .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--pn-line); }
+  .tabs div { padding: 8px 14px; border-bottom: 2px solid transparent; color: var(--pn-muted); cursor: pointer; }
+  .tabs div.on { color: var(--pn-primary); border-bottom-color: var(--pn-primary); }
+  .acc { border: 1px solid var(--pn-line); border-radius: 4px; }
+  .acc > div { padding: 10px 12px; border-top: 1px solid var(--pn-line); }
+  .acc > div:first-child { border-top: 0; }
+  .acc .hd { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+  .acc .body { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; }
+  pre.conf { margin: 0; font-size: 11px; line-height: 1.35; max-height: 140px; overflow: auto; background: var(--pn-tag); padding: 8px; border-radius: 4px; }
+  .empty { color: var(--pn-muted); text-align: center; padding: 18px; border: 1px dashed var(--pn-border); border-radius: 4px; }
+  /* proxy front page (fork's own dark page) */
+  .px { background: var(--px-bg); color: var(--px-text); padding: 20px; border-radius: 12px; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .px .in { max-width: 640px; margin: 0 auto; display: grid; gap: 14px; border: 0; background: transparent; padding: 0; }
+  .px h1 { font-size: 22px; }
+  .px h2 { font-size: 16px; color: var(--px-muted); font-weight: 500; }
+  .px .pcard { background: var(--px-card); border-radius: 12px; padding: 16px; }
+  .px .pstats { display: flex; gap: 24px; }
+  .px .pstats b { display:block; font-size: 18px; }
+  .px .pstats span { color: var(--px-muted); font-size: 12px; }
+  .px button { background: var(--px-btn); color:#fff; border:0; border-radius:8px; padding:10px 14px; font-size:14px; cursor:pointer; margin:10px 6px 0 0; }
+  .px button.secondary { background: var(--px-btn2); }
+  .px .cfg { font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre; overflow: auto; max-height: 120px; color: #c9cfdd; }
+  .px .qr { background:#fff; padding: 8px; border-radius: 8px; width: max-content; }
+  .px .qr canvas, .px .qr img { display:block; }
+  .px .row { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start; }
+  .px .app { display:inline-flex; gap: 8px; background: var(--px-btn2); border-radius: 8px; padding: 8px 12px; color: var(--px-text); text-decoration: none; margin: 6px 6px 0 0; }
+  .px .app span { color: var(--px-muted); }
+  .px .muted { color: var(--px-muted); font-size: 12px; }
+  .i18n { font-size: 13px; }
+  .i18n table { border-collapse: collapse; width: 100%; }
+  .i18n td, .i18n th { border-bottom: 1px solid var(--pn-line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  @media (max-width: 640px) {
+    .fi { grid-template-columns: 1fr; } .fi label { text-align: left; } .hint { grid-column: 1; }
+    .cfgcard, .acc .body, .px .row { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: 1fr 1fr; }
+  }
+  @media (prefers-reduced-motion: no-preference) { .sw::after { transition: left .15s; } }
+</style>
+
+<div class="wrap" id="app"></div>
+
+<div class="switcher" role="group" aria-label="Prototype variant switcher">
+  <button id="prev" aria-label="Previous variant">←</button>
+  <div class="lbl" id="lbl"></div>
+  <button id="next" aria-label="Next variant">→</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(function () {
+  const CONF_AWG = `[Interface]
+PrivateKey = yH3n1ZbQ0h6xw3xQY8eSgD0mFqz7QpXo6d8mYwRk2mU=
+Address = 10.66.66.2/32, 2a00:7c80:0:1d8:a00::2/128
+DNS = 1.1.1.1, 2606:4700:4700::1111
+MTU = 1420
+Jc = 4
+Jmin = 50
+Jmax = 1000
+S1 = 0
+S2 = 0
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+
+[Peer]
+PublicKey = 9wZq5cV1kX2t0Yb7LmN3pQrS8uVwXyZaBcDeFgHiJkM=
+PresharedKey = 4fGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStU=
+Endpoint = front-2.example.net:51820
+AllowedIPs = 0.0.0.0/0,::/0
+PersistentKeepalive = 25`;
+  const CONF_WG = CONF_AWG.replace(/Jc = 4\nJmin = 50\nJmax = 1000\nS1 = 0\nS2 = 0\nH1 = 1\nH2 = 2\nH3 = 3\nH4 = 4\n/, "").replace("51820", "51821");
+
+  // Example data: one subscription "k7f3q2a9x1m4" holding a VLESS client, an AWG peer and a WG peer.
+  const SUB = "k7f3q2a9x1m4";
+  const subUrl = "https://front-2.example.net:2096/sub-3p9d/" + SUB;
+  const tunUrl = "https://front-2.example.net:2096/tun/" + SUB;
+  const tun = [
+    { kind: "awg", name: "ivan-phone", uuid: "b2e6…9a1c", filename: "ivan-phone", enable: true,  expiryTime: 0,          conf: CONF_AWG },
+    { kind: "wg",  name: "ivan-laptop", uuid: "7c10…44de", filename: "ivan-laptop", enable: false, expiryTime: 1767225600000, conf: CONF_WG },
+  ];
+  const clients = [
+    { name: "ivan-phone",  email: "ivan-phone",  enable: true,  traffic: "1.2 GB / ∞",  exp: "never",      sub: SUB, online: true },
+    { name: "ivan-laptop", email: "ivan-laptop", enable: false, traffic: "38 GB / 100 GB", exp: "2026-01-01", sub: SUB, online: false },
+    { name: "mon-probe-awg-ru1", email: "mon-probe-awg-ru1", enable: true, traffic: "3 MB / ∞", exp: "never", sub: "mon-ru1-x8p2q", online: true },
+    { name: "olga-tablet", email: "olga-tablet", enable: true, traffic: "0 B / ∞", exp: "never", sub: "", online: false },
+  ];
+  const existingSubs = [SUB, "mon-ru1-x8p2q", "a1z9q8w7e6r5"];
+
+  const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  const kindTag = k => `<span class="tag ${k === "awg" ? "blue" : ""}">${k === "awg" ? "AmneziaWG" : "WireGuard"}</span>`;
+  const qr = (id, text, px) => `<div class="qr" id="${id}" data-text="${esc(text)}" data-px="${px}"></div>`;
+  const surface = (label, note, html) => `<section class="surface"><div class="label">${label}<span>${note}</span></div>${html}</section>`;
+
+  /* ---------- Variant A: "Inline" — the field lives where xray's Subscription field lives; page appends a Tunnels section ---------- */
+  const A = {
+    name: "A (Inline: как у xray-клиента)",
+    modal: () => `
+      <div class="card modal"><div class="hd">Edit client · AmneziaWG <span class="mono">awg0</span></div>
+      <div class="bd">
+        <div class="fi"><label>Name</label><div class="in">ivan-phone</div></div>
+        <div class="fi"><label>Enable</label><div><span class="sw on"></span></div></div>
+        <div class="fi"><label>Subscription</label><div class="in"><span>${SUB}</span><span class="ico" title="Generate">⟳</span></div></div>
+        <div class="hint">Оставьте пустым, чтобы не включать в подписку. Совпадение с subId xray-клиента даёт одну подписку на пользователя. Подсказка существующих: ${existingSubs.map(s=>`<span class="mono">${s}</span>`).join(", ")}</div>
+        <div class="fi"><label>Total traffic</label><div class="in"><span class="ph">0 = unlimited</span></div></div>
+        <div class="fi"><label>Expiry</label><div class="in"><span class="ph">never</span></div></div>
+      </div><div class="ft"><button class="btn">Cancel</button><button class="btn primary">Save</button></div></div>`,
+    table: () => `
+      <div class="card tbl-wrap"><table class="tbl"><thead><tr><th>Operate</th><th>Enable</th><th>Client</th><th>Subscription</th><th>Traffic</th><th>Expiry</th></tr></thead><tbody>
+      ${clients.map(c => `<tr><td class="ops"><button class="btn sm">⋯</button><button class="btn sm" title="QR / config">▦</button>${c.sub ? `<button class="btn sm" title="Subscription link">🔗</button>` : ""}</td>
+        <td><span class="sw ${c.enable?"on":""}"></span></td><td><span class="dot ${c.online?"":"off"}"></span>${c.name}</td>
+        <td>${c.sub ? `<span class="tag blue mono">${c.sub}</span>` : `<span class="tag">—</span>`}</td><td>${c.traffic}</td><td>${c.exp}</td></tr>`).join("")}
+      </tbody></table></div>`,
+    page: () => `
+      <div class="card subpage">
+        <div class="title"><h2>Subscription</h2><span class="tag ok">1 xray · 2 tunnels</span></div>
+        <div class="stats"><div><b>39.2 GB</b><span>used</span></div><div><b>100 GB</b><span>total</span></div><div><b>2026-01-01</b><span>expires</span></div></div>
+        <div class="qrbox"><div class="qr" id="qrA-sub" data-text="${subUrl}" data-px="160"></div><small>Subscription URL</small></div>
+        <div class="linkbox mono">${subUrl}</div>
+        <h3>Configs</h3>
+        <div class="linkbox mono">vless://…@front-2.example.net:443?security=reality…#ivan-phone</div>
+        <h3>Tunnels <span class="tag">AmneziaWG · WireGuard</span></h3>
+        ${tun.map((t,i) => `<div class="cfgcard"><div class="meta"><div>${kindTag(t.kind)} <b>${t.name}</b> ${t.enable ? "" : `<span class="tag warn">disabled</span>`}</div>
+          <pre class="conf">${esc(t.conf)}</pre>
+          <div class="acts"><button class="btn primary sm">Download ${t.filename}.conf</button><button class="btn sm">Copy</button></div>
+          <small style="color:var(--pn-muted)">Open with AmneziaVPN or the ${t.kind === "awg" ? "AmneziaWG" : "WireGuard"} app. No auto-update: re-download after changes.</small></div>
+          ${qr("qrA-"+i, t.conf, 168)}</div>`).join("")}
+      </div>`,
+    proxy: () => `
+      <div class="px"><div class="in">
+        <h1>Subscription</h1>
+        <div class="pcard pstats"><div><b>39.2 GB</b><span>Used</span></div><div><b>100 GB</b><span>Total</span></div><div><b>2026-01-01</b><span>Expires</span></div></div>
+        <div class="pcard"><div class="row">${qr("qrA-px-sub", subUrl, 140)}<div><div class="cfg">${subUrl}</div><button>Copy subscription</button><button class="secondary">Copy VLESS JSON</button></div></div></div>
+        <h2>Configs</h2><div class="pcard"><div class="cfg">vless://…@front-2.example.net:443?security=reality…#ivan-phone</div><button class="secondary">Copy</button></div>
+        <h2>Tunnels</h2>
+        ${tun.map((t,i) => `<div class="pcard"><div class="row">${qr("qrA-px-"+i, t.conf, 168)}<div><b>${t.name}</b> <span class="muted">${t.kind === "awg" ? "AmneziaWG" : "WireGuard"}${t.enable ? "" : " · disabled"}</span><div class="cfg">${esc(t.conf)}</div><button>Download .conf</button><button class="secondary">Copy</button></div></div></div>`).join("")}
+        <h2>Apps</h2><div class="pcard"><a class="app" href="#">Amnezia<span>Android · iOS · Win · macOS</span></a><a class="app" href="#">AmneziaWG<span>native</span></a><a class="app" href="#">V2rayNG<span>Android</span></a></div>
+      </div></div>`
+  };
+
+  /* ---------- Variant B: "Subscription-centric" — pick a subscription from a select; table grouped by subscription; page uses tabs ---------- */
+  const B = {
+    name: "B (Подписка как сущность: select, группировка, вкладки)",
+    modal: () => `
+      <div class="card modal"><div class="hd">Edit client · AmneziaWG <span class="mono">awg0</span></div>
+      <div class="bd">
+        <div class="fi"><label>Name</label><div class="in">ivan-phone</div></div>
+        <div class="fi"><label>Enable</label><div><span class="sw on"></span></div></div>
+        <div class="fi"><label>Subscription</label><div class="in sel"><span class="tag blue mono">${SUB}</span><span style="color:var(--pn-muted)">· ivan (VLESS + WG)</span></div></div>
+        <div class="hint">Список подписок панели: subId xray-клиентов и уже привязанных туннелей, с именами их клиентов. Пункты «Не включать» и «Новая подписка (сгенерировать)».</div>
+        <div class="fi"><label>Total traffic</label><div class="in"><span class="ph">0 = unlimited</span></div></div>
+        <div class="fi"><label>Expiry</label><div class="in"><span class="ph">never</span></div></div>
+      </div><div class="ft"><button class="btn">Cancel</button><button class="btn primary">Save</button></div></div>`,
+    table: () => {
+      const groups = [[SUB, "ivan · VLESS + AWG + WG"], ["mon-ru1-x8p2q", "monitoring probe"], ["", "Not in a subscription"]];
+      return `<div class="card tbl-wrap"><table class="tbl"><thead><tr><th>Operate</th><th>Enable</th><th>Client</th><th>Traffic</th><th>Expiry</th></tr></thead><tbody>
+      ${groups.map(([s,label]) => `<tr class="group"><td colspan="5">${s ? `<span class="tag blue mono">${s}</span> ${label} <button class="btn sm">Subscription link</button> <button class="btn sm">QR</button>` : `<span class="tag">${label}</span>`}</td></tr>
+        ${clients.filter(c => c.sub === s).map(c => `<tr><td class="ops"><button class="btn sm">⋯</button><button class="btn sm">▦</button></td><td><span class="sw ${c.enable?"on":""}"></span></td><td><span class="dot ${c.online?"":"off"}"></span>${c.name}</td><td>${c.traffic}</td><td>${c.exp}</td></tr>`).join("")}`).join("")}
+      </tbody></table></div>`;
+    },
+    page: () => `
+      <div class="card subpage">
+        <div class="title"><h2>Subscription</h2><span class="mono" style="color:var(--pn-muted)">${SUB}</span></div>
+        <div class="stats"><div><b>39.2 GB</b><span>used</span></div><div><b>100 GB</b><span>total</span></div><div><b>2026-01-01</b><span>expires</span></div></div>
+        <div class="tabs"><div>Xray · 1</div><div class="on">AmneziaWG · 1</div><div>WireGuard · 1</div></div>
+        <div class="cfgcard" style="grid-template-columns: auto 1fr">
+          ${qr("qrB-0", tun[0].conf, 232)}
+          <div class="meta"><div><b>${tun[0].name}</b> ${kindTag("awg")}</div>
+            <div style="color:var(--pn-muted)">Scan with AmneziaVPN or AmneziaWG. Desktop: download the file and import it.</div>
+            <div class="acts"><button class="btn primary">Download ${tun[0].filename}.conf</button><button class="btn">Copy config</button><button class="btn">Show text</button></div>
+            <small style="color:var(--pn-muted)">QR ≈ 916 bytes for AWG 3.x · rendered at 232 px (≥ 4 px per module)</small></div>
+        </div>
+        <div class="empty">Xray tab shows the subscription QR + links as today. Tunnel tabs show one config at a time; when a subscription has only tunnels, the Xray tab is hidden instead of the page failing.</div>
+      </div>`,
+    proxy: () => `
+      <div class="px"><div class="in">
+        <h1>Subscription</h1>
+        <div class="pcard pstats"><div><b>39.2 GB</b><span>Used</span></div><div><b>100 GB</b><span>Total</span></div><div><b>2026-01-01</b><span>Expires</span></div></div>
+        <div class="pcard" style="display:flex;gap:2px;padding:6px"><button class="secondary" style="margin:0">Xray</button><button style="margin:0 0 0 4px">AmneziaWG</button><button class="secondary" style="margin:0 0 0 4px">WireGuard</button></div>
+        <div class="pcard"><div class="row">${qr("qrB-px-0", tun[0].conf, 232)}<div><b>${tun[0].name}</b> <span class="muted">AmneziaWG</span><p class="muted">Scan with AmneziaVPN. On desktop download the file.</p><button>Download .conf</button><button class="secondary">Copy</button><button class="secondary">Show text</button></div></div></div>
+        <h2>Apps</h2><div class="pcard"><a class="app" href="#">Amnezia<span>all platforms</span></a><a class="app" href="#">AmneziaWG<span>native</span></a></div>
+      </div></div>`
+  };
+
+  /* ---------- Variant C: "Quiet" — toggle in modal, link icon only in the table, accordion on the page, QR on demand ---------- */
+  const C = {
+    name: "C (Тихий: переключатель, иконка, аккордеон)",
+    modal: () => `
+      <div class="card modal"><div class="hd">Edit client · AmneziaWG <span class="mono">awg0</span></div>
+      <div class="bd">
+        <div class="fi"><label>Name</label><div class="in">ivan-phone</div></div>
+        <div class="fi"><label>Enable</label><div><span class="sw on"></span></div></div>
+        <div class="fi"><label>In subscription</label><div><span class="sw on"></span> <span class="mono" style="margin-left:8px">${SUB}</span> <span class="ico" style="margin-left:6px;color:var(--pn-primary);cursor:pointer" title="Change">✎</span></div></div>
+        <div class="hint">Включено: subId сгенерирован автоматически (16 символов), карандаш открывает поле для ручного ввода или выбора существующего. Выключено: связка удаляется.</div>
+        <div class="fi"><label>Total traffic</label><div class="in"><span class="ph">0 = unlimited</span></div></div>
+        <div class="fi"><label>Expiry</label><div class="in"><span class="ph">never</span></div></div>
+      </div><div class="ft"><button class="btn">Cancel</button><button class="btn primary">Save</button></div></div>`,
+    table: () => `
+      <div class="card tbl-wrap"><table class="tbl"><thead><tr><th>Operate</th><th>Enable</th><th>Client</th><th>Traffic</th><th>Expiry</th></tr></thead><tbody>
+      ${clients.map(c => `<tr><td class="ops"><button class="btn sm">⋯</button><button class="btn sm" title="QR / config">▦</button><button class="btn sm" title="${c.sub ? "Subscription: "+c.sub : "Not in a subscription"}" ${c.sub ? "" : 'style="opacity:.35"'}>🔗</button></td>
+        <td><span class="sw ${c.enable?"on":""}"></span></td><td><span class="dot ${c.online?"":"off"}"></span>${c.name}</td><td>${c.traffic}</td><td>${c.exp}</td></tr>`).join("")}
+      </tbody></table></div>
+      <small style="color:var(--pn-muted)">Нет отдельной колонки: subId виден в тултипе иконки и в инфо-модалке клиента; иконка тусклая, если клиент не в подписке.</small>`,
+    page: () => `
+      <div class="card subpage">
+        <div class="title"><h2>Subscription</h2></div>
+        <div class="stats"><div><b>39.2 GB</b><span>used</span></div><div><b>100 GB</b><span>total</span></div><div><b>2026-01-01</b><span>expires</span></div></div>
+        <div class="qrbox"><div class="qr" id="qrC-sub" data-text="${subUrl}" data-px="160"></div><small>Subscription URL · xray apps</small></div>
+        <div class="acc">
+          <div><div class="hd"><span>▸ VLESS · ivan-phone</span><span class="tag">xray</span></div></div>
+          <div><div class="hd"><span>▾ AmneziaWG · ivan-phone</span>${kindTag("awg")}</div>
+            <div class="body" style="margin-top:10px">${qr("qrC-0", tun[0].conf, 200)}<div class="meta"><div class="acts"><button class="btn primary sm">Download ivan-phone.conf</button><button class="btn sm">Copy</button></div><small style="color:var(--pn-muted)">AmneziaVPN / AmneziaWG. Changes are not pushed to the app; download again after the server changes.</small></div></div></div>
+          <div><div class="hd"><span>▸ WireGuard · ivan-laptop</span><span class="tag warn">disabled</span></div></div>
+        </div>
+      </div>`,
+    proxy: () => `
+      <div class="px"><div class="in">
+        <h1>Subscription</h1>
+        <div class="pcard pstats"><div><b>39.2 GB</b><span>Used</span></div><div><b>100 GB</b><span>Total</span></div><div><b>2026-01-01</b><span>Expires</span></div></div>
+        <div class="pcard"><div class="row">${qr("qrC-px-sub", subUrl, 140)}<div><div class="cfg">${subUrl}</div><button>Copy subscription</button><button class="secondary">Copy VLESS JSON</button></div></div></div>
+        <div class="pcard"><b>AmneziaWG · ivan-phone</b><div><button>Download .conf</button><button class="secondary">Show QR</button><button class="secondary">Copy</button></div></div>
+        <div class="pcard" style="opacity:.6"><b>WireGuard · ivan-laptop</b> <span class="muted">disabled</span><div><button class="secondary">Download .conf</button></div></div>
+        <h2>Apps</h2><div class="pcard"><a class="app" href="#">Amnezia<span>all platforms</span></a></div>
+      </div></div>`
+  };
+
+  const VARIANTS = { A, B, C };
+  const KEYS = Object.keys(VARIANTS);
+  const I18N = `
+    <div class="card i18n" style="padding:16px"><h3 style="margin-bottom:8px">Строки для локализации (13 языков upstream, ключи добавляются в конец секций)</h3>
+    <table><tr><th>ключ</th><th>en_US</th><th>где</th></tr>
+    <tr><td class="mono">pages.inbounds.subscriptionTunnelDesc</td><td>Leave empty to keep this peer out of any subscription. Use the same ID as an Xray client to share one subscription.</td><td>модалка AWG/WG-клиента</td></tr>
+    <tr><td class="mono">pages.inbounds.tunnelSubscription</td><td>Subscription</td><td>колонка/группа/тултип в таблице</td></tr>
+    <tr><td class="mono">pages.inbounds.notInSubscription</td><td>Not in a subscription</td><td>таблица, тултип</td></tr>
+    <tr><td class="mono">pages.settings.subTunEnable / subTunPath / subTunURI / subTunPathDesc</td><td>Enable tunnel subscription / Tunnel subscription path / Tunnel subscription URI / Serves AmneziaWG and WireGuard configs of a subscription as JSON</td><td>Settings → Subscription</td></tr>
+    <tr><td class="mono">subscription.tunnels</td><td>Tunnels</td><td>страница подписки</td></tr>
+    <tr><td class="mono">subscription.downloadConf</td><td>Download .conf</td><td>страница подписки</td></tr>
+    <tr><td class="mono">subscription.copyConf</td><td>Copy config</td><td>страница подписки</td></tr>
+    <tr><td class="mono">subscription.tunnelHint</td><td>Open with AmneziaVPN or the AmneziaWG / WireGuard app. Changes are not pushed: download again after the server changes.</td><td>страница подписки</td></tr>
+    <tr><td class="mono">subscription.noTunnels</td><td>No tunnel configs in this subscription</td><td>страница подписки, пустой /tun</td></tr>
+    </table>
+    <p style="color:var(--pn-muted);margin:8px 0 0">Страница proxy front (proxy/subpage.html) не локализована и остаётся английской, как сейчас.</p></div>`;
+
+  function render(key) {
+    const v = VARIANTS[key];
+    document.getElementById("app").innerHTML = `
+      <div class="intro">PROTOTYPE · тикет #35 карты #30 · <b>${v.name}</b> · переключение: ← → или ?variant=A|B|C. Данные примерные: подписка <b>${SUB}</b> с одним VLESS-клиентом, одним AWG-пиром и одним WG-пиром; QR построен из настоящего текста .conf.</div>
+      ${surface("1 · Модалка AWG/WG-клиента", "web/html/form/client.html: сейчас поле Subscription спрятано для AWG/WG", v.modal())}
+      ${surface("2 · Таблица клиентов inbound'а", "web/html/inbounds.html: pseudo-inbound AWG/WG, колонки innerColumnsWg", v.table())}
+      ${surface("3 · Страница подписки панели", "/sub/<subId> при Accept: text/html; блок подтягивает /tun/<subId>", v.page())}
+      ${surface("4 · Страница proxy front", "proxy/subpage.html: серверный fetch /tun при рендере", v.proxy())}
+      ${I18N}`;
+    document.querySelectorAll(".qr[data-text]").forEach(el => {
+      const px = +el.dataset.px;
+      el.innerHTML = "";
+      new QRCode(el, { text: el.dataset.text, width: px, height: px, correctLevel: QRCode.CorrectLevel.L });
+    });
+    document.getElementById("lbl").innerHTML = `<b>${key}</b> ${v.name.replace(/^[A-C] /, "")}`;
+  }
+  function current() { const k = new URLSearchParams(location.search).get("variant"); return KEYS.includes(k) ? k : "A"; }
+  function go(delta) {
+    const i = (KEYS.indexOf(current()) + delta + KEYS.length) % KEYS.length;
+    const u = new URL(location.href); u.searchParams.set("variant", KEYS[i]); history.replaceState(null, "", u);
+    render(KEYS[i]);
+  }
+  document.getElementById("prev").onclick = () => go(-1);
+  document.getElementById("next").onclick = () => go(1);
+  document.addEventListener("keydown", e => {
+    const t = e.target; if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (e.key === "ArrowLeft") go(-1); if (e.key === "ArrowRight") go(1);
+  });
+  render(current());
+})();
+</script>
