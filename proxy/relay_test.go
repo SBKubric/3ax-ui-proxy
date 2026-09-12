@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/coinman-dev/3ax-ui/v2/relaymanifest"
 	"github.com/coinman-dev/3ax-ui/v2/util/json_util"
 )
 
@@ -21,10 +23,7 @@ func TestBuildRelayConfig(t *testing.T) {
 			{"listen":"127.0.0.1","port":10085,"protocol":"vmess","tag":"internal"}
 		]
 	}`
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(panelCfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := writePanelCfg(t, panelCfg)
 
 	cfg, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", nil)
 	if err != nil {
@@ -73,23 +72,45 @@ func TestBuildRelayConfig(t *testing.T) {
 
 func TestBuildRelayConfigNoInbounds(t *testing.T) {
 	// Only an internal api inbound -> nothing to relay -> error.
-	panelCfg := `{"inbounds":[{"listen":"127.0.0.1","port":62789,"protocol":"dokodemo-door","tag":"api"}]}`
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(panelCfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := writePanelCfg(t, `{"inbounds":[{"listen":"127.0.0.1","port":62789,"protocol":"dokodemo-door","tag":"api"}]}`)
 	if _, _, err := BuildRelayConfig(path, "1.2.3.4", "::", nil); err == nil {
 		t.Fatal("expected error when there are no relayable inbounds, got nil")
 	}
 }
 
+// writePanelCfg stores body as a relay manifest: the inbounds given, under the
+// marker the relay insists on. Bodies are written in the manifest's own field
+// whitelist, so wrapping is all it takes.
 func writePanelCfg(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.json")
+	body = strings.Replace(strings.TrimSpace(body), "{", `{"relayManifest":{"version":1},`, 1)
+	path := filepath.Join(t.TempDir(), "relay-manifest.json")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestBuildRelayConfigRefusesRawPanelConfig(t *testing.T) {
+	// The panel's bin/config.json, keys and all, must never be accepted as the
+	// relay's input — only a relay manifest exported from the panel is.
+	raw := `{"log":{"loglevel":"warning"},"inbounds":[{"port":443,"protocol":"vless","tag":"inbound-443",
+	  "settings":{"clients":[{"id":"x"}],"decryption":"none"},
+	  "streamSettings":{"security":"reality","realitySettings":{"privateKey":"SECRET"}}}],
+	  "outbounds":[{"protocol":"freedom"}]}`
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := BuildRelayConfig(path, "1.2.3.4", "::", nil)
+	if err == nil {
+		t.Fatal("a raw panel config was accepted as relay input")
+	}
+	for _, want := range []string{"not a relay manifest", "x-ui relay-manifest"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
 }
 
 func relaySettings(t *testing.T, in json_util.RawMessage) (port int, network string) {
@@ -155,7 +176,7 @@ func TestBuildRelayConfigSkipsTransparentInbounds(t *testing.T) {
 		"inbounds": [
 			{"port":443,"protocol":"vless","tag":"inbound-443"},
 			{"listen":"::","port":12345,"protocol":"dokodemo-door","tag":"my-tunnel",
-			 "settings":{"network":"tcp,udp","followRedirect":true},
+			 "settings":{"followRedirect":true},
 			 "streamSettings":{"sockopt":{"tproxy":"tproxy"}}},
 			{"listen":"::","port":12346,"protocol":"dokodemo-door","tag":"redir",
 			 "settings":{"followRedirect":true}},
@@ -175,17 +196,17 @@ func TestBuildRelayConfigSkipsTransparentInbounds(t *testing.T) {
 }
 
 func TestSkipReason(t *testing.T) {
-	plain := panelInbound{Port: 443, Protocol: "vless", Tag: "inbound-443"}
+	plain := relaymanifest.Inbound{Port: 443, Protocol: "vless", Tag: "inbound-443"}
 	if r := skipReason(plain); r != "" {
 		t.Errorf("public inbound skipped: %q", r)
 	}
 	// A plain dokodemo-door port map (no redirect, no tproxy) is a real public
 	// inbound and must still be relayed.
-	portMap := panelInbound{Port: 8080, Protocol: "dokodemo-door", Tag: "portmap"}
+	portMap := relaymanifest.Inbound{Port: 8080, Protocol: "dokodemo-door", Tag: "portmap"}
 	if r := skipReason(portMap); r != "" {
 		t.Errorf("dokodemo port map skipped: %q", r)
 	}
-	tagged := panelInbound{Port: 12345, Protocol: "dokodemo-door", Tag: "awg-tproxy-in"}
+	tagged := relaymanifest.Inbound{Port: 12345, Protocol: "dokodemo-door", Tag: "awg-tproxy-in"}
 	if r := skipReason(tagged); r == "" {
 		t.Error("awg-tproxy-in not skipped")
 	}

@@ -51,7 +51,7 @@ func TestParseUserinfo(t *testing.T) {
 
 func TestPageRenders(t *testing.T) {
 	s, err := NewSubServer(&Config{
-		UpstreamHost: "1.2.3.4", XrayConfigPath: "x", UpstreamBase: "https://1.2.3.4:2096",
+		UpstreamHost: "1.2.3.4", RelayManifestPath: "x", UpstreamBase: "https://1.2.3.4:2096",
 		SubPath: "/sub/", JsonPath: "/json/", SubPort: 2096,
 	})
 	if err != nil {
@@ -80,7 +80,7 @@ func TestPageRenders(t *testing.T) {
 func TestPublicURLAndProfileHeaderRewrite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	s, err := NewSubServer(&Config{
-		UpstreamHost: "1.2.3.4", XrayConfigPath: "x", UpstreamBase: "https://1.2.3.4:2096",
+		UpstreamHost: "1.2.3.4", RelayManifestPath: "x", UpstreamBase: "https://1.2.3.4:2096",
 		SubPath: "/sub/", JsonPath: "/json/", SubPort: 2096,
 	})
 	if err != nil {

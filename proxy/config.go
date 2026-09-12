@@ -15,7 +15,7 @@ import (
 
 // Config is the proxy-front runtime configuration, loaded from a JSON file given
 // via `x-ui proxy -c <file>`. The real server address is provided here separately
-// from the exported panel xray config (which is only mined for inbound ports).
+// from the relay manifest (which only lists the inbound ports to relay).
 type Config struct {
 	// --- Relay: forwards client traffic to the real server ---
 
@@ -23,9 +23,12 @@ type Config struct {
 	// forwarded to (the dokodemo-door destination).
 	UpstreamHost string `json:"upstreamHost"`
 
-	// XrayConfigPath points to the real panel's exported xray config.json. Only the
-	// inbound ports are read from it, to build the dokodemo-door relay.
-	XrayConfigPath string `json:"xrayConfigPath"`
+	// RelayManifestPath points to the relay manifest exported from the real
+	// panel (`x-ui relay-manifest`): the sanitised list of inbounds the relay
+	// opens ports for. A raw panel config.json is refused. When the file does
+	// not exist yet, `x-ui proxy` starts in bootstrap mode and serves a setup
+	// page to paste it in (see setup.go); the file is written here.
+	RelayManifestPath string `json:"relayManifestPath"`
 
 	// RelayListen is the address the dokodemo-door relay binds on. Defaults to
 	// "::" (dual-stack — accepts both IPv4 and IPv6); set "0.0.0.0" on hosts with
@@ -33,13 +36,14 @@ type Config struct {
 	RelayListen string `json:"relayListen"`
 
 	// ExtraPorts lists the real server's public ports that are not xray inbounds
-	// and therefore never appear in XrayConfigPath — AmneziaWG / WireGuard
+	// and therefore never appear in RelayManifestPath — AmneziaWG / WireGuard
 	// listeners, the MTProto sidecar — but must be relayed all the same. Each
 	// entry is "<port>/<tcp|udp|tcp+udp>"; the protocol suffix is mandatory. A
 	// port that is also an xray inbound in the panel config is an error.
 	ExtraPorts []string `json:"extraPorts"`
 
 	extraPorts []ExtraPort
+	path       string // where this config was loaded from (for SetupURLPath)
 
 	// --- Subscription server: the proxy's own /sub + /json endpoints, proxied
 	// from the real panel. Enabled when UpstreamBase is set. ---
@@ -114,6 +118,9 @@ func parseExtraPorts(entries []string) ([]ExtraPort, error) {
 	return out, nil
 }
 
+// Path is the file this config was loaded from ("" when built in code).
+func (c *Config) Path() string { return c.path }
+
 // ExtraRelayPorts returns the parsed ExtraPorts entries.
 func (c *Config) ExtraRelayPorts() []ExtraPort { return c.extraPorts }
 
@@ -130,21 +137,21 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read proxy config %q: %w", path, err)
 	}
-	cfg := &Config{}
+	cfg := &Config{path: path}
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse proxy config %q: %w", path, err)
 	}
 
 	cfg.UpstreamHost = strings.TrimSpace(cfg.UpstreamHost)
-	cfg.XrayConfigPath = strings.TrimSpace(cfg.XrayConfigPath)
+	cfg.RelayManifestPath = strings.TrimSpace(cfg.RelayManifestPath)
 	cfg.UpstreamBase = strings.TrimRight(strings.TrimSpace(cfg.UpstreamBase), "/")
 	cfg.Domain = strings.TrimSpace(cfg.Domain)
 
 	if cfg.UpstreamHost == "" {
 		return nil, fmt.Errorf("proxy config %q: upstreamHost is required", path)
 	}
-	if cfg.XrayConfigPath == "" {
-		return nil, fmt.Errorf("proxy config %q: xrayConfigPath is required", path)
+	if cfg.RelayManifestPath == "" {
+		return nil, fmt.Errorf("proxy config %q: relayManifestPath is required (the relay manifest exported from the panel; the former xrayConfigPath is gone — a raw panel config is no longer accepted)", path)
 	}
 
 	cfg.RelayListen = strings.TrimSpace(cfg.RelayListen)

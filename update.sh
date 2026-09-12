@@ -800,6 +800,9 @@ config_debug_mode_after_update() {
 config_after_update() {
     if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
         echo -e "${green}Proxy-front mode — keeping /etc/x-ui/proxy.json unchanged.${plain}"
+        if grep -q '"xrayConfigPath"' /etc/x-ui/proxy.json 2>/dev/null; then
+            echo -e "${red}/etc/x-ui/proxy.json still uses \"xrayConfigPath\": this release reads a relay manifest instead (key \"relayManifestPath\", file /etc/x-ui/relay-manifest.json) and refuses the panel's raw config.json. Re-run the installer in proxy mode, or edit proxy.json and paste a manifest from the real panel (x-ui relay-manifest) — the service will not start until then.${plain}"
+        fi
         return
     fi
     if [[ "${XUI_DEBUG_MODE:-}" == "1" ]]; then

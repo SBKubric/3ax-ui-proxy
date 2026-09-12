@@ -492,6 +492,7 @@ func main() {
 		fmt.Println("    setting        set settings")
 		fmt.Println("    proxy          run sacrificial proxy front (dokodemo relay + sub)")
 		fmt.Println("    relay-manifest print the relay manifest for a proxy front (ports only, no keys)")
+		fmt.Println("    proxy-setup-url show the pending setup-page link of a proxy front")
 	}
 
 	flag.Parse()
@@ -573,6 +574,20 @@ func main() {
 			log.Fatalf("relay-manifest: %v", err)
 		}
 		fmt.Printf("relay manifest written to %s\n", manifestOut)
+	case "proxy-setup-url":
+		urlCmd := flag.NewFlagSet("proxy-setup-url", flag.ExitOnError)
+		var urlCfgPath string
+		urlCmd.StringVar(&urlCfgPath, "c", "/etc/x-ui/proxy.json", "path to the proxy-front config JSON")
+		if err := urlCmd.Parse(os.Args[2:]); err != nil {
+			fmt.Println(err)
+			return
+		}
+		data, err := os.ReadFile(proxy.SetupURLPath(urlCfgPath))
+		if err != nil {
+			fmt.Println("no setup page pending: the relay manifest is in place, or `x-ui proxy` is not running")
+			os.Exit(1)
+		}
+		os.Stdout.Write(data)
 	case "proxy":
 		proxyCmd := flag.NewFlagSet("proxy", flag.ExitOnError)
 		var proxyConfigPath string

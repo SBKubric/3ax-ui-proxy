@@ -8,6 +8,7 @@ import (
 
 	"github.com/coinman-dev/3ax-ui/v2/config"
 	"github.com/coinman-dev/3ax-ui/v2/logger"
+	"github.com/coinman-dev/3ax-ui/v2/relaymanifest"
 	"github.com/coinman-dev/3ax-ui/v2/util/json_util"
 	"github.com/coinman-dev/3ax-ui/v2/xray"
 )
@@ -16,22 +17,6 @@ import (
 // xray.NewTestProcess removes it again when the relay is stopped.
 func relayConfigPath() string {
 	return config.GetBinFolderPath() + "/proxy-relay.json"
-}
-
-// panelInbound is the minimal shape read from the real panel's xray config.
-type panelInbound struct {
-	Listen   string `json:"listen"`
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol"`
-	Tag      string `json:"tag"`
-	Settings struct {
-		FollowRedirect bool `json:"followRedirect"`
-	} `json:"settings"`
-	StreamSettings struct {
-		Sockopt struct {
-			Tproxy string `json:"tproxy"`
-		} `json:"sockopt"`
-	} `json:"streamSettings"`
 }
 
 // tproxyTagSuffix is what the panel names its synthetic transparent-proxy
@@ -43,13 +28,15 @@ const tproxyTagSuffix = "-tproxy-in"
 // redirects into it (TPROXY / REDIRECT). The panel adds one per tunnel whose
 // traffic is routed via Xray; nothing outside can dial it, so relaying it would
 // just open a dead port on the proxy front.
-func transparent(in panelInbound) bool {
+func transparent(in relaymanifest.Inbound) bool {
 	if in.Protocol == "dokodemo-door" {
-		switch strings.ToLower(in.StreamSettings.Sockopt.Tproxy) {
-		case "tproxy", "redirect":
-			return true
+		if in.StreamSettings != nil && in.StreamSettings.Sockopt != nil {
+			switch strings.ToLower(in.StreamSettings.Sockopt.Tproxy) {
+			case "tproxy", "redirect":
+				return true
+			}
 		}
-		if in.Settings.FollowRedirect {
+		if in.Settings != nil && in.Settings.FollowRedirect {
 			return true
 		}
 	}
@@ -59,7 +46,7 @@ func transparent(in panelInbound) bool {
 // skipReason explains why a panel inbound is not relayed, or returns "" when it
 // should be. Only public-facing ports are relayed: the gRPC api tunnel, loopback
 // binds, unix-socket fallbacks and transparent-proxy inbounds are skipped.
-func skipReason(in panelInbound) string {
+func skipReason(in relaymanifest.Inbound) string {
 	if in.Port <= 0 {
 		return "no port"
 	}
@@ -92,35 +79,33 @@ func relayInbound(listenJSON []byte, upstreamHost string, port int, network stri
 	}
 }
 
-// BuildRelayConfig reads the real panel's exported xray config and builds a
-// dokodemo-door relay config that L4-forwards every public inbound port to
-// upstreamHost (raw TCP+UDP, so the real server still terminates TLS/Reality and
-// no keys live on the proxy), plus every extra port the real server serves
-// outside xray (AmneziaWG/WireGuard, MTProto). An extra port that is also an
-// xray inbound is rejected: one port, one source. It returns the config plus
-// the relayed ports.
-func BuildRelayConfig(panelXrayCfgPath, upstreamHost, listen string, extra []ExtraPort) (*xray.Config, []int, error) {
+// BuildRelayConfig reads the relay manifest exported from the real panel and
+// builds a dokodemo-door relay config that L4-forwards every public inbound
+// port to upstreamHost (raw TCP+UDP, so the real server still terminates
+// TLS/Reality and no keys live on the proxy), plus every extra port the real
+// server serves outside xray (AmneziaWG/WireGuard, MTProto). Anything but a
+// relay manifest — a raw panel config.json in particular — is refused. An
+// extra port that is also an xray inbound is rejected: one port, one source.
+// It returns the config plus the relayed ports.
+func BuildRelayConfig(manifestPath, upstreamHost, listen string, extra []ExtraPort) (*xray.Config, []int, error) {
 	if listen == "" {
 		listen = "::"
 	}
 	listenJSON, _ := json.Marshal(listen)
 
-	data, err := os.ReadFile(panelXrayCfgPath)
+	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read panel xray config %q: %w", panelXrayCfgPath, err)
+		return nil, nil, fmt.Errorf("read relay manifest %q: %w", manifestPath, err)
 	}
-
-	var parsed struct {
-		Inbounds []panelInbound `json:"inbounds"`
-	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil, nil, fmt.Errorf("parse panel xray config %q: %w", panelXrayCfgPath, err)
+	manifest, err := relaymanifest.Validate(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("relay manifest %q: %w", manifestPath, err)
 	}
 
 	var inbounds []xray.InboundConfig
 	var ports []int
 	seen := make(map[int]bool)
-	for _, in := range parsed.Inbounds {
+	for _, in := range manifest.Inbounds {
 		if reason := skipReason(in); reason != "" {
 			logger.Infof("proxy-front: not relaying inbound %q (port %d): %s", in.Tag, in.Port, reason)
 			continue
@@ -135,7 +120,7 @@ func BuildRelayConfig(panelXrayCfgPath, upstreamHost, listen string, extra []Ext
 
 	for _, ep := range extra {
 		if seen[ep.Port] {
-			return nil, nil, fmt.Errorf("extra port %d is already an xray inbound in %q", ep.Port, panelXrayCfgPath)
+			return nil, nil, fmt.Errorf("extra port %d is already an xray inbound in %q", ep.Port, manifestPath)
 		}
 		seen[ep.Port] = true
 		ports = append(ports, ep.Port)
@@ -143,7 +128,7 @@ func BuildRelayConfig(panelXrayCfgPath, upstreamHost, listen string, extra []Ext
 	}
 
 	if len(inbounds) == 0 {
-		return nil, nil, fmt.Errorf("no relayable inbounds found in %q and no extraPorts configured", panelXrayCfgPath)
+		return nil, nil, fmt.Errorf("no relayable inbounds found in %q and no extraPorts configured", manifestPath)
 	}
 
 	cfg := &xray.Config{
@@ -163,7 +148,7 @@ type Relay struct {
 // NewRelay builds the relay config from cfg and prepares (but does not start) the
 // xray process.
 func NewRelay(cfg *Config) (*Relay, error) {
-	xrayCfg, ports, err := BuildRelayConfig(cfg.XrayConfigPath, cfg.UpstreamHost, cfg.RelayListen, cfg.ExtraRelayPorts())
+	xrayCfg, ports, err := BuildRelayConfig(cfg.RelayManifestPath, cfg.UpstreamHost, cfg.RelayListen, cfg.ExtraRelayPorts())
 	if err != nil {
 		return nil, err
 	}

@@ -2627,8 +2627,11 @@ check_existing_install() {
 # proxies the real panel — instead of the web panel. No DB, no AmneziaWG/WireGuard,
 # no panel web UI. Activated by XUI_PROXY_MODE=1 (or the interactive prompt below);
 # parameters come from PROXY_* env vars, with prompts for missing required ones on
-# a TTY. The real panel's exported xray config.json must be present on this box so
-# the relay knows which ports to forward.
+# a TTY. The relay learns its ports from a relay manifest exported on the real
+# panel (`x-ui relay-manifest`): pass its path in PROXY_RELAY_MANIFEST for a
+# scripted install, or leave it unset and paste the manifest into the one-time
+# setup page the proxy front serves after start (link printed at the end). A raw
+# panel config.json is refused either way.
 prompt_proxy_mode() {
     if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
         if [[ -t 0 && "${XUI_DEBUG_MODE:-}" != "1" ]]; then
@@ -2654,10 +2657,6 @@ prompt_proxy_mode() {
         echo -en "${yellow}Real (hidden) server address to relay traffic to: ${plain}"
         read -r PROXY_UPSTREAM_HOST
     fi
-    if [[ -z "${PROXY_XRAY_CONFIG:-}" && -t 0 ]]; then
-        echo -en "${yellow}Path to the real panel's exported xray config.json: ${plain}"
-        read -r PROXY_XRAY_CONFIG
-    fi
     if [[ -z "${PROXY_UPSTREAM_BASE:-}" && -t 0 ]]; then
         echo -en "${yellow}Real panel subscription base URL (e.g. https://1.2.3.4:2096), blank = no sub server: ${plain}"
         read -r PROXY_UPSTREAM_BASE
@@ -2674,12 +2673,26 @@ prompt_proxy_mode() {
     : "${PROXY_SUB_PORT:=2096}"
     : "${PROXY_SUB_PATH:=/sub/}"
     : "${PROXY_JSON_PATH:=/json/}"
-    export PROXY_UPSTREAM_HOST PROXY_XRAY_CONFIG PROXY_UPSTREAM_BASE PROXY_DOMAIN PROXY_EXTRA_PORTS
+    export PROXY_UPSTREAM_HOST PROXY_RELAY_MANIFEST PROXY_UPSTREAM_BASE PROXY_DOMAIN PROXY_EXTRA_PORTS
     export PROXY_SUB_PORT PROXY_SUB_PATH PROXY_JSON_PATH PROXY_CERT PROXY_KEY
 
-    if [[ -z "${PROXY_UPSTREAM_HOST}" || -z "${PROXY_XRAY_CONFIG}" ]]; then
-        echo -e "${red}Proxy mode requires PROXY_UPSTREAM_HOST and PROXY_XRAY_CONFIG (env vars or prompts).${plain}"
+    if [[ -z "${PROXY_UPSTREAM_HOST}" ]]; then
+        echo -e "${red}Proxy mode requires PROXY_UPSTREAM_HOST (env var or prompt).${plain}"
         exit 1
+    fi
+    if [[ -n "${PROXY_XRAY_CONFIG:-}" ]]; then
+        echo -e "${red}PROXY_XRAY_CONFIG is gone: the proxy front no longer takes the panel's config.json. Export a relay manifest on the real panel (x-ui relay-manifest) and pass it as PROXY_RELAY_MANIFEST, or leave it unset and paste it into the setup page.${plain}"
+        exit 1
+    fi
+    if [[ -n "${PROXY_RELAY_MANIFEST:-}" ]]; then
+        if [[ ! -f "${PROXY_RELAY_MANIFEST}" ]]; then
+            echo -e "${red}PROXY_RELAY_MANIFEST '${PROXY_RELAY_MANIFEST}' not found.${plain}"
+            exit 1
+        fi
+        if ! grep -q '"relayManifest"' "${PROXY_RELAY_MANIFEST}"; then
+            echo -e "${red}'${PROXY_RELAY_MANIFEST}' is not a relay manifest (no \"relayManifest\" marker) — it looks like a raw xray config, which must not be copied to this box. Generate the manifest on the real panel: x-ui relay-manifest${plain}"
+            exit 1
+        fi
     fi
     if ! [[ "${PROXY_SUB_PORT}" =~ ^[0-9]+$ ]]; then
         echo -e "${yellow}PROXY_SUB_PORT '${PROXY_SUB_PORT}' is not numeric — defaulting to 2096.${plain}"
@@ -2703,22 +2716,24 @@ proxy_extra_ports_json() {
     echo "[${out}]"
 }
 
-# Writes /etc/x-ui/proxy.json (and stages the panel's xray config) from the
-# PROXY_* values gathered by prompt_proxy_mode.
+# Writes /etc/x-ui/proxy.json (and stages the relay manifest when one was
+# given) from the PROXY_* values gathered by prompt_proxy_mode.
 config_proxy_mode() {
     mkdir -p /etc/x-ui
-    local panel_xray="/etc/x-ui/panel-xray.json"
-    if [[ -f "${PROXY_XRAY_CONFIG}" ]]; then
-        cp -f "${PROXY_XRAY_CONFIG}" "${panel_xray}"
-        echo -e "${green}Copied panel xray config → ${panel_xray}${plain}"
+    local manifest="/etc/x-ui/relay-manifest.json"
+    if [[ -n "${PROXY_RELAY_MANIFEST:-}" ]]; then
+        cp -f "${PROXY_RELAY_MANIFEST}" "${manifest}"
+        chmod 600 "${manifest}"
+        echo -e "${green}Installed relay manifest → ${manifest}${plain}"
     else
-        echo -e "${yellow}⚠ '${PROXY_XRAY_CONFIG}' not found. Copy the real panel's bin/config.json to ${panel_xray}, then run: systemctl restart x-ui${plain}"
+        rm -f "${manifest}"
+        echo -e "${yellow}No relay manifest given — the proxy front will start in bootstrap mode and wait for one on its setup page.${plain}"
     fi
 
     cat >/etc/x-ui/proxy.json <<EOF
 {
   "upstreamHost": "${PROXY_UPSTREAM_HOST}",
-  "xrayConfigPath": "${panel_xray}",
+  "relayManifestPath": "${manifest}",
   "relayListen": "${PROXY_RELAY_LISTEN:-::}",
   "extraPorts": $(proxy_extra_ports_json),
   "upstreamBase": "${PROXY_UPSTREAM_BASE}",
@@ -2789,7 +2804,25 @@ print_proxy_footer() {
     echo -e "  Relay target (real server): ${blue}${PROXY_UPSTREAM_HOST}${plain}"
     echo -e "  Subscription upstream:      ${blue}${PROXY_UPSTREAM_BASE:-<disabled>}${plain}"
     echo -e "  Proxy config:               ${blue}/etc/x-ui/proxy.json${plain}"
-    echo -e "  Panel xray config:          ${blue}/etc/x-ui/panel-xray.json${plain}"
+    echo -e "  Relay manifest:             ${blue}/etc/x-ui/relay-manifest.json${plain}"
+    if [[ -z "${PROXY_RELAY_MANIFEST:-}" ]]; then
+        local __setup_url="" __i
+        for __i in 1 2 3 4 5 6 7 8 9 10; do
+            [[ -s /etc/x-ui/proxy-setup.url ]] && { __setup_url=$(cat /etc/x-ui/proxy-setup.url); break; }
+            sleep 1
+        done
+        echo -e ""
+        if [[ -n "${__setup_url}" ]]; then
+            echo -e "  ${yellow}No relay manifest yet. On the REAL panel run 'x-ui relay-manifest' (or Settings →${plain}"
+            echo -e "  ${yellow}Subscription → Show manifest) and paste the result at this one-time link:${plain}"
+            echo -e ""
+            echo -e "      ${green}${__setup_url}${plain}"
+            echo -e ""
+            echo -e "  ${yellow}The relay starts as soon as it is accepted. Show the link again: x-ui proxy-setup-url${plain}"
+        else
+            echo -e "  ${red}The setup page did not come up — check: x-ui log${plain}"
+        fi
+    fi
     echo -e ""
     echo -e "  ${yellow}On the REAL panel, enable the host override (GUI → subscription settings, or${plain}"
     echo -e "  ${yellow}'/proxy <this-host>' in the Telegram bot) so client configs point here.${plain}"

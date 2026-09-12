@@ -3,6 +3,7 @@ package proxy
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,7 +51,7 @@ func writeProxyCfg(t *testing.T, body string) string {
 }
 
 func TestLoadConfigExtraPorts(t *testing.T) {
-	path := writeProxyCfg(t, `{"upstreamHost":"1.2.3.4","xrayConfigPath":"/etc/x-ui/panel-xray.json","extraPorts":["51820/udp","","8443/tcp"]}`)
+	path := writeProxyCfg(t, `{"upstreamHost":"1.2.3.4","relayManifestPath":"/etc/x-ui/relay-manifest.json","extraPorts":["51820/udp","","8443/tcp"]}`)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -69,11 +70,21 @@ func TestLoadConfigExtraPorts(t *testing.T) {
 
 func TestLoadConfigExtraPortsRejectsBadEntries(t *testing.T) {
 	for _, body := range []string{
-		`{"upstreamHost":"1.2.3.4","xrayConfigPath":"/x","extraPorts":["51820"]}`,
-		`{"upstreamHost":"1.2.3.4","xrayConfigPath":"/x","extraPorts":["51820/udp","51820/tcp"]}`,
+		`{"upstreamHost":"1.2.3.4","relayManifestPath":"/x","extraPorts":["51820"]}`,
+		`{"upstreamHost":"1.2.3.4","relayManifestPath":"/x","extraPorts":["51820/udp","51820/tcp"]}`,
 	} {
 		if _, err := LoadConfig(writeProxyCfg(t, body)); err == nil {
 			t.Errorf("LoadConfig(%s): expected error, got nil", body)
 		}
+	}
+}
+
+// TestLoadConfigRequiresRelayManifestPath: the input was renamed without an
+// alias (ADR 0001) — a proxy.json still saying xrayConfigPath must fail
+// loudly and name the new key, not silently run with no relay input.
+func TestLoadConfigRequiresRelayManifestPath(t *testing.T) {
+	_, err := LoadConfig(writeProxyCfg(t, `{"upstreamHost":"1.2.3.4","xrayConfigPath":"/etc/x-ui/panel-xray.json"}`))
+	if err == nil || !strings.Contains(err.Error(), "relayManifestPath") {
+		t.Fatalf("want an error naming relayManifestPath, got %v", err)
 	}
 }
