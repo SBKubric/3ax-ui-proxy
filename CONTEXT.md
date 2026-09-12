@@ -20,7 +20,15 @@ _Avoid_: forwarder, tunnel
 Публичный порт real server, который relay открывает у себя и пробрасывает один-в-один. Складывается из xray inbound ports и extra ports.
 
 **Xray inbound port**:
-Relayed port, который relay узнаёт из экспортированного xray-конфига панели.
+Relayed port, который relay узнаёт из relay manifest.
+
+**Relay manifest**:
+Санированная выписка из xray-конфига real server — только адрес, порт, протокол, тег и признак TPROXY каждого inbound'а, без ключей и паролей; единственный вход relay об xray inbound ports.
+_Avoid_: panel config, exported config.json, panel-xray.json
+
+**Setup page**:
+Одноразовая страница на proxy front по секретной ссылке, через которую владелец вставляет relay manifest; исчезает, как только манифест принят.
+_Avoid_: bootstrap page, onboarding, wizard
 
 **Extra port**:
 Relayed port, который real server обслуживает вне xray (AmneziaWG, WireGuard, MTProto) и который поэтому перечисляется в конфиге proxy front явно.
