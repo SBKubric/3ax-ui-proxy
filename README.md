@@ -268,26 +268,28 @@ With the override on, the Telegram bot also hands out the **proxy** subscription
 
 **b) Proxy run mode (`x-ui proxy`).** A separate, disposable box runs the same binary in proxy mode and does two things:
 
-- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every public inbound port to the real server (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on the proxy**. Ports the real server serves *outside* xray (AmneziaWG / WireGuard listeners, the MTProto sidecar) are not in its xray config, so list them as **extra ports** (`"extraPorts": ["51820/udp"]` in `proxy.json`, or `PROXY_EXTRA_PORTS=51820/udp,51821/udp` at install time); the protocol suffix is mandatory and an extra port may not double an xray inbound port.
+- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every public inbound port to the real server (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on the proxy**. The relay learns the ports from a **relay manifest** — a sanitised excerpt of the real panel's xray config (listen address, port, protocol and tag of each inbound, nothing else) that the real panel exports; the panel's raw `config.json` is refused. Ports the real server serves *outside* xray (AmneziaWG / WireGuard listeners, the MTProto sidecar) are not in that manifest, so list them as **extra ports** (`"extraPorts": ["51820/udp"]` in `proxy.json`, or `PROXY_EXTRA_PORTS=51820/udp,51821/udp` at install time); the protocol suffix is mandatory and an extra port may not double an xray inbound port.
 - **Serves subscriptions** — it fetches `/sub` and `/json` from the real panel and re-serves them: apps get the raw subscription, browsers get a custom page (traffic stats, QR, a **Copy VLESS JSON** button, and a curated app list).
 
 **Deploying a proxy front:**
 
-1. On the real panel, copy its xray config (`/usr/local/x-ui/bin/config.json`) to the proxy box (e.g. `/root/panel-config.json`) — the relay reads the inbound ports from it.
-2. On the proxy box, run the installer in proxy mode:
+1. On the proxy box, run the installer in proxy mode:
 
 ```bash
 PROXY_UPSTREAM_HOST=<real-server-ip> \
 PROXY_UPSTREAM_BASE=https://<real-server-ip>:2096 \
-PROXY_XRAY_CONFIG=/root/panel-config.json \
 PROXY_DOMAIN=proxy.example.com \
 PROXY_EXTRA_PORTS=51820/udp \
-XUI_PROXY_MODE=1 bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh)
+XUI_PROXY_MODE=1 bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/install.sh)
 ```
 
-(or run `install.sh` on a terminal and answer the **"Install as PROXY FRONT?"** prompt). Settings live in `/etc/x-ui/proxy.json`; the box runs `x-ui proxy` as the `x-ui` service, and `update.sh` auto-detects a proxy box and updates it in proxy mode.
+(or run `install.sh` on a terminal and answer the **"Install as PROXY FRONT?"** prompt). The installer ends with a one-time **setup link** like `http://<proxy-ip>:2096/setup/<token>` — the box is now in *bootstrap mode*: it serves only that page and waits for a relay manifest.
 
-3. On the real panel, point the host override at the proxy's domain/IP (step **a**).
+2. On the real panel, get the **relay manifest**: run `x-ui relay-manifest` on the server, or open **Panel Settings → Subscription → Show manifest** and press **Copy**. It lists ports only — no keys leave the real server.
+3. Open the setup link and paste the manifest. The page checks it (a raw `config.json` is rejected on the spot), stores it as `/etc/x-ui/relay-manifest.json` and the relay plus subscription server start immediately; the link stops working. Lost the link? `x-ui proxy-setup-url` prints it again while the box is still waiting.
+4. On the real panel, point the host override at the proxy's domain/IP (step **a**).
+
+Scripted installs can skip the page: put the manifest on the box first and pass `PROXY_RELAY_MANIFEST=/root/relay-manifest.json` — a file without the `relayManifest` marker is refused, not copied. Settings live in `/etc/x-ui/proxy.json`; the box runs `x-ui proxy` as the `x-ui` service, and `update.sh` auto-detects a proxy box and updates it in proxy mode. To *reinstall* over an existing box non-interactively, answer the "already installed" prompt with `2` (`printf '2\n' | XUI_PROXY_MODE=1 … bash <(curl …)`); the default switches to the update script instead.
 
 > **Note:** the real server sees all proxied connections coming from the proxy's IP, so per-client IP-limit and the IP log won't reflect real client IPs for proxied traffic.
 
