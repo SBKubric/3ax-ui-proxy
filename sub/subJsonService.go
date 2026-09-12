@@ -345,10 +345,15 @@ func (s *SubJsonService) genVless(inbound *model.Inbound, streamSettings json_ut
 	}
 	outbound.StreamSettings = streamSettings
 
-	// Add encryption for VLESS outbound from inbound settings
+	// Add encryption for VLESS outbound from inbound settings. Inbounds saved
+	// without the key (or with it empty) mean plain VLESS; Xray refuses a
+	// user whose encryption is "" outright, so say "none" explicitly.
 	var inboundSettings map[string]any
 	json.Unmarshal([]byte(inbound.Settings), &inboundSettings)
 	encryption, _ := inboundSettings["encryption"].(string)
+	if encryption == "" {
+		encryption = "none"
+	}
 
 	user := map[string]any{
 		"id":         client.ID,
