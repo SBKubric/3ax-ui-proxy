@@ -8,10 +8,14 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
+	"github.com/coinman-dev/3ax-ui/v2/logger"
 	"github.com/coinman-dev/3ax-ui/v2/util/random"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // Probe accounts (docs/spec/monitoring-panel.md §3). mon-clients connect
@@ -168,4 +172,131 @@ func inboundSettingsMethod(settings string) string {
 	}
 	_ = json.Unmarshal([]byte(settings), &parsed)
 	return parsed.Method
+}
+
+// addProbeClient appends a probe account to an xray inbound: the settings
+// document, its traffic row, and — when the inbound is live — the running
+// core through the xray API, without a restart. It is the monitoring twin of
+// AddInboundClient, kept apart from it because that path refuses the probe
+// prefix and because it must never touch the API client when xray is down.
+// It reports whether the core needs a restart to pick the account up.
+func (s *InboundService) addProbeClient(inbound *model.Inbound, client model.Client) (bool, error) {
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+		return false, err
+	}
+	raw, err := json.Marshal(client)
+	if err != nil {
+		return false, err
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return false, err
+	}
+	now := time.Now().UnixMilli()
+	entry["created_at"] = now
+	entry["updated_at"] = now
+	settings["clients"] = append(clientsArray(settings), entry)
+	newSettings, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	inbound.Settings = string(newSettings)
+
+	db := database.GetDB()
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := s.AddClientStat(tx, inbound.Id, &client); err != nil {
+			return err
+		}
+		return tx.Save(inbound).Error
+	})
+	if err != nil {
+		return false, err
+	}
+	if !inbound.Enable {
+		return false, nil // a disabled inbound has no live handler to add to
+	}
+	if err := s.xrayApi.Init(xrayAPIPort()); err != nil {
+		return true, nil
+	}
+	defer s.xrayApi.Close()
+	cipher := ""
+	if inbound.Protocol == model.Shadowsocks {
+		cipher, _ = settings["method"].(string)
+	}
+	if err := s.xrayApi.AddUser(string(inbound.Protocol), inbound.Tag, map[string]any{
+		"email":    client.Email,
+		"id":       client.ID,
+		"auth":     client.Auth,
+		"security": client.Security,
+		"flow":     client.Flow,
+		"password": client.Password,
+		"cipher":   cipher,
+	}); err != nil {
+		logger.Debug("probe account not added by api:", err)
+		return true, nil
+	}
+	return false, nil
+}
+
+// removeProbeClient deletes the probe account of an xray inbound: settings,
+// traffic row, recorded IPs, and the live handler through the API when xray
+// is up. Like addProbeClient it never dereferences a nil API client, so the
+// hourly TTL job can run while xray is down. It reports whether a restart is
+// needed, and does nothing when the inbound has no probe.
+func (s *InboundService) removeProbeClient(inbound *model.Inbound) (removed bool, needRestart bool, err error) {
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+		return false, false, err
+	}
+	email := ProbeEmail(model.MonKindXray, inbound.Id)
+	kept := make([]any, 0)
+	var enabled bool
+	for _, raw := range clientsArray(settings) {
+		c, ok := raw.(map[string]any)
+		if ok {
+			if e, _ := c["email"].(string); strings.EqualFold(e, email) {
+				removed = true
+				enabled, _ = c["enable"].(bool)
+				continue
+			}
+		}
+		kept = append(kept, raw)
+	}
+	if !removed {
+		return false, false, nil
+	}
+	settings["clients"] = kept
+	newSettings, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return false, false, err
+	}
+	inbound.Settings = string(newSettings)
+
+	db := database.GetDB()
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := s.DelClientIPs(tx, email); err != nil {
+			return err
+		}
+		if err := s.DelClientStat(tx, email); err != nil {
+			return err
+		}
+		return tx.Save(inbound).Error
+	})
+	if err != nil {
+		return false, false, err
+	}
+	if !inbound.Enable || !enabled {
+		return true, false, nil
+	}
+	if err := s.xrayApi.Init(xrayAPIPort()); err != nil {
+		return true, true, nil
+	}
+	defer s.xrayApi.Close()
+	if err := s.xrayApi.RemoveUser(inbound.Tag, email); err != nil &&
+		!strings.Contains(err.Error(), fmt.Sprintf("User %s not found.", email)) {
+		logger.Debug("probe account not removed by api:", err)
+		return true, true, nil
+	}
+	return true, false, nil
 }
