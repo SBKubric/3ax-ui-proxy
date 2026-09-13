@@ -24,6 +24,9 @@
     --mon-line: #2c3950;
     --mon-card2: #0a1222;
   }
+  /* The stylesheet pads the content area per page class; give this page the same. */
+  .monitoring-page .ant-layout-content { margin: 12px 8px; }
+  @media (min-width: 769px) { .monitoring-page .ant-layout-content { margin: 24px 16px; } }
   .monitoring-page .mon-hd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .monitoring-page .mon-hd .mon-sp { flex: 1; }
   .monitoring-page .mon-title { font-size: 18px; font-weight: 600; margin: 0; }

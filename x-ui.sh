@@ -2459,6 +2459,47 @@ show_usage() {
 └────────────────────────────────────────────────────────────────┘"
 }
 
+# Inbound monitoring: the bearer token and the switch of the /mon/v1 API that
+# mon-server (github.com/SBKubric/3ax-ui-monitoring) talks to. Same settings as
+# Panel Settings → Monitoring; no restart needed.
+monitoring_menu() {
+    echo -e "${green}\t1.${plain} Show monitoring token and state"
+    echo -e "${green}\t2.${plain} Reset monitoring token (the old one stops working)"
+    echo -e "${green}\t3.${plain} Enable monitoring"
+    echo -e "${green}\t4.${plain} Disable monitoring"
+    echo -e "${green}\t0.${plain} Back to Main Menu"
+    read -rp "Choose an option: " choice
+
+    case "$choice" in
+    0)
+        show_menu
+        ;;
+    1)
+        ${xui_folder}/x-ui setting -showMonToken
+        monitoring_menu
+        ;;
+    2)
+        confirm "Reset the monitoring token? mon-server loses access until its config carries the new one." "n"
+        if [[ $? == 0 ]]; then
+            ${xui_folder}/x-ui setting -resetMonToken
+        fi
+        monitoring_menu
+        ;;
+    3)
+        ${xui_folder}/x-ui setting -enableMonitoring -showMonToken
+        monitoring_menu
+        ;;
+    4)
+        ${xui_folder}/x-ui setting -disableMonitoring
+        monitoring_menu
+        ;;
+    *)
+        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
+        monitoring_menu
+        ;;
+    esac
+}
+
 show_menu() {
     echo -e "
 ╔────────────────────────────────────────────────╗
@@ -2496,10 +2537,12 @@ show_menu() {
 │  ${green}24.${plain} Enable BBR                                │
 │  ${green}25.${plain} Update Geo Files                          │
 │  ${green}26.${plain} Speedtest by Ookla                        │
+│────────────────────────────────────────────────│
+│  ${green}27.${plain} Inbound Monitoring (mon-server token)     │
 ╚────────────────────────────────────────────────╝
 "
     show_status
-    echo && read -rp "Please enter your selection [0-26]: " num
+    echo && read -rp "Please enter your selection [0-27]: " num
 
     case "${num}" in
     0)
@@ -2583,8 +2626,11 @@ show_menu() {
     26)
         run_speedtest
         ;;
+    27)
+        check_install && monitoring_menu
+        ;;
     *)
-        LOGE "Please enter the correct number [0-26]"
+        LOGE "Please enter the correct number [0-27]"
         ;;
     esac
 }

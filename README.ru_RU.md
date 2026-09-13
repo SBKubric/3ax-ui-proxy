@@ -293,6 +293,18 @@ XUI_PROXY_MODE=1 bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-
 
 > **Важно:** реальный сервер видит все проксированные подключения с IP прокси, поэтому per-client IP-лимит и лог IP не отражают реальные адреса клиентов для проксированного трафика.
 
+### 12. Мониторинг inbound'ов (mon-server)
+
+За панелью может снаружи следить **mon-server** — отдельный сервис ([SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring)), который управляет парком небольших **mon-clients** в регионах, где живут ваши пользователи. Каждый mon-client подключается через ваши inbound'ы ровно так же, как пользователь — через реальный сервер (**direct**) и, если включён прокси-фронт, через прокси (**proxy**), — а mon-server превращает эти пробы в UP / DOWN / FLAPPING по inbound'у, пути и региону. Сама панель наружу не ходит: она открывает небольшой API по bearer-токену (`/mon/v1/*`, тот же листенер и base path, что у панели), по запросу mon-server заводит по одному **probe account** на inbound (`probe-<id>`, `probe-awg`; показывается с бейджем `probe`, пользователем не считается), хранит то, что присылает mon-server, и показывает:
+
+- страница **Monitoring** — пилюля live / silent, mon-clients, карточка на каждый inbound с его target'ами и sparkline uptime (24h / 7d / 30d), лента событий;
+- колонка **Health** в таблице inbound'ов (худший живой target: DOWN > FLAPPING > UNKNOWN > UP > PAUSED) и фильтр `down`;
+- **Telegram** — переходы DOWN / UP / FLAPPING, mon-client OFFLINE / ONLINE и блок Monitoring в ежедневном отчёте; если mon-server молчит дольше `monStaleMinutes` (по умолчанию 15), панель сообщает об этом и помечает всё как **STALE**.
+
+**Где взять токен.** Откройте **Настройки панели → Monitoring**, включите мониторинг, нажмите **Regenerate** рядом с токеном и **Copy** — и вставьте его в конфиг mon-server. Без браузера: `x-ui setting -resetMonToken -enableMonitoring` печатает новый токен, `x-ui setting -showMonToken` — текущий, `x-ui setting -disableMonitoring` закрывает API (пункт **27** меню `x-ui` делает то же самое). Перегенерация сразу инвалидирует старый токен; при выключенном мониторинге или неверном токене любой запрос получает голый `404` — панель себя не выдаёт.
+
+На той же вкладке задаются порог STALE, ретеншн событий и 5-минутных агрегатов (7 дней), ретеншн часового rollup (30 дней) и TTL probe-набора (24 часа без ensure от mon-server — probe account'ы удаляются). Wire-формат — в [docs/spec/monitoring-contract.md](docs/spec/monitoring-contract.md), панельная сторона — в [docs/spec/monitoring-panel.md](docs/spec/monitoring-panel.md).
+
 ---
 
 ## Требования к серверу

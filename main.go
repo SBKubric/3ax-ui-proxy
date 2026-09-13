@@ -465,6 +465,7 @@ func main() {
 	var show bool
 	var getCert bool
 	var resetTwoFactor bool
+	var showMonToken, resetMonToken, enableMonitoring, disableMonitoring bool
 	settingCmd.BoolVar(&reset, "reset", false, "Reset all settings")
 	settingCmd.BoolVar(&show, "show", false, "Display current settings")
 	settingCmd.IntVar(&port, "port", 0, "Set panel port number")
@@ -481,6 +482,10 @@ func main() {
 	settingCmd.StringVar(&tgbotRuntime, "tgbotRuntime", "", "Set cron time for Telegram bot notifications")
 	settingCmd.StringVar(&tgbotchatid, "tgbotchatid", "", "Set chat ID for Telegram bot notifications")
 	settingCmd.BoolVar(&enabletgbot, "enabletgbot", false, "Enable notifications via Telegram bot")
+	settingCmd.BoolVar(&showMonToken, "showMonToken", false, "Display the inbound monitoring (mon-server) token")
+	settingCmd.BoolVar(&resetMonToken, "resetMonToken", false, "Generate a new inbound monitoring token (the old one stops working)")
+	settingCmd.BoolVar(&enableMonitoring, "enableMonitoring", false, "Open the /mon/v1 monitoring API to mon-server")
+	settingCmd.BoolVar(&disableMonitoring, "disableMonitoring", false, "Close the /mon/v1 monitoring API")
 
 	oldUsage := flag.Usage
 	flag.Usage = func() {
@@ -542,6 +547,9 @@ func main() {
 		}
 		if enabletgbot {
 			updateTgbotEnableSts(enabletgbot)
+		}
+		if err := updateMonitoringSetting(showMonToken, resetMonToken, enableMonitoring, disableMonitoring); err != nil {
+			return
 		}
 	case "cert":
 		err := settingCmd.Parse(os.Args[2:])

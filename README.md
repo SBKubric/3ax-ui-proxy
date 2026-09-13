@@ -293,6 +293,18 @@ Scripted installs can skip the page: put the manifest on the box first and pass 
 
 > **Note:** the real server sees all proxied connections coming from the proxy's IP, so per-client IP-limit and the IP log won't reflect real client IPs for proxied traffic.
 
+### 12. Inbound monitoring (mon-server)
+
+The panel can be watched from the outside by a **mon-server** — a separate service ([SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring)) that drives a fleet of small **mon-clients** in the regions your users are in. Each mon-client connects through your inbounds exactly the way a user does — over the real server (**direct**) and, when the proxy front is on, over the proxy (**proxy**) — and mon-server turns those probes into UP / DOWN / FLAPPING per inbound, path and region. The panel itself never calls out: it opens a small bearer-protected API (`/mon/v1/*`, same listener and base path as the panel), creates one **probe account** per inbound on mon-server's request (`probe-<id>`, `probe-awg`; shown with a `probe` badge, not counted as a user), stores what mon-server pushes, and shows it:
+
+- **Monitoring** page — live / silent pill, mon-clients, a card per inbound with its targets and an uptime sparkline (24h / 7d / 30d), and the event feed;
+- **Health** column in the Inbounds table (worst live target: DOWN > FLAPPING > UNKNOWN > UP > PAUSED) with a `down` filter;
+- **Telegram** — DOWN / UP / FLAPPING transitions, mon-client OFFLINE / ONLINE, and a Monitoring block in the daily report; when mon-server has been silent for `monStaleMinutes` (15 by default) the panel says so and marks everything **STALE**.
+
+**Where to get the token.** Open **Panel Settings → Monitoring**, switch monitoring on, press **Regenerate** next to the token and **Copy** it into the mon-server config. Without a browser: `x-ui setting -resetMonToken -enableMonitoring` prints a new token, `x-ui setting -showMonToken` prints the current one, `x-ui setting -disableMonitoring` closes the API (menu item **27** of `x-ui` does the same). Regenerating invalidates the old token at once; with monitoring off, or a wrong token, every request gets a bare `404`, so the panel does not reveal itself.
+
+The same tab sets the STALE threshold, retention of events and 5-minute aggregates (7 days), retention of the hourly rollup (30 days) and the probe-set TTL (24 hours without a mon-server ensure removes the probe accounts). The wire format is in [docs/spec/monitoring-contract.md](docs/spec/monitoring-contract.md), the panel side in [docs/spec/monitoring-panel.md](docs/spec/monitoring-panel.md).
+
 ---
 
 ## Server requirements
