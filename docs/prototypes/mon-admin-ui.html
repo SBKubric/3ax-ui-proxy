@@ -1,0 +1,463 @@
+<title>Mon-server Admin Variants</title>
+<!--
+  PROTOTYPE, throwaway. Three structurally different variants of the mon-server admin UI,
+  switchable via ?variant=A|B|C (also #A/#B/#C and ← → keys), shown as a storyboard of the
+  surfaces the ticket names: login, pending registration requests (with Approve / Approve as
+  replacement / Reject), the mon-client registry (Revoke, Disable, paths), and settings.
+  Question it answers: wayfinder ticket #37 of map #20 (SBKubric/3ax-ui-proxy).
+  Target state is deliberately absent everywhere (the panel's Monitoring page owns it).
+  Data is sample data; nothing is fetched or persisted.
+-->
+<style>
+  :root {
+    /* panel tokens (fork's custom.min.css, light) shared with the monitoring-ui prototype */
+    --pn-bg: #f0f2f5; --pn-card: #ffffff; --pn-card2: #fafafa; --pn-text: rgba(0,0,0,.78); --pn-muted: rgba(0,0,0,.45);
+    --pn-line: #f0f0f0; --pn-stroke: #d9d9d9; --pn-primary: #008771; --pn-primary-soft: #e6f7f3;
+    --pn-menu: #151f31; --pn-menu-text: rgba(255,255,255,.65); --pn-menu-active: #008771;
+    --st-up: #008771; --st-up-soft: #e6f7f3; --st-down: #cf3c3c; --st-down-soft: #fdecec;
+    --st-warn: #b58a00; --st-warn-soft: #fff8dc; --st-off: #8c8c8c; --st-off-soft: #f2f2f2;
+    --tag-blue: #1c6fd1; --tag-blue-soft: #e8f1fc; --tag-purple: #7a316f; --tag-purple-soft: #f6e9f4;
+    --code-bg: #0f1a2b; --code-fg: #e9f5f1;
+    /* variant B: plain server-rendered look, still on the panel's neutrals */
+    --b-ink: #1d2430; --b-paper: #fbfbf9; --b-rule: #d7dbd4; --b-accent: #008771;
+    /* prototype chrome, deliberately not part of the design */
+    --ch-ink: #111; --ch-paper: #fffdf7; --ch-accent: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --pn-bg: #0a1222; --pn-card: #151f31; --pn-card2: #0a1222; --pn-text: rgba(255,255,255,.78); --pn-muted: rgba(255,255,255,.45);
+      --pn-line: #2c3950; --pn-stroke: #2c3950; --pn-primary: #3ad3ba; --pn-primary-soft: #0f2a2a;
+      --st-up: #3ad3ba; --st-up-soft: #10302b; --st-down: #e04141; --st-down-soft: #3a1717;
+      --st-warn: #e0b93a; --st-warn-soft: #3a3212; --st-off: #8a94a6; --st-off-soft: #1b2436;
+      --tag-blue: #529fff; --tag-blue-soft: #16294a; --tag-purple: #b06aa5; --tag-purple-soft: #33203a;
+      --code-bg: #05090f; --code-fg: #cdebe3;
+      --b-ink: #e6e9ee; --b-paper: #10151d; --b-rule: #2e3745; --b-accent: #3ad3ba;
+      --ch-ink: #f2f2f2; --ch-paper: #1a1814; --ch-accent: #ff6b5e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --pn-bg: #0a1222; --pn-card: #151f31; --pn-card2: #0a1222; --pn-text: rgba(255,255,255,.78); --pn-muted: rgba(255,255,255,.45);
+    --pn-line: #2c3950; --pn-stroke: #2c3950; --pn-primary: #3ad3ba; --pn-primary-soft: #0f2a2a;
+    --st-up: #3ad3ba; --st-up-soft: #10302b; --st-down: #e04141; --st-down-soft: #3a1717;
+    --st-warn: #e0b93a; --st-warn-soft: #3a3212; --st-off: #8a94a6; --st-off-soft: #1b2436;
+    --tag-blue: #529fff; --tag-blue-soft: #16294a; --tag-purple: #b06aa5; --tag-purple-soft: #33203a;
+    --code-bg: #05090f; --code-fg: #cdebe3;
+    --b-ink: #e6e9ee; --b-paper: #10151d; --b-rule: #2e3745; --b-accent: #3ad3ba;
+    --ch-ink: #f2f2f2; --ch-paper: #1a1814; --ch-accent: #ff6b5e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--pn-bg); color: var(--pn-text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; font-variant-numeric: tabular-nums; padding: 24px 16px 96px; }
+  h1, h2, h3, h4 { margin: 0; font-weight: 600; text-wrap: balance; }
+  a { color: var(--pn-primary); }
+  .wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 28px; }
+  .intro { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ch-ink); background: var(--ch-paper); border: 1px dashed var(--ch-accent); padding: 12px 16px; font-size: 13px; }
+  .intro b { color: var(--ch-accent); }
+  .surface { display: grid; gap: 10px; }
+  .surface > .label { font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ch-accent); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .surface > .label span { color: var(--pn-muted); letter-spacing: 0; text-transform: none; }
+  .switcher { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; background: var(--ch-ink); color: var(--ch-paper); border-radius: 999px; padding: 6px 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); font-family: ui-monospace, Menlo, monospace; font-size: 13px; z-index: 50; max-width: calc(100vw - 32px); }
+  .switcher button { background: transparent; color: inherit; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; width: 32px; height: 32px; cursor: pointer; font-size: 16px; flex: none; }
+  .switcher button:focus-visible { outline: 2px solid var(--ch-accent); }
+  .switcher .lbl { padding: 0 10px; min-width: 0; text-align: center; }
+  .switcher .lbl b { color: var(--ch-accent); }
+  .new { outline: 1px dashed var(--ch-accent); outline-offset: -3px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .93em; }
+  .muted { color: var(--pn-muted); }
+  .scroll { overflow-x: auto; }
+
+  /* ---- shared Ant-ish primitives (variants A and C) ---- */
+  .shell { display: grid; grid-template-columns: 220px 1fr; background: var(--pn-bg); border: 1px solid var(--pn-line); border-radius: 8px; overflow: hidden; min-height: 460px; }
+  .sider { background: var(--pn-menu); color: var(--pn-menu-text); padding: 12px 0; display: grid; align-content: start; gap: 2px; }
+  .sider .brand { padding: 6px 24px 14px; color: #fff; font-weight: 600; display: grid; }
+  .sider .brand small { color: var(--pn-menu-text); font-weight: 400; font-size: 11px; }
+  .sider .mi { display: flex; align-items: center; gap: 10px; padding: 0 24px; height: 40px; font-size: 14px; }
+  .sider .mi .ic { width: 14px; text-align: center; opacity: .8; font-size: 13px; }
+  .sider .mi.active { background: var(--pn-menu-active); color: #fff; }
+  .sider .cnt { margin-left: auto; background: var(--st-down); color: #fff; border-radius: 10px; font-size: 11px; padding: 0 6px; line-height: 18px; }
+  .content { padding: 20px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; min-width: 0; }
+  .card { min-width: 0; }
+  @media (max-width: 720px) { .shell { grid-template-columns: 1fr; } .sider { display: none; } }
+  .card { background: var(--pn-card); border-radius: 1.5rem; padding: 14px 18px; border: 1px solid var(--pn-line); }
+  .card.tight { padding: 10px 14px; }
+  .card h3 { font-size: 15px; }
+  .hd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .hd .sp { flex: 1; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--pn-stroke); background: var(--pn-card); color: var(--pn-text); border-radius: 6px; padding: 0 12px; line-height: 30px; font-size: 13px; white-space: nowrap; cursor: default; }
+  .btn.sm { line-height: 24px; padding: 0 8px; font-size: 12px; }
+  .btn.primary { background: var(--pn-primary); border-color: var(--pn-primary); color: #fff; }
+  .btn.danger { color: var(--st-down); border-color: var(--st-down); }
+  .btn.ghost { border-color: transparent; background: transparent; color: var(--pn-primary); }
+  .btn.link { border: 0; background: none; padding: 0; color: var(--pn-primary); line-height: 1.5; }
+  .tag { display: inline-flex; align-items: center; gap: 5px; border: 1px solid transparent; border-radius: 4px; padding: 0 7px; line-height: 20px; font-size: 12px; white-space: nowrap; }
+  .tag.blue { color: var(--tag-blue); background: var(--tag-blue-soft); }
+  .tag.purple { color: var(--tag-purple); background: var(--tag-purple-soft); }
+  .tag.plain { color: var(--pn-muted); background: var(--pn-card2); border-color: var(--pn-line); }
+  .tag.warn { color: var(--st-warn); background: var(--st-warn-soft); }
+  .tag.err { color: var(--st-down); background: var(--st-down-soft); }
+  .st { display: inline-flex; align-items: center; gap: 6px; border-radius: 4px; padding: 0 8px; line-height: 22px; font-size: 12px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+  .st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .st.ONLINE { color: var(--st-up); background: var(--st-up-soft); }
+  .st.OFFLINE { color: var(--st-down); background: var(--st-down-soft); }
+  .st.NEVER { color: var(--pn-muted); background: var(--st-off-soft); }
+  .st.NEVER::before { background: transparent; border: 1.5px dashed currentColor; width: 5px; height: 5px; }
+  .st.DISABLED { color: var(--st-off); background: var(--st-off-soft); }
+  .st.PENDING { color: var(--st-warn); background: var(--st-warn-soft); }
+  .st.PENDING::before { animation: pulse 1.2s linear infinite; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+  .dot.ONLINE { background: var(--st-up); } .dot.OFFLINE { background: var(--st-down); } .dot.NEVER { background: transparent; border: 1.5px dashed var(--pn-muted); width: 6px; height: 6px; } .dot.DISABLED { background: var(--st-off); }
+  .dot.pulse { animation: pulse 1.2s linear infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 40%, transparent); } 100% { box-shadow: 0 0 0 8px transparent; } }
+  @media (prefers-reduced-motion: reduce) { .dot.pulse, .st.PENDING::before { animation: none; } }
+  .switch { display: inline-block; width: 36px; height: 20px; border-radius: 10px; background: var(--pn-primary); position: relative; vertical-align: middle; }
+  .switch::after { content: ""; position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+  .switch.off { background: var(--pn-stroke); } .switch.off::after { right: auto; left: 2px; }
+  .in { border: 1px solid var(--pn-stroke); background: var(--pn-card); border-radius: 6px; padding: 0 10px; line-height: 30px; font-size: 13px; min-height: 32px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .in.num { width: 90px; text-align: right; }
+  .in.ro { background: var(--pn-card2); color: var(--pn-muted); }
+  .in .ph { color: var(--pn-muted); }
+  .sel::after { content: "▾"; float: right; color: var(--pn-muted); }
+  .chk { display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; }
+  .chk i { width: 14px; height: 14px; border: 1px solid var(--pn-stroke); border-radius: 3px; display: inline-block; background: var(--pn-card); }
+  .chk.on i { background: var(--pn-primary); border-color: var(--pn-primary); box-shadow: inset 0 0 0 2px var(--pn-card); }
+  .chk.radio i { border-radius: 50%; }
+  .t { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .t th, .t td { padding: 8px 10px; border-bottom: 1px solid var(--pn-line); text-align: left; vertical-align: middle; white-space: nowrap; }
+  .t th { color: var(--pn-muted); font-weight: 500; background: var(--pn-card2); }
+  .t td.c, .t th.c { text-align: center; }
+  .t tr.ghost td { background: repeating-linear-gradient(-45deg, transparent 0 8px, var(--st-warn-soft) 8px 16px); }
+  .t tr.sel td { background: var(--pn-primary-soft); }
+  .t tr.dis td { color: var(--pn-muted); }
+  .sli { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 320px); gap: 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--pn-line); }
+  .sli:last-child { border-bottom: 0; }
+  .sli .tt { font-weight: 500; } .sli .d { color: var(--pn-muted); font-size: 12px; }
+  .sli .in { width: 100%; }
+  @media (max-width: 640px) { .sli { grid-template-columns: 1fr; } }
+  .tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--pn-line); padding: 0 4px; overflow-x: auto; }
+  .tabs span { padding: 10px 0; border-bottom: 2px solid transparent; color: var(--pn-muted); white-space: nowrap; font-size: 13px; }
+  .tabs span.on { color: var(--pn-primary); border-color: var(--pn-primary); }
+  .alert { border-radius: 6px; padding: 6px 12px; font-size: 13px; border: 1px solid; display: inline-flex; gap: 8px; align-items: center; }
+  .alert.warn { color: var(--st-warn); background: var(--st-warn-soft); border-color: color-mix(in srgb, var(--st-warn) 40%, transparent); }
+  .alert.ok { color: var(--st-up); background: var(--st-up-soft); border-color: color-mix(in srgb, var(--st-up) 40%, transparent); }
+  .alert.err { color: var(--st-down); background: var(--st-down-soft); border-color: color-mix(in srgb, var(--st-down) 40%, transparent); }
+  .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; font-weight: 700; font-size: 18px; color: var(--pn-text); }
+  .code.big { font-size: 28px; letter-spacing: .18em; background: var(--code-bg); color: var(--code-fg); padding: 8px 16px; border-radius: 6px; display: inline-block; }
+  .code.big .g { color: color-mix(in srgb, var(--code-fg) 40%, transparent); }
+  .exp { color: var(--pn-muted); font-size: 12px; }
+  .exp b { color: var(--st-warn); font-weight: 600; }
+  .modal-scrim { position: relative; min-height: 600px; }
+  .modal-scrim::before { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,.45); z-index: 2; border-radius: 8px; }
+  .modal { position: absolute; z-index: 3; left: 50%; top: 40px; transform: translateX(-50%); width: min(560px, calc(100% - 32px)); background: var(--pn-card); border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.35); padding: 16px 20px 18px; display: grid; gap: 12px; }
+  .modal h3 { font-size: 16px; }
+  .fi { display: grid; gap: 4px; } .fi label { font-size: 12px; color: var(--pn-muted); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 520px) { .row2 { grid-template-columns: 1fr; } }
+  .seg { display: inline-flex; border: 1px solid var(--pn-stroke); border-radius: 6px; overflow: hidden; }
+  .seg span { padding: 0 12px; line-height: 28px; font-size: 13px; color: var(--pn-muted); }
+  .seg span.on { background: var(--pn-primary); color: #fff; }
+  .login { background: var(--pn-bg); border: 1px solid var(--pn-line); border-radius: 8px; min-height: 380px; display: grid; place-items: center; position: relative; overflow: hidden; padding: 24px 16px; }
+  .login .waves { position: absolute; left: 0; right: 0; top: 0; height: 120px; background: linear-gradient(180deg, color-mix(in srgb, var(--pn-primary) 12%, transparent), transparent); }
+  .login .box { position: relative; background: var(--pn-card); border-radius: 1.5rem; padding: 26px 28px; width: min(360px, 100%); display: grid; gap: 14px; border: 1px solid var(--pn-line); box-shadow: 0 6px 24px rgba(0,0,0,.08); }
+  .login h2 { font-size: 22px; }
+  .drawer-wrap { position: relative; min-height: 660px; }
+  .drawer-wrap::before { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,.35); z-index: 2; border-radius: 8px; }
+  .drawer { position: absolute; z-index: 3; top: 0; right: 0; bottom: 0; width: min(420px, 100%); background: var(--pn-card); box-shadow: -8px 0 32px rgba(0,0,0,.25); padding: 18px 20px; display: grid; gap: 14px; align-content: start; overflow: auto; border-radius: 0 8px 8px 0; }
+  .drawer h3 { font-size: 16px; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; font-size: 13px; }
+  .kv dt { color: var(--pn-muted); } .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .danger-zone { border: 1px solid color-mix(in srgb, var(--st-down) 40%, transparent); border-radius: 8px; padding: 12px 14px; display: grid; gap: 8px; }
+  .danger-zone h4 { color: var(--st-down); font-size: 13px; }
+  .pre { background: var(--pn-card2); border: 1px solid var(--pn-line); border-radius: 6px; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .leftnav { display: grid; gap: 2px; align-content: start; }
+  .leftnav span { padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--pn-muted); }
+  .leftnav span.on { background: var(--pn-primary-soft); color: var(--pn-primary); font-weight: 500; }
+  .two { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; } @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
+
+  /* ---- variant B: server-rendered, no component library ---- */
+  .b { background: var(--b-paper); color: var(--b-ink); border: 1px solid var(--b-rule); border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.55; }
+  .b .top { display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap; padding: 10px 16px; border-bottom: 2px solid var(--b-ink); }
+  .b .top b { font-size: 15px; } .b .top .sp { flex: 1; } .b .top a { color: var(--b-ink); }
+  .b .sec { padding: 14px 16px 18px; border-bottom: 1px solid var(--b-rule); display: grid; gap: 10px; }
+  .b .sec:last-child { border-bottom: 0; }
+  .b h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; display: flex; gap: 10px; align-items: baseline; }
+  .b h2 small { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .6; }
+  .b .req { border: 1px solid var(--b-rule); border-left: 4px solid var(--st-warn); padding: 10px 12px; display: grid; gap: 8px; }
+  .b .req.exp { border-left-color: var(--st-down); }
+  .b .req .line { display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; }
+  .b .req .line .code { font-size: 20px; letter-spacing: .2em; }
+  .b .form { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  .b .f { display: grid; gap: 2px; } .b .f label { font-size: 11px; opacity: .65; }
+  .b input, .b .fake { font: inherit; color: inherit; background: transparent; border: 1px solid var(--b-rule); padding: 3px 8px; min-width: 60px; }
+  .b .fake { display: inline-block; min-height: 26px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+  .b .fake.ro { opacity: .6; border-style: dashed; }
+  .b button, .b .bt { font: inherit; white-space: nowrap; border: 1px solid var(--b-ink); background: transparent; color: var(--b-ink); padding: 3px 12px; cursor: default; display: inline-block; }
+  .b .bt.go { background: var(--b-ink); color: var(--b-paper); }
+  .b .bt.bad { border-color: var(--st-down); color: var(--st-down); }
+  .b .bt.sm { padding: 1px 8px; font-size: 12px; }
+  .b table { width: 100%; border-collapse: collapse; }
+  .b th, .b td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--b-rule); white-space: nowrap; vertical-align: top; }
+  .b th { font-weight: 700; border-bottom: 1px solid var(--b-ink); }
+  .b .ok { color: var(--st-up); } .b .bad { color: var(--st-down); } .b .warn { color: var(--st-warn); } .b .dim { opacity: .55; }
+  .b fieldset { border: 1px solid var(--b-rule); padding: 8px 12px 10px; margin: 0; display: grid; gap: 6px; min-width: 0; }
+  .b legend { padding: 0 6px; font-weight: 700; }
+  .b .fr { display: grid; grid-template-columns: minmax(110px, 190px) minmax(0, 1fr); gap: 8px; align-items: center; }
+  .b .fr > div { min-width: 0; }
+  .b .fr .h { font-size: 11px; opacity: .6; }
+  @media (max-width: 600px) { .b .fr { grid-template-columns: 1fr; } }
+  .b .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .b .sticky { position: sticky; bottom: 0; background: var(--b-paper); border-top: 1px solid var(--b-ink); padding: 8px 16px; display: flex; gap: 12px; align-items: center; }
+  .b .login { min-height: 300px; background: var(--b-paper); border: 0; }
+  .b .login .box { font-family: inherit; box-shadow: none; border: 1px solid var(--b-ink); border-radius: 0; background: var(--b-paper); }
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <b>PROTOTYPE · not production.</b> Admin UI of the <b>mon-server</b>: three structurally different variants (A / B / C) across the
+    surfaces the ticket names: <b>login</b>, <b>pending registration requests</b> (Approve / Approve as replacement / Reject),
+    the <b>mon-client registry</b> (Revoke, Disable, paths) and <b>settings</b>. Target state is never shown here: the panel's
+    Monitoring page owns it. Switch with the bar at the bottom, <b>← →</b> keys, or <b>?variant=A|B|C</b>. Sample data, nothing is fetched.
+  </div>
+  <div id="root"></div>
+</div>
+
+<div class="switcher" id="switcher">
+  <button id="prev" aria-label="Previous variant">←</button>
+  <div class="lbl">Variant <b id="vkey">A</b> <span id="vname"></span></div>
+  <button id="next" aria-label="Next variant">→</button>
+</div>
+
+<script>
+/* ---------- sample data ---------- */
+const NOW = Date.UTC(2026, 8, 13, 13, 5); // 2026-09-13 13:05 UTC
+const server = { publicIp: '192.0.2.44', listen: ':443', version: '0.1.0', tls: { mode: 'acme-ip', notAfter: NOW + 62 * 3600e3, renewAt: NOW + 14 * 3600e3 }, dataDir: '/var/lib/mon-server' };
+const requests = [
+  { id: 'kQ9m…', ip: '203.0.113.5',  hostname: 'vps-ams-2', version: '0.1.0', code: '7K3F9Q', receivedAt: NOW - 79e3,  expiresAt: NOW + 221e3, attempt: 1 },
+  { id: 'Zt4p…', ip: '198.51.100.7', hostname: 'msk-1',     version: '0.1.0', code: 'Q2V8NM', receivedAt: NOW - 250e3, expiresAt: NOW + 50e3,  attempt: 3 },
+];
+const clients = [
+  { id: 'ams-1', name: 'Amsterdam #1', region: 'NL', state: 'ONLINE',  lastHeartbeat: NOW - 8e3,          paths: ['proxy', 'direct'], version: '0.1.0', xray: '26.3.27', enabled: true,  ip: '203.0.113.5',  rev: '3a91c0de77b1f2e4', configError: null, approvedAt: NOW - 31 * 24 * 3600e3 },
+  { id: 'fra-1', name: 'Frankfurt #1', region: 'DE', state: 'ONLINE',  lastHeartbeat: NOW - 21e3,         paths: ['proxy', 'direct'], version: '0.1.0', xray: '26.3.27', enabled: true,  ip: '198.51.100.23', rev: '9b1e5f00c2aa7d13', configError: 'xray -test: outbound "t-xray-15-direct": failed to parse link: unknown security "reality2" (applied revision stays 9b1e5f00c2aa7d13, server has 3a91c0de77b1f2e4)', approvedAt: NOW - 30 * 24 * 3600e3 },
+  { id: 'msk-1', name: 'Moscow #1',    region: 'RU', state: 'OFFLINE', lastHeartbeat: NOW - 14 * 60e3,    paths: ['proxy'],           version: '0.1.0', xray: '26.3.27', enabled: true,  ip: '198.51.100.7', rev: '3a91c0de77b1f2e4', configError: null, approvedAt: NOW - 12 * 24 * 3600e3 },
+  { id: 'tbi-1', name: 'Tbilisi #1',   region: 'GE', state: 'OFFLINE', lastHeartbeat: NOW - 3 * 24 * 3600e3, paths: ['proxy'],        version: '0.0.9', xray: '26.2.9',  enabled: false, ip: '192.0.2.201',  rev: '77aa0e1b9c5d2f04', configError: null, approvedAt: NOW - 20 * 24 * 3600e3 },
+  { id: 'waw-1', name: 'Warsaw #1',    region: 'PL', state: 'NEVER',   lastHeartbeat: null,               paths: ['proxy', 'direct'], version: null,    xray: null,      enabled: true,  ip: '203.0.113.77', rev: null, configError: null, approvedAt: NOW - 3 * 60e3 },
+];
+const settings = {
+  panel: { url: 'https://203.0.113.10:2053/xyz/', token: 'mZq8••••••••••••••••••••••••Yt2', checkedAt: NOW - 40e3, ok: true, revision: 'c4f1a9e2', inbounds: 3, override: 'front.example.net' },
+  real: { host: '203.0.113.10' },
+  tg: { token: '7412…:AAH•••••••••', chat: '-1001234567890', lastSent: NOW - 26 * 3600e3 },
+  thr: { down: 3, up: 2, flapN: 4, flapMin: 30, clientOff: 3, panelDown: 3 },
+  probe: { intervalMs: 60000, budgetMs: 20000, connectMs: 5000, tlsMs: 10000, headersMs: 10000, startJitterMs: 5000, heartbeatTimeoutMs: 10000 },
+};
+const rate = { perIpPerMin: 1, pendingPerIp: 3, pendingGlobal: 20 };
+
+const fmtT = ts => { const d = new Date(ts); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); };
+const ago = ts => { if (ts == null) return 'never'; const s = Math.round((NOW - ts) / 1e3); if (s < 60) return s + 's ago'; const m = Math.round(s / 60); if (m < 60) return m + 'm ago'; const h = Math.round(m / 60); if (h < 48) return h + 'h ago'; return Math.round(h / 24) + 'd ago'; };
+const dur = ms => { const m = Math.round(ms / 60e3); if (m < 60) return m + 'm'; const h = Math.floor(m / 60); if (h < 48) return h + 'h ' + (m % 60) + 'm'; return Math.round(h / 24) + 'd'; };
+const mmss = ms => { const s = Math.max(0, Math.round(ms / 1e3)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+const stName = c => !c.enabled ? 'DISABLED' : c.state;
+const stLabel = c => !c.enabled ? 'disabled' : c.state === 'NEVER' ? 'never seen' : c.state;
+const pathTags = ps => ps.map(p => `<span class="tag ${p === 'proxy' ? 'blue' : 'plain'}">${p}</span>`).join(' ');
+const codeBig = c => `<span class="code big">${c.slice(0, 3)}<span class="g">·</span>${c.slice(3)}</span>`;
+const pending = requests.length;
+
+/* ---------- shared: prototype chrome ---------- */
+function surface(label, hint, html) { return `<section class="surface"><div class="label">${label} <span>${hint}</span></div>${html}</section>`; }
+
+/* =====================================================================
+   VARIANT A · "Panel twin": the panel's own shell, one page per concern,
+   Approve as a modal. Stack implied: Vue 2 + Ant Design without a bundler.
+   ===================================================================== */
+function siderA(active) {
+  const items = [['📥', 'Requests', 'requests', pending], ['🖥', 'mon-clients', 'clients'], ['⚙', 'Settings', 'settings'], ['⏻', 'Log out', 'logout']];
+  return `<div class="sider"><div class="brand">mon-server <small>${server.publicIp} · v${server.version}</small></div>
+    ${items.map(([ic, t, k, n]) => `<div class="mi ${k === active ? 'active' : ''}"><span class="ic">${ic}</span>${t}${n ? `<span class="cnt">${n}</span>` : ''}</div>`).join('')}</div>`;
+}
+function loginA() {
+  return `<div class="login"><div class="waves"></div><div class="box">
+    <h2>mon-server</h2><div class="muted">${server.publicIp} · single administrator</div>
+    <div class="in"><span class="ph">🔒 Password</span></div>
+    <span class="btn primary" style="justify-content:center">Log in</span>
+    <div class="muted" style="font-size:12px">4 attempts left · after 5 failed attempts this IP is locked for 15 minutes.<br>Password is set on the box: <span class="mono">mon-server admin set-password</span></div>
+  </div></div>`;
+}
+function requestsA(withModal) {
+  const rows = requests.map(r => `<tr><td class="mono">${r.ip}</td><td>${r.hostname}<div class="muted" style="font-size:11px">v${r.version} · attempt ${r.attempt}</div></td><td><span class="code">${r.code.slice(0, 3)} ${r.code.slice(3)}</span></td><td class="exp">${r.expiresAt - NOW < 60e3 ? '<b>' : ''}${mmss(r.expiresAt - NOW)} left${r.expiresAt - NOW < 60e3 ? '</b>' : ''}<div>received ${ago(r.receivedAt)}</div></td><td><span class="btn sm primary">Approve</span> <span class="btn sm">Approve as replacement ▾</span> <span class="btn sm danger">Reject</span></td></tr>`).join('');
+  const modal = withModal ? `<div class="modal"><h3>Approve registration request</h3>
+    <div class="hd"><span class="mono">203.0.113.5</span> · vps-ams-2 · v0.1.0 <span class="sp"></span>${codeBig('7K3F9Q')}</div>
+    <div class="alert warn">Compare the code with the box's log before approving. It stays valid for 3:41.</div>
+    <div class="seg"><span class="on">New mon-client</span><span>Replace an existing one</span></div>
+    <div class="row2"><div class="fi"><label>Name</label><div class="in">Amsterdam #2</div><div class="muted" style="font-size:11px">id: <span class="mono">ams-2</span> (slug of the name, permanent)</div></div><div class="fi"><label>Region</label><div class="in">NL</div></div></div>
+    <div class="fi"><label>Paths this mon-client probes</label><div><span class="chk on"><i></i>proxy</span><span class="chk on"><i></i>direct</span></div><div class="muted" style="font-size:11px">For boxes in hostile regions leave only <b>proxy</b>: <b>direct</b> reveals the real server's address to that box.</div></div>
+    <div class="hd" style="justify-content:flex-end"><span class="btn">Cancel</span><span class="btn primary">Approve and issue token</span></div></div>` : '';
+  return `<div class="shell ${withModal ? 'modal-scrim' : ''}">${siderA('requests')}<div class="content">
+    <div class="card tight hd"><h3>Registration requests</h3><span class="tag warn">${pending} pending</span><span class="sp"></span><span class="muted" style="font-size:12px">rate limit: ${rate.perIpPerMin}/min per IP · ≤ ${rate.pendingPerIp} pending per IP · ≤ ${rate.pendingGlobal} global</span></div>
+    <div class="card" style="padding:0 6px"><div class="scroll"><table class="t"><thead><tr><th>IP</th><th>Hostname</th><th>Pairing code</th><th>Expires</th><th>Operate</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+    <div class="card tight muted" style="font-size:12px">Approved requests hand the token to the box once, then disappear here and appear in <b>mon-clients</b> as <span class="st NEVER">never seen</span> until the first heartbeat.</div>
+  </div>${modal}</div>`;
+}
+function clientsA() {
+  const rows = clients.map(c => `<tr class="${c.enabled ? '' : 'dis'}"><td class="c"><span class="btn sm">⋯</span></td><td class="c"><span class="switch ${c.enabled ? '' : 'off'}"></span></td><td><b>${c.name}</b><div class="muted mono" style="font-size:11px">${c.id} · ${c.region}</div></td><td><span class="st ${stName(c)}">${stLabel(c)}</span></td><td>${c.lastHeartbeat ? ago(c.lastHeartbeat) : '<span class="muted">approved ' + ago(c.approvedAt) + '</span>'}</td><td>${pathTags(c.paths)}</td><td>${c.version ? 'v' + c.version + ' <span class="muted">· xray ' + c.xray + '</span>' : '<span class="muted">—</span>'}</td><td>${c.configError ? `<span class="tag err" title="${c.configError}">⚠ config error · rev ${c.rev.slice(0, 6)}</span>` : c.rev ? `<span class="mono muted">${c.rev.slice(0, 8)}</span>` : '<span class="muted">—</span>'}</td></tr>`).join('');
+  return `<div class="shell">${siderA('clients')}<div class="content">
+    <div class="card tight hd"><h3>mon-clients</h3><span class="tag plain">${clients.length} registered</span><span class="sp"></span><span class="muted" style="font-size:12px">"⋯" → Edit paths · Revoke token. Revoke makes the box drop its state and register again.</span></div>
+    <div class="card" style="padding:0 6px"><div class="scroll"><table class="t"><thead><tr><th class="c">Operate</th><th class="c">Enabled</th><th>Name</th><th>State</th><th>Last heartbeat</th><th>Paths</th><th>Version</th><th>Config</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+  </div></div>`;
+}
+function settingsA() {
+  const sli = (t, d, ctl) => `<div class="sli"><div><div class="tt">${t}</div><div class="d">${d}</div></div><div>${ctl}</div></div>`;
+  return `<div class="shell">${siderA('settings')}<div class="content">
+    <div class="card tight hd"><span class="btn primary">Save</span><span class="sp"></span><span class="alert ok">✓ Panel reachable · revision ${settings.panel.revision} · ${settings.panel.inbounds} inbounds · override → ${settings.panel.override} · checked ${ago(settings.panel.checkedAt)}</span></div>
+    <div class="card" style="padding:8px 12px 0"><div class="tabs"><span class="on">🖥 Panel</span><span>🎯 Real server</span><span>💬 Telegram</span><span>📏 Thresholds</span><span>⏱ Probe</span><span>🔐 TLS &amp; admin</span></div>
+    <div style="padding:6px 0 8px">
+      ${sli('Panel URL', 'Where the panel answers <span class="mono">/mon/v1/*</span>. Polled every minute for state and probe configs.', `<div class="in mono">${settings.panel.url}</div>`)}
+      ${sli('Monitoring token', 'The <span class="mono">monToken</span> from the panel\'s Monitoring settings tab.', `<div style="display:flex;gap:6px"><div class="in mono" style="flex:1">${settings.panel.token}</div><span class="btn">Check</span></div>`)}
+      ${sli('Real server address', 'Host substituted into <b>direct</b> targets. Only mon-clients with the <b>direct</b> path ever see it.', `<div class="in mono">${settings.real.host}</div>`)}
+      ${sli('Telegram bot and chat', 'Used when the panel is unreachable (PANEL_DOWN) and for config errors on mon-clients.', `<div style="display:grid;gap:6px"><div class="in mono">${settings.tg.token}</div><div style="display:flex;gap:6px"><div class="in mono" style="flex:1">${settings.tg.chat}</div><span class="btn">Send test</span></div></div>`)}
+      ${sli('Target DOWN after / UP after', 'Consecutive missed probes before DOWN, consecutive successes before UP.', `<div style="display:flex;gap:6px"><div class="in num">${settings.thr.down}</div><div class="in num">${settings.thr.up}</div></div>`)}
+      ${sli('FLAPPING', 'Transitions within the window that mark a target FLAPPING.', `<div style="display:flex;gap:6px;align-items:center"><div class="in num">${settings.thr.flapN}</div><span class="muted">in</span><div class="in num">${settings.thr.flapMin}</div><span class="muted">min</span></div>`)}
+      ${sli('mon-client OFFLINE after / PANEL_DOWN after', 'Missed heartbeats, failed panel polls.', `<div style="display:flex;gap:6px"><div class="in num">${settings.thr.clientOff}</div><div class="in num">${settings.thr.panelDown}</div></div>`)}
+      ${sli('Probe cycle', 'Sent to every mon-client in its config; changing any of these bumps every config revision.', `<div class="scroll"><table class="t" style="font-size:12px"><tr><td>interval</td><td class="mono">60 000 ms</td><td>budget</td><td class="mono">20 000 ms</td></tr><tr><td>connect</td><td class="mono">5 000 ms</td><td>tls</td><td class="mono">10 000 ms</td></tr><tr><td>headers</td><td class="mono">10 000 ms</td><td>start jitter</td><td class="mono">5 000 ms</td></tr><tr><td>heartbeat</td><td class="mono">10 000 ms</td><td></td><td></td></tr></table></div>`)}
+      ${sli('TLS', 'From the bootstrap config, read-only here. Certificate for the IP via Let\'s Encrypt short-lived profile.', `<div class="in ro mono">${server.tls.mode} · expires in ${dur(server.tls.notAfter - NOW)} · renews in ${dur(server.tls.renewAt - NOW)}</div>`)}
+      ${sli('Administrator', 'One account, no 2FA in v1. Sessions last 24 h.', `<div class="in ro mono">mon-server admin set-password</div>`)}
+    </div></div></div></div>`;
+}
+const VariantA = { name: 'Panel twin: pages + modal', render: () => [
+  surface('1 · Login', 'the panel\'s login card, password only', loginA()),
+  surface('2 · Requests page', 'a table of pending requests, Approve opens a modal (shown in "New mon-client" mode; the segmented control flips it to "Replace an existing one")', requestsA(true)),
+  surface('3 · mon-clients page', 'registry as the inbounds table: switch for Disable, "⋯" for Edit paths and Revoke', clientsA()),
+  surface('4 · Settings page', 'the panel\'s settings layout: tabs of setting-list rows, one Save', settingsA()),
+] };
+
+/* =====================================================================
+   VARIANT B · "One console": a single server-rendered page. Requests as
+   inline forms, registry as a dense table with plain buttons, settings as
+   fieldsets with a sticky Save. Stack implied: Go html/template + forms,
+   a few lines of vanilla JS, no component library.
+   ===================================================================== */
+function loginB() {
+  return `<div class="b"><div class="login"><div class="box">
+    <div><b>mon-server</b> <span class="dim">${server.publicIp}</span></div>
+    <div class="f"><label>password</label><span class="fake" style="width:100%">&nbsp;</span></div>
+    <span class="bt go">log in</span>
+    <div class="dim" style="font-size:12px">4 attempts left, then 15 min lock for this IP.</div>
+  </div></div></div>`;
+}
+function consoleB() {
+  const req = requests.map(r => `<div class="req ${r.expiresAt - NOW < 60e3 ? 'exp' : ''}">
+    <div class="line"><span class="code">${r.code.slice(0, 3)} ${r.code.slice(3)}</span><span>${r.ip} · ${r.hostname} · v${r.version}</span><span class="${r.expiresAt - NOW < 60e3 ? 'bad' : 'warn'}">expires in ${mmss(r.expiresAt - NOW)}</span><span class="dim">attempt ${r.attempt}, first seen ${ago(r.receivedAt)}</span></div>
+    <div class="form">
+      <div class="f"><label>name</label><span class="fake">${r.hostname === 'msk-1' ? '' : 'Amsterdam #2'}&nbsp;</span></div>
+      <div class="f"><label>region</label><span class="fake">${r.hostname === 'msk-1' ? '' : 'NL'}&nbsp;</span></div>
+      <div class="f"><label>paths</label><span class="fake">[x] proxy [x] direct</span></div>
+      <div class="f"><label>replaces</label><span class="fake">${r.hostname === 'msk-1' ? 'msk-1 · Moscow #1 ▾' : '— none ▾'}</span></div>
+      <span class="bt go">${r.hostname === 'msk-1' ? 'approve as replacement' : 'approve'}</span><span class="bt bad">reject</span>
+    </div>
+    ${r.hostname === 'msk-1' ? `<div class="warn" style="font-size:12px">replacement keeps id <b>msk-1</b>, its history and paths (proxy); the old token is revoked on approve. name and region are taken from the existing record.</div>` : ''}
+  </div>`).join('');
+  const rows = clients.map(c => `<tr class="${c.enabled ? '' : 'dim'}"><td><span class="${c.state === 'ONLINE' ? 'ok' : c.state === 'OFFLINE' ? 'bad' : 'dim'}">●</span> ${c.id}</td><td>${c.name} <span class="dim">${c.region}</span></td><td>${!c.enabled ? 'disabled' : c.state === 'NEVER' ? 'never seen' : c.state.toLowerCase()}</td><td>${c.lastHeartbeat ? ago(c.lastHeartbeat) : '—'}</td><td>${c.paths.join('+')}</td><td>${c.version ? 'v' + c.version : '—'}</td><td>${c.configError ? `<span class="bad" title="${c.configError}">config error</span> <span class="dim">rev ${c.rev.slice(0, 6)}</span>` : c.rev ? `<span class="dim">rev ${c.rev.slice(0, 6)}</span>` : '—'}</td><td><span class="bt sm">paths</span> <span class="bt sm">${c.enabled ? 'disable' : 'enable'}</span> <span class="bt sm bad">revoke</span></td></tr>`).join('');
+  const fr = (h, ctl) => `<div class="fr"><span class="h">${h}</span><div>${ctl}</div></div>`;
+  return `<div class="b">
+    <div class="top"><b>mon-server</b><span>${server.publicIp}${server.listen}</span><span>v${server.version}</span><span class="dim">tls ${server.tls.mode}, cert renews in ${dur(server.tls.renewAt - NOW)}</span><span class="sp"></span><span class="ok">panel ok · rev ${settings.panel.revision} · ${ago(settings.panel.checkedAt)}</span><a href="#">log out</a></div>
+    <div class="sec"><h2>awaiting approval <small>${pending} of ${rate.pendingGlobal} · compare the code with the box's log</small></h2>${req}</div>
+    <div class="sec"><h2>mon-clients <small>${clients.length}</small></h2><div class="scroll"><table><thead><tr><th>id</th><th>name</th><th>state</th><th>heartbeat</th><th>paths</th><th>version</th><th>config</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="dim" style="font-size:12px">revoke → the box gets 401, wipes its state and registers again · disable → 403, the box keeps its token and waits</div></div>
+    <div class="sec"><h2>settings</h2><div class="grid2">
+      <fieldset><legend>panel</legend>${fr('url', `<span class="fake" style="width:100%">${settings.panel.url}</span>`)}${fr('monToken', `<span class="fake" style="width:100%">${settings.panel.token}</span>`)}${fr('', `<span class="bt sm">check GET /state</span> <span class="ok">ok · ${settings.panel.inbounds} inbounds · override ${settings.panel.override}</span>`)}</fieldset>
+      <fieldset><legend>real server</legend>${fr('host for path direct', `<span class="fake">${settings.real.host}</span>`)}<div class="dim" style="font-size:12px">only mon-clients with the direct path receive it</div></fieldset>
+      <fieldset><legend>telegram</legend>${fr('bot token', `<span class="fake" style="width:100%">${settings.tg.token}</span>`)}${fr('chat id', `<span class="fake">${settings.tg.chat}</span> <span class="bt sm">send test</span>`)}</fieldset>
+      <fieldset><legend>thresholds</legend>${fr('target DOWN after misses', `<span class="fake">${settings.thr.down}</span>`)}${fr('target UP after successes', `<span class="fake">${settings.thr.up}</span>`)}${fr('FLAPPING transitions / minutes', `<span class="fake">${settings.thr.flapN}</span> / <span class="fake">${settings.thr.flapMin}</span>`)}${fr('mon-client OFFLINE after heartbeats', `<span class="fake">${settings.thr.clientOff}</span>`)}${fr('PANEL_DOWN after failed polls', `<span class="fake">${settings.thr.panelDown}</span>`)}</fieldset>
+      <fieldset><legend>probe (ms)</legend>${Object.entries(settings.probe).map(([k, v]) => fr(k, `<span class="fake">${v}</span>`)).join('')}<div class="dim" style="font-size:12px">bumps every mon-client's config revision</div></fieldset>
+      <fieldset><legend>tls &amp; admin <span class="dim">(bootstrap, read-only)</span></legend>${fr('tls.mode', `<span class="fake ro">${server.tls.mode}</span>`)}${fr('certificate', `<span class="dim">expires ${dur(server.tls.notAfter - NOW)}, renews ${dur(server.tls.renewAt - NOW)}</span>`)}${fr('dataDir', `<span class="fake ro">${server.dataDir}</span>`)}${fr('password', `<span class="dim">mon-server admin set-password</span>`)}</fieldset>
+    </div></div>
+    <div class="sticky"><span class="bt go">save settings</span><span class="dim">unsaved: none</span></div>
+  </div>`;
+}
+const VariantB = { name: 'One console: single page', render: () => [
+  surface('1 · Login', 'a form, nothing else', loginB()),
+  surface('2 · The console', 'one scrolling page: requests with inline approve forms (the second one is a replacement of msk-1), the registry with plain buttons, settings as fieldsets with a sticky Save', consoleB()),
+] };
+
+/* =====================================================================
+   VARIANT C · "Registry first": the registry is the home; pending requests
+   are ghost rows at its top; everything about one row lives in a drawer.
+   Settings is a separate page with a left nav and per-group Save.
+   Stack implied: Vue 2 + Ant Design (drawer, list) or Alpine.js + own CSS.
+   ===================================================================== */
+function topC(active) {
+  return `<div class="card tight hd" style="border-radius:8px 8px 0 0;border-bottom:0"><b>mon-server</b><span class="muted mono">${server.publicIp}</span><span class="sp"></span><span class="${active === 'reg' ? 'btn primary sm' : 'btn ghost sm'}">Registry${pending ? ` · ${pending} waiting` : ''}</span><span class="${active === 'set' ? 'btn primary sm' : 'btn ghost sm'}">Settings</span><span class="btn ghost sm">Log out</span></div>`;
+}
+function loginC() {
+  return `<div class="login"><div class="box">
+    <h2>mon-server</h2>
+    <dl class="kv"><dt>address</dt><dd class="mono">${server.publicIp}</dd><dt>certificate</dt><dd>Let's Encrypt for the IP, ${dur(server.tls.notAfter - NOW)} left</dd><dt>mon-clients</dt><dd>${clients.length} registered${pending ? `, <b>${pending} waiting</b>` : ''}</dd></dl>
+    <div class="in"><span class="ph">🔒 Password</span></div>
+    <span class="btn primary" style="justify-content:center">Log in</span>
+    <div class="muted" style="font-size:12px">5 failed attempts lock this IP for 15 minutes.</div>
+  </div></div>`;
+}
+function registryC(drawer) {
+  const ghost = requests.map((r, i) => `<tr class="ghost ${drawer === 'req' && i === 0 ? 'sel' : ''}"><td><span class="st PENDING">wants to join</span></td><td><b>${r.hostname}</b><div class="muted mono" style="font-size:11px">${r.ip} · v${r.version}</div></td><td><span class="code">${r.code.slice(0, 3)} ${r.code.slice(3)}</span></td><td class="exp">${mmss(r.expiresAt - NOW)} left</td><td colspan="2" class="muted">${r.hostname === 'msk-1' ? 'same hostname as <b>msk-1</b>: replacement?' : 'new box'}</td><td><span class="btn sm primary">Review →</span></td></tr>`).join('');
+  const rows = clients.map(c => `<tr class="${c.enabled ? '' : 'dis'} ${drawer === 'client' && c.id === 'fra-1' ? 'sel' : ''}"><td><span class="st ${stName(c)}">${stLabel(c)}</span></td><td><b>${c.name}</b><div class="muted mono" style="font-size:11px">${c.id} · ${c.region} · ${c.ip}</div></td><td>${c.lastHeartbeat ? ago(c.lastHeartbeat) : '<span class="muted">approved ' + ago(c.approvedAt) + '</span>'}</td><td>${pathTags(c.paths)}</td><td>${c.version ? 'v' + c.version : '<span class="muted">—</span>'}</td><td>${c.configError ? `<span class="tag err">⚠ config error</span>` : c.rev ? `<span class="mono muted">${c.rev.slice(0, 8)}</span>` : ''}</td><td><span class="btn sm">Open →</span></td></tr>`).join('');
+  let dr = '';
+  if (drawer === 'req') dr = `<div class="drawer"><div class="hd"><h3>vps-ams-2 wants to join</h3><span class="sp"></span><span class="btn sm">✕</span></div>
+    <div>${codeBig('7K3F9Q')}</div>
+    <dl class="kv"><dt>from</dt><dd class="mono">203.0.113.5</dd><dt>version</dt><dd>0.1.0</dd><dt>expires</dt><dd>in 3:41 (attempt 1, first seen ${ago(requests[0].receivedAt)})</dd></dl>
+    <div class="alert warn">Open the box's log and compare the code before approving.</div>
+    <div class="fi"><label>This box is…</label><span class="chk radio on"><i></i>a new mon-client</span><span class="chk radio"><i></i>a reinstall of an existing one</span></div>
+    <div class="row2"><div class="fi"><label>Name</label><div class="in">Amsterdam #2</div></div><div class="fi"><label>Region</label><div class="in">NL</div></div></div>
+    <div class="muted" style="font-size:12px">id <span class="mono">ams-2</span>, derived from the name, permanent</div>
+    <div class="fi"><label>Paths</label><span class="chk on"><i></i>proxy</span><span class="chk on"><i></i>direct <span class="muted">(reveals the real server's address to this box)</span></span></div>
+    <div class="hd" style="justify-content:flex-end"><span class="btn danger">Reject</span><span class="btn primary">Approve, issue token</span></div></div>`;
+  if (drawer === 'client') { const c = clients[1]; dr = `<div class="drawer"><div class="hd"><h3>${c.name}</h3><span class="st ONLINE">ONLINE</span><span class="sp"></span><span class="btn sm">✕</span></div>
+    <dl class="kv"><dt>id</dt><dd class="mono">${c.id}</dd><dt>region</dt><dd>${c.region}</dd><dt>address</dt><dd class="mono">${c.ip}</dd><dt>heartbeat</dt><dd>${ago(c.lastHeartbeat)} · every 60 s</dd><dt>version</dt><dd>${c.version} · xray ${c.xray}</dd><dt>approved</dt><dd>${ago(c.approvedAt)}</dd><dt>applied rev</dt><dd class="mono">${c.rev} <span class="tag err">behind</span></dd><dt>server rev</dt><dd class="mono">3a91c0de77b1f2e4</dd></dl>
+    <div><div class="tt" style="font-weight:500">Config error <span class="muted" style="font-size:12px">· Telegram sent ${ago(NOW - 4 * 60e3)}</span></div><div class="pre">${c.configError}</div></div>
+    <div class="fi"><label>Paths</label><span class="chk on"><i></i>proxy</span><span class="chk on"><i></i>direct</span> <span class="btn sm">Save paths</span></div>
+    <div class="fi"><label>Enabled</label><div><span class="switch"></span> <span class="muted" style="font-size:12px">off → the box gets 403 and waits, keeps its token</span></div></div>
+    <div class="danger-zone"><h4>Revoke token</h4><div class="muted" style="font-size:12px">The box gets 401, wipes its state file and registers again with a new pairing code. Its id, history and paths stay; approve the new request as a replacement to reattach them.</div><div><span class="btn danger sm">Revoke…</span></div></div></div>`; }
+  return `<div class="${drawer ? 'drawer-wrap' : ''}" style="border:1px solid var(--pn-line);border-radius:8px;overflow:hidden;background:var(--pn-bg)">${topC('reg')}
+    <div class="card" style="border-radius:0;padding:0 6px"><div class="scroll"><table class="t"><thead><tr><th>State</th><th>mon-client</th><th>Pairing / heartbeat</th><th>Paths</th><th>Version</th><th>Config</th><th></th></tr></thead><tbody>${ghost}${rows}</tbody></table></div></div>${dr}</div>`;
+}
+function settingsC() {
+  const f = (l, ctl, hint) => `<div class="fi"><label>${l}</label>${ctl}${hint ? `<div class="muted" style="font-size:12px">${hint}</div>` : ''}</div>`;
+  return `<div style="border:1px solid var(--pn-line);border-radius:8px;overflow:hidden;background:var(--pn-bg)">${topC('set')}
+    <div class="card" style="border-radius:0"><div class="two">
+      <div class="leftnav"><span class="on">Panel</span><span>Real server</span><span>Telegram</span><span>Thresholds</span><span>Probe cycle</span><span>TLS &amp; admin</span></div>
+      <div style="display:grid;gap:14px;max-width:560px">
+        <h3>Panel</h3>
+        ${f('Panel URL', `<div class="in mono">${settings.panel.url}</div>`, 'Polled every minute: state, override, probe configs.')}
+        ${f('Monitoring token', `<div class="in mono">${settings.panel.token}</div>`, 'Copied from the panel\'s Settings → Monitoring.')}
+        <div class="hd"><span class="btn">Check connection</span><span class="alert ok">✓ 200 · revision ${settings.panel.revision} · ${settings.panel.inbounds} inbounds · override on → ${settings.panel.override} · ${ago(settings.panel.checkedAt)}</span></div>
+        <div class="hd"><span class="btn primary">Save panel settings</span><span class="muted" style="font-size:12px">each group saves on its own</span></div>
+        <div style="border-top:1px solid var(--pn-line);padding-top:12px;display:grid;gap:10px" class="muted">
+          <div><b style="color:var(--pn-text)">Real server</b> · host <span class="mono">${settings.real.host}</span> for path direct</div>
+          <div><b style="color:var(--pn-text)">Telegram</b> · bot <span class="mono">${settings.tg.token}</span>, chat <span class="mono">${settings.tg.chat}</span>, last message ${ago(settings.tg.lastSent)}</div>
+          <div><b style="color:var(--pn-text)">Thresholds</b> · DOWN ${settings.thr.down} / UP ${settings.thr.up} / FLAPPING ${settings.thr.flapN} in ${settings.thr.flapMin} min / OFFLINE ${settings.thr.clientOff} / PANEL_DOWN ${settings.thr.panelDown}</div>
+          <div><b style="color:var(--pn-text)">Probe cycle</b> · 60 s, budget 20 s, connect 5 s, tls 10 s, headers 10 s, jitter 5 s, heartbeat 10 s</div>
+          <div><b style="color:var(--pn-text)">TLS &amp; admin</b> · ${server.tls.mode}, cert renews in ${dur(server.tls.renewAt - NOW)} · password via CLI</div>
+        </div>
+      </div></div></div></div>`;
+}
+const VariantC = { name: 'Registry first: drawer', render: () => [
+  surface('1 · Login', 'the card says what it guards: address, cert, how many boxes', loginC()),
+  surface('2 · Registry, reviewing a request', 'requests are ghost rows at the top of the same list; Review opens a drawer with the approve form', registryC('req')),
+  surface('3 · Registry, one mon-client open', 'the drawer is the whole record: revisions, the full config error, paths, Disable, Revoke in a danger zone', registryC('client')),
+  surface('4 · Settings page', 'left nav of groups, one group at a time, each with its own Save and an inline connection check', settingsC()),
+] };
+
+/* ---------- switcher ---------- */
+const variants = { A: VariantA, B: VariantB, C: VariantC };
+const order = Object.keys(variants);
+function render(key) {
+  const v = variants[key];
+  document.getElementById('root').innerHTML = v.render().join('');
+  document.getElementById('vkey').textContent = key;
+  document.getElementById('vname').textContent = '(' + v.name + ')';
+  try { const u = new URL(location.href); u.searchParams.set('variant', key); u.hash = key; history.replaceState(null, '', u); } catch (e) { location.hash = key; }
+  try { localStorage.setItem('mon-admin-proto-variant', key); } catch (e) {}
+}
+function current() { let k = 'A'; try { const u = new URL(location.href); k = (u.searchParams.get('variant') || u.hash.replace('#', '') || localStorage.getItem('mon-admin-proto-variant') || 'A').toUpperCase(); } catch (e) {} return order.includes(k) ? k : 'A'; }
+function step(d) { const i = order.indexOf(current()); render(order[(i + d + order.length) % order.length]); }
+document.getElementById('prev').addEventListener('click', () => step(-1));
+document.getElementById('next').addEventListener('click', () => step(1));
+document.addEventListener('keydown', e => { const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return; if (e.key === 'ArrowLeft') step(-1); if (e.key === 'ArrowRight') step(1); });
+window.addEventListener('hashchange', () => render(current()));
+render(current());
+</script>
