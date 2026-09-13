@@ -59,6 +59,19 @@ class AllSetting {
 
         this.timeLocation = "Local";
 
+        // Inbound monitoring
+        this.monEnable = false;
+        this.monToken = "";
+        this.monStaleMinutes = 15;
+        this.monProbeSubId = "";
+        this.monProbeLastEnsured = 0;
+        this.monProbeTtlHours = 24;
+        this.monLastContact = 0;
+        this.monClientsSnapshot = "[]";
+        this.monRetentionDays = 7;
+        this.monRollupRetentionDays = 30;
+        this.monRollupStepMinutes = 60;
+
         // LDAP settings
         this.ldapEnable = false;
         this.ldapHost = "";

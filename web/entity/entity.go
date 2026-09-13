@@ -91,6 +91,22 @@ type AllSetting struct {
 	ProxyOverrideEnable bool   `json:"proxyOverrideEnable" form:"proxyOverrideEnable"`
 	ProxyOverrideHost   string `json:"proxyOverrideHost" form:"proxyOverrideHost"`
 
+	// Inbound monitoring (docs/spec/monitoring-panel.md §2.2). The four
+	// runtime keys (probe subId, last ensured, last contact, registry
+	// snapshot) are written by mon-server's requests, not by the settings page,
+	// which only shows them.
+	MonEnable              bool   `json:"monEnable" form:"monEnable"`                           // Open the /mon/v1 contract to mon-server
+	MonToken               string `json:"monToken" form:"monToken"`                             // Bearer token mon-server presents
+	MonStaleMinutes        int    `json:"monStaleMinutes" form:"monStaleMinutes"`               // Silence before the panel declares STALE
+	MonProbeSubId          string `json:"monProbeSubId" form:"monProbeSubId"`                   // subId shared by every probe account
+	MonProbeLastEnsured    int64  `json:"monProbeLastEnsured" form:"monProbeLastEnsured"`       // Last POST /probe/ensure, ms
+	MonProbeTtlHours       int    `json:"monProbeTtlHours" form:"monProbeTtlHours"`             // Hours without ensure before the probe set is removed
+	MonLastContact         int64  `json:"monLastContact" form:"monLastContact"`                 // Last authorized mon-server request, ms
+	MonClientsSnapshot     string `json:"monClientsSnapshot" form:"monClientsSnapshot"`         // Registry snapshot cache (JSON)
+	MonRetentionDays       int    `json:"monRetentionDays" form:"monRetentionDays"`             // Retention of events and 5-minute aggregates
+	MonRollupRetentionDays int    `json:"monRollupRetentionDays" form:"monRollupRetentionDays"` // Retention of rollup aggregates
+	MonRollupStepMinutes   int    `json:"monRollupStepMinutes" form:"monRollupStepMinutes"`     // Rollup step
+
 	// LDAP settings
 	LdapEnable     bool   `json:"ldapEnable" form:"ldapEnable"`
 	LdapHost       string `json:"ldapHost" form:"ldapHost"`

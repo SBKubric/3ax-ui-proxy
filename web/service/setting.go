@@ -94,6 +94,20 @@ var defaultValueMap = map[string]string{
 	"proxyOverrideEnable": "false",
 	"proxyOverrideHost":   "",
 
+	// Inbound monitoring (docs/spec/monitoring-panel.md §2.2): the /mon/v1
+	// contract mon-server talks to, the probe set it asks for, and retention.
+	"monEnable":              "false",
+	"monToken":               "",
+	"monStaleMinutes":        "15",
+	"monProbeSubId":          "",
+	"monProbeLastEnsured":    "0",
+	"monProbeTtlHours":       "24",
+	"monLastContact":         "0",
+	"monClientsSnapshot":     "[]",
+	"monRetentionDays":       "7",
+	"monRollupRetentionDays": "30",
+	"monRollupStepMinutes":   "60",
+
 	// LDAP defaults
 	"ldapEnable":            "false",
 	"ldapHost":              "",
@@ -189,6 +203,12 @@ func (s *SettingService) GetAllSetting() (*entity.AllSetting, error) {
 		fieldV := v.FieldByName(field.Name)
 		switch t := fieldV.Interface().(type) {
 		case int:
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return err
+			}
+			fieldV.SetInt(n)
+		case int64:
 			n, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
 				return err
