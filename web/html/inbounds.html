@@ -421,6 +421,10 @@
                                                 >{{ i18n "online"
                                                 }}</a-radio-button
                                             >
+                                            <a-radio-button value="down"
+                                                >{{ i18n "pages.inbounds.filterDown"
+                                                }}</a-radio-button
+                                            >
                                         </a-radio-group>
                                     </div>
                                     <a-table
@@ -656,6 +660,25 @@
                                                     >Reality</a-tag
                                                 >
                                             </template>
+                                        </template>
+                                        <template
+                                            slot="health"
+                                            slot-scope="text, dbInbound"
+                                        >
+                                            <a-tooltip
+                                                v-if="monHealthOf(dbInbound)"
+                                                :overlay-class-name="themeSwitcher.currentTheme"
+                                            >
+                                                <template slot="title">
+                                                    <div v-for="line in monHealthLines(dbInbound)" :key="line">[[ line ]]</div>
+                                                </template>
+                                                <a-tag
+                                                    :style="{ margin: '0' }"
+                                                    :color="monHealthColor(monHealthOf(dbInbound))"
+                                                    >[[ monHealthOf(dbInbound) ]]</a-tag
+                                                >
+                                            </a-tooltip>
+                                            <span v-else :style="{ opacity: 0.4 }">—</span>
                                         </template>
                                         <template
                                             slot="clients"
@@ -980,6 +1003,12 @@
                                             >
                                                 <template slot="content">
                                                     <table cellpadding="2">
+                                                        <tr v-if="monHealthOf(dbInbound)">
+                                                            <td>{{ i18n "pages.inbounds.health" }}</td>
+                                                            <td>
+                                                                <a-tag :style="{ margin: '0' }" :color="monHealthColor(monHealthOf(dbInbound))">[[ monHealthOf(dbInbound) ]]</a-tag>
+                                                            </td>
+                                                        </tr>
                                                         <tr>
                                                             <td>
                                                                 {{ i18n
@@ -1475,6 +1504,12 @@
             scopedSlots: { customRender: "clients" },
         },
         {
+            title: '{{ i18n "pages.inbounds.health" }}',
+            align: "center",
+            width: 40,
+            scopedSlots: { customRender: "health" },
+        },
+        {
             title: '{{ i18n "pages.inbounds.traffic" }}',
             align: "center",
             width: 85,
@@ -1711,6 +1746,11 @@
             defaultKey: "",
             clientCount: [],
             onlineClients: [],
+            // Inbound monitoring (GET /panel/api/monitoring/targets): the
+            // folded Health per inbound, the live targets and the STALE flag.
+            monHealth: {},
+            monTargets: [],
+            monStale: false,
             mtprotoVersion: "",
             lastOnlineMap: {},
             isRefreshEnabled:
@@ -1755,6 +1795,44 @@
                 }
                 return isWg ? innerColumnsWg : innerColumns;
             },
+            // --- Inbound monitoring (docs/spec/monitoring-panel.md §7.2) ---
+            async getMonitoringHealth() {
+                const msg = await HttpUtil.get("/panel/api/monitoring/targets");
+                if (!msg.success || !msg.obj) return;
+                const health = {};
+                (msg.obj.inbounds || []).forEach((ib) => {
+                    if (ib.health) health[ib.kind + ":" + ib.inboundId] = ib.health;
+                });
+                this.monHealth = health;
+                this.monTargets = msg.obj.targets || [];
+                this.monStale = !!msg.obj.stale;
+            },
+            monKeyOf(dbInbound) {
+                return dbInbound.protocol === Protocols.AMNEZIAWG ? "awg:0" : "xray:" + dbInbound.id;
+            },
+            monHealthOf(dbInbound) {
+                const h = this.monHealth[this.monKeyOf(dbInbound)];
+                if (!h) return "";
+                return this.monStale ? "STALE" : h;
+            },
+            monHealthColor(state) {
+                switch (state) {
+                    case "UP": return "green";
+                    case "DOWN": return "red";
+                    case "FLAPPING": return "orange";
+                    case "UNKNOWN": return "purple";
+                    case "STALE": return "gold";
+                    default: return "";
+                }
+            },
+            monHealthLines(dbInbound) {
+                const [kind, id] = this.monKeyOf(dbInbound).split(":");
+                const bad = this.monTargets.filter((t) =>
+                    t.inboundKind === kind && String(t.inboundId) === id && t.state !== "UP");
+                if (this.monStale) return ['{{ i18n "pages.inbounds.healthStale" }}'];
+                if (!bad.length) return ['{{ i18n "pages.inbounds.healthTooltip" }}'];
+                return bad.map((t) => t.monClientId + " · " + t.path + " · " + t.state + (t.reason ? " · " + t.reason : ""));
+            },
             async getDBInbounds() {
                 this.refreshing = true;
                 const msg = await HttpUtil.get("/panel/api/inbounds/list");
@@ -1766,6 +1844,7 @@
                 await this.getLastOnlineMap();
                 await this.getOnlineUsers();
                 await this.getNginxRoutes();
+                await this.getMonitoringHealth();
 
                 // Enrich amneziawg inbounds with AWG client data
                 await this.enrichAwgInbounds(msg.obj);
@@ -2156,8 +2235,10 @@
                     online = [],
                     comments = new Map(),
                     labels = new Map();
-                clients = inbound.clients;
-                clientStats = dbInbound.clientStats;
+                // Monitoring probe accounts are not users (monitoring-panel.md §3.4).
+                const isProbe = (c) => c && c.email && c.email.toLowerCase().startsWith("probe-");
+                clients = inbound.clients ? inbound.clients.filter((c) => !isProbe(c)) : inbound.clients;
+                clientStats = dbInbound.clientStats.filter((st) => !isProbe(st));
                 now = new Date().getTime();
                 if (clients) {
                     clientCount = clients.length;
@@ -2325,6 +2406,11 @@
             filterInbounds() {
                 if (ObjectUtil.isEmpty(this.filterBy)) {
                     this.searchedInbounds = this.dbInbounds.slice();
+                } else if (this.filterBy === "down") {
+                    // Monitoring's Health, not a client list (monitoring-panel.md §7.2).
+                    this.searchedInbounds = this.dbInbounds.filter(
+                        (inbound) => this.monHealthOf(inbound) === "DOWN",
+                    );
                 } else {
                     this.searchedInbounds.splice(
                         0,

@@ -1,0 +1,341 @@
+{{ template "page/head_start" .}}
+<style>
+  /* State colours of docs/spec/monitoring-panel.md §7.1, light first, dark
+     under the panel's theme classes. */
+  .monitoring-page {
+    --mon-up: #008771; --mon-up-soft: #e6f7f3;
+    --mon-down: #cf3c3c; --mon-down-soft: #fdecec;
+    --mon-flap: #f37b24; --mon-flap-soft: #fff1e6;
+    --mon-unk: #7a316f; --mon-unk-soft: #f6e9f4;
+    --mon-pause: #bcbcbc; --mon-pause-soft: #f2f2f2;
+    --mon-stale: #b58a00; --mon-stale-soft: #fff8dc;
+    --mon-muted: rgba(0, 0, 0, 0.45);
+    --mon-line: #f0f0f0;
+    --mon-card2: #fafafa;
+  }
+  .monitoring-page.dark, .monitoring-page.ultra-dark {
+    --mon-up: #3ad3ba; --mon-up-soft: #10302b;
+    --mon-down: #e04141; --mon-down-soft: #3a1717;
+    --mon-flap: #ffa031; --mon-flap-soft: #3a2a12;
+    --mon-unk: #b06aa5; --mon-unk-soft: #33203a;
+    --mon-pause: #2c3950; --mon-pause-soft: #1b2436;
+    --mon-stale: #e0b93a; --mon-stale-soft: #3a3212;
+    --mon-muted: rgba(255, 255, 255, 0.45);
+    --mon-line: #2c3950;
+    --mon-card2: #0a1222;
+  }
+  .monitoring-page .mon-hd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .monitoring-page .mon-hd .mon-sp { flex: 1; }
+  .monitoring-page .mon-title { font-size: 18px; font-weight: 600; margin: 0; }
+  .monitoring-page .mon-muted { color: var(--mon-muted); }
+  .monitoring-page .mon-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .monitoring-page .mon-st {
+    display: inline-flex; align-items: center; gap: 6px; border-radius: 4px; padding: 0 8px;
+    line-height: 22px; font-size: 12px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
+  }
+  .monitoring-page .mon-st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .monitoring-page .mon-st.UP, .monitoring-page .mon-st.ONLINE { color: var(--mon-up); background: var(--mon-up-soft); }
+  .monitoring-page .mon-st.DOWN, .monitoring-page .mon-st.OFFLINE { color: var(--mon-down); background: var(--mon-down-soft); }
+  .monitoring-page .mon-st.FLAPPING { color: var(--mon-flap); background: var(--mon-flap-soft); }
+  .monitoring-page .mon-st.UNKNOWN { color: var(--mon-unk); background: var(--mon-unk-soft); }
+  .monitoring-page .mon-st.PAUSED { color: var(--mon-muted); background: var(--mon-pause-soft); }
+  .monitoring-page .mon-st.PAUSED::before { background: var(--mon-pause); }
+  .monitoring-page .mon-st.STALE { color: var(--mon-stale); background: var(--mon-stale-soft); }
+  .monitoring-page .mon-st.STALE::before { background: repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 4px); border-radius: 1px; }
+  .monitoring-page .mon-st.NONE { color: var(--mon-muted); background: var(--mon-pause-soft); }
+  .monitoring-page .mon-st.NONE::before { background: var(--mon-pause); }
+  .monitoring-page .mon-pill {
+    display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--mon-line); background: var(--mon-card2);
+    border-radius: 999px; padding: 3px 12px 3px 8px; font-size: 13px;
+  }
+  .monitoring-page .mon-pill.stale { border-style: dashed; border-color: var(--mon-stale); color: var(--mon-stale); background: var(--mon-stale-soft); }
+  .monitoring-page .mon-pill.live { border-color: var(--mon-up); color: var(--mon-up); background: var(--mon-up-soft); }
+  .monitoring-page .mon-pill.off { border-style: dashed; }
+  .monitoring-page .mon-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+  .monitoring-page .mon-dot.ONLINE { background: var(--mon-up); }
+  .monitoring-page .mon-dot.OFFLINE { background: var(--mon-down); }
+  .monitoring-page .mon-dot.STALE { background: var(--mon-stale); }
+  .monitoring-page .mon-dot.pulse { animation: mon-pulse 1.2s linear infinite; }
+  @keyframes mon-pulse { 0%, 50%, 100% { transform: scale(1); opacity: 1; } 10% { transform: scale(1.5); opacity: .2; } }
+  @media (prefers-reduced-motion: reduce) { .monitoring-page .mon-dot.pulse { animation: none; } }
+  .monitoring-page .mon-card .ant-card-body { padding: 14px 18px; }
+  .monitoring-page .mon-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .monitoring-page .mon-table th { text-align: left; font-weight: 500; color: var(--mon-muted); padding: 6px 8px; border-bottom: 1px solid var(--mon-line); background: var(--mon-card2); font-size: 12px; white-space: nowrap; }
+  .monitoring-page .mon-table td { padding: 7px 8px; border-bottom: 1px solid var(--mon-line); vertical-align: middle; }
+  .monitoring-page .mon-table tr:last-child td { border-bottom: 0; }
+  .monitoring-page .mon-table td.r, .monitoring-page .mon-table th.r { text-align: right; }
+  .monitoring-page .mon-scroll { overflow-x: auto; }
+  .monitoring-page .mon-feed .mon-ev { display: grid; grid-template-columns: 56px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--mon-line); font-size: 13px; align-items: start; }
+  .monitoring-page .mon-feed .mon-ev:last-child { border-bottom: 0; }
+  .monitoring-page .mon-feed .mon-tm { color: var(--mon-muted); font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding-top: 2px; }
+  .monitoring-page .mon-feed .mon-dot { margin-right: 6px; }
+  .monitoring-page .mon-feed .mon-dot.UP { background: var(--mon-up); }
+  .monitoring-page .mon-feed .mon-dot.DOWN { background: var(--mon-down); }
+  .monitoring-page .mon-feed .mon-dot.FLAPPING { background: var(--mon-flap); }
+  .monitoring-page .mon-feed .mon-dot.UNKNOWN { background: var(--mon-unk); }
+  .monitoring-page .mon-feed .mon-dot.PAUSED { background: var(--mon-pause); }
+  .monitoring-page .mon-feed .mon-dot.PANEL_DOWN { background: var(--mon-stale); }
+  .monitoring-page .mon-feed .mon-dot.PANEL_UP { background: var(--mon-up); }
+  .monitoring-page .mon-spark { margin-top: 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+  @media (max-width: 576px) { .monitoring-page .mon-spark { grid-template-columns: 1fr; } }
+</style>
+{{ template "page/head_end" .}}
+
+{{ template "page/body_start" .}}
+<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme + ' monitoring-page'">
+  <a-sidebar></a-sidebar>
+  <a-layout id="content-layout">
+    <a-layout-content>
+      <a-spin :spinning="loadingStates.spinning" :delay="500" tip='{{ i18n "loading"}}' size="large">
+        <transition name="list" appear>
+          <template>
+            <a-row v-if="!loadingStates.fetched">
+              <div :style="{ minHeight: 'calc(100vh - 120px)' }"></div>
+            </a-row>
+            <a-row :gutter="[isMobile ? 8 : 16, isMobile ? 8 : 12]" v-else>
+              <a-col :xs="24">
+                <div class="mon-hd">
+                  <h1 class="mon-title">{{ i18n "pages.monitoring.title" }}</h1>
+                  <span class="mon-sp"></span>
+                  <span v-if="!state.enabled" class="mon-pill off">
+                    <span class="mon-dot"></span>{{ i18n "pages.monitoring.disabled" }}
+                  </span>
+                  <span v-else-if="state.stale" class="mon-pill stale">
+                    <span class="mon-dot STALE"></span>{{ i18n "pages.monitoring.stale" }} [[ clock(state.staleSince) ]]
+                  </span>
+                  <span v-else-if="state.lastContact" class="mon-pill live">
+                    <span class="mon-dot ONLINE pulse"></span>{{ i18n "pages.monitoring.live" }} · {{ i18n "pages.monitoring.lastContact" }} [[ ago(state.lastContact) ]]
+                  </span>
+                  <span v-else class="mon-pill off">
+                    <span class="mon-dot"></span>{{ i18n "pages.monitoring.noContact" }}
+                  </span>
+                </div>
+              </a-col>
+              <a-col :xs="24" v-if="state.monClients.length">
+                <div class="mon-hd">
+                  <span class="mon-muted" :style="{ fontSize: '12px' }">{{ i18n "pages.monitoring.monClients" }}</span>
+                  <span v-for="mc in state.monClients" :key="mc.id" class="mon-pill" :title="mc.id">
+                    <span class="mon-dot" :class="[mc.state, mc.state === 'ONLINE' ? 'pulse' : '']"></span>
+                    <b>[[ mc.name || mc.id ]]</b>
+                    <span class="mon-muted" v-if="mc.region">[[ mc.region ]]</span>
+                    <span class="mon-muted mon-mono" v-if="mc.state === 'ONLINE'">{{ i18n "pages.monitoring.heartbeat" }} [[ ago(mc.lastHeartbeat) ]]</span>
+                    <span class="mon-muted mon-mono" v-else>OFFLINE [[ forDuration(mc.lastHeartbeat) ]]</span>
+                  </span>
+                </div>
+              </a-col>
+              <a-col :xs="24" :lg="16">
+                <a-space direction="vertical" :size="isMobile ? 8 : 12" :style="{ width: '100%' }">
+                  <a-card v-if="!state.inbounds.length" class="mon-card" hoverable>
+                    <span class="mon-muted">{{ i18n "pages.monitoring.noData" }}</span>
+                  </a-card>
+                  <a-card v-for="ib in state.inbounds" :key="ib.kind + ':' + ib.inboundId" class="mon-card" hoverable>
+                    <div class="mon-hd">
+                      <b>[[ ib.remark || ib.tag ]]</b>
+                      <a-tag :style="{ margin: 0 }" color="green">[[ ib.protocol ]]</a-tag>
+                      <span class="mon-muted mon-mono">:[[ ib.port ]]</span>
+                      <span class="mon-sp"></span>
+                      <span v-if="state.override.enabled" class="mon-muted" :style="{ fontSize: '12px' }">proxy → [[ state.override.host ]]</span>
+                      <span class="mon-st" :class="healthOf(ib)">[[ healthLabel(ib) ]]</span>
+                    </div>
+                    <div class="mon-scroll" :style="{ marginTop: '8px' }">
+                      <table class="mon-table">
+                        <thead>
+                          <tr>
+                            <th>{{ i18n "pages.monitoring.monClient" }}</th>
+                            <th>{{ i18n "pages.monitoring.path" }}</th>
+                            <th>{{ i18n "pages.monitoring.state" }}</th>
+                            <th>{{ i18n "pages.monitoring.for" }}</th>
+                            <th class="r">{{ i18n "pages.monitoring.uptime24" }}</th>
+                            <th class="r">{{ i18n "pages.monitoring.latency" }}</th>
+                            <th>{{ i18n "pages.monitoring.reason" }}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-if="!targetsOf(ib).length">
+                            <td colspan="7" class="mon-muted">{{ i18n "pages.monitoring.noTargets" }}</td>
+                          </tr>
+                          <tr v-for="t in targetsOf(ib)" :key="t.monClientId + '/' + t.path">
+                            <td>[[ monClientName(t.monClientId) ]] <span class="mon-muted">[[ monClientRegion(t.monClientId) ]]</span></td>
+                            <td><a-tag :style="{ margin: 0 }" :color="t.path === 'proxy' ? 'blue' : ''">[[ t.path ]]</a-tag></td>
+                            <td><span class="mon-st" :class="state.stale ? 'STALE' : t.state">[[ state.stale ? 'STALE' : t.state ]]</span></td>
+                            <td class="mon-muted">[[ t.since ? forDuration(t.since) : '—' ]]</td>
+                            <td class="r">[[ t.uptime24h == null ? '—' : (t.uptime24h * 100).toFixed(1) + '%' ]]<span v-if="t.uptime24h != null && t.cov24h < 0.995" class="mon-muted"> ({{ i18n "pages.monitoring.coverage" }} [[ Math.round(t.cov24h * 100) ]]%)</span></td>
+                            <td class="r">[[ t.latAvg24h == null ? '—' : t.latAvg24h + ' ms' ]]</td>
+                            <td class="mon-mono mon-muted">[[ t.reason ]]</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="mon-spark">
+                      <div>
+                        <mon-sparkline v-if="chartOf(ib)" :data="chartOf(ib).data" :labels="chartOf(ib).labels"
+                          :stroke="ib.enable ? 'var(--mon-up)' : 'var(--mon-pause)'" :height="96" :vb-width="640"></mon-sparkline>
+                        <span v-else class="mon-muted" :style="{ fontSize: '12px' }">{{ i18n "pages.monitoring.noData" }}</span>
+                      </div>
+                      <a-radio-group size="small" button-style="solid" :value="rangeOf(ib)" @change="e => setRange(ib, e.target.value)">
+                        <a-radio-button value="24h">24h</a-radio-button>
+                        <a-radio-button value="7d">7d</a-radio-button>
+                        <a-radio-button value="30d">30d</a-radio-button>
+                      </a-radio-group>
+                    </div>
+                  </a-card>
+                </a-space>
+              </a-col>
+              <a-col :xs="24" :lg="8">
+                <a-card class="mon-card" hoverable>
+                  <div class="mon-hd">
+                    <b>{{ i18n "pages.monitoring.events" }}</b>
+                    <span class="mon-sp"></span>
+                    <a-button size="small" icon="reload" @click="fetchAll"></a-button>
+                  </div>
+                  <div class="mon-feed" :style="{ marginTop: '6px' }">
+                    <div v-if="!events.length" class="mon-muted" :style="{ padding: '8px 0' }">{{ i18n "pages.monitoring.noData" }}</div>
+                    <div v-for="e in events" :key="e.id" class="mon-ev">
+                      <span class="mon-tm" :title="fullDate(e.ts)">[[ clock(e.ts) ]]</span>
+                      <span>
+                        <span class="mon-dot" :class="e.to"></span>
+                        <b>[[ e.to ]]</b>
+                        <template v-if="e.kind === 'target'"> · [[ e.inboundRemark || (e.inboundKind + ' ' + e.inboundId) ]] via [[ e.path ]] · [[ monClientName(e.monClientId) ]]</template>
+                        <template v-else-if="e.kind === 'mon_client'"> · mon-client [[ monClientName(e.monClientId) ]]</template>
+                        <template v-else> · {{ i18n "pages.monitoring.viaMonServer" }}</template>
+                        <span v-if="e.reason" class="mon-mono mon-muted"> · [[ e.reason ]]</span>
+                        <a-tag v-if="e.retired" :style="{ margin: '0 0 0 6px' }">{{ i18n "pages.monitoring.retired" }}</a-tag>
+                      </span>
+                    </div>
+                  </div>
+                  <div v-if="events.length >= eventsPage" :style="{ marginTop: '8px', textAlign: 'center' }">
+                    <a-button size="small" @click="moreEvents">{{ i18n "pages.monitoring.more" }}</a-button>
+                  </div>
+                </a-card>
+              </a-col>
+            </a-row>
+          </template>
+        </transition>
+      </a-spin>
+    </a-layout-content>
+  </a-layout>
+</a-layout>
+{{template "page/body_scripts" .}}
+{{template "component/aSidebar" .}}
+{{template "component/aThemeSwitch" .}}
+{{template "component/aMonSparkline" .}}
+<script>
+  const app = new Vue({
+    delimiters: ['[[', ']]'],
+    mixins: [MediaQueryMixin],
+    el: '#app',
+    data: {
+      themeSwitcher,
+      loadingStates: { fetched: false, spinning: false },
+      state: { enabled: false, stale: false, staleSince: 0, lastContact: 0, serverTime: 0, override: { enabled: false, host: '' }, monClients: [], inbounds: [], targets: [] },
+      events: [],
+      eventsPage: 50,
+      charts: {},   // "kind:id" -> { range, data, labels }
+      ranges: {},   // "kind:id" -> range key
+      timer: null,
+    },
+    methods: {
+      key(ib) { return ib.kind + ':' + ib.inboundId },
+      async fetchAll() {
+        const msg = await HttpUtil.get('/panel/api/monitoring/targets');
+        if (msg.success && msg.obj) {
+          this.state = msg.obj;
+          this.state.monClients = this.state.monClients || [];
+          this.state.inbounds = this.state.inbounds || [];
+          this.state.targets = this.state.targets || [];
+        }
+        const ev = await HttpUtil.get('/panel/api/monitoring/events', { limit: this.eventsPage });
+        if (ev.success) this.events = ev.obj || [];
+        this.loadingStates.fetched = true;
+        for (const ib of this.state.inbounds) this.fetchChart(ib);
+      },
+      async moreEvents() {
+        const last = this.events[this.events.length - 1];
+        if (!last) return;
+        const ev = await HttpUtil.get('/panel/api/monitoring/events', { limit: this.eventsPage, before: last.ts });
+        if (ev.success && ev.obj && ev.obj.length) this.events = this.events.concat(ev.obj);
+      },
+      rangeOf(ib) { return this.ranges[this.key(ib)] || '7d' },
+      chartOf(ib) { return this.charts[this.key(ib)] || null },
+      setRange(ib, range) {
+        this.$set(this.ranges, this.key(ib), range);
+        this.fetchChart(ib);
+      },
+      async fetchChart(ib) {
+        const range = this.rangeOf(ib);
+        const msg = await HttpUtil.get('/panel/api/monitoring/stats', { inboundKind: ib.kind, inboundId: ib.inboundId, range });
+        if (!msg.success || !msg.obj) return;
+        const res = msg.obj;
+        const series = res.series || [];
+        if (!series.length) { this.$set(this.charts, this.key(ib), null); return; }
+        // One uptime line per inbound: every mon-client and both paths summed
+        // per bucket; a bucket nobody reported stays null and breaks the line.
+        const n = series[0].points.length;
+        const data = new Array(n).fill(null);
+        const labels = new Array(n).fill('');
+        for (let i = 0; i < n; i++) {
+          let ok = 0, fail = 0, seen = false;
+          for (const s of series) {
+            const p = s.points[i];
+            if (p) { ok += p.nOk; fail += p.nFail; seen = true; }
+          }
+          if (seen && ok + fail > 0) data[i] = (ok / (ok + fail)) * 100;
+          else if (seen) data[i] = null;
+          labels[i] = this.bucketLabel(res.from + i * res.stepMs, range);
+        }
+        this.$set(this.charts, this.key(ib), { range, data, labels });
+      },
+      bucketLabel(t, range) {
+        const d = new Date(t);
+        if (range === '24h' || range === '1h') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      },
+      targetsOf(ib) {
+        return this.state.targets.filter(t => t.inboundKind === ib.kind && t.inboundId === ib.inboundId);
+      },
+      healthOf(ib) {
+        if (this.state.stale) return 'STALE';
+        return ib.health || 'NONE';
+      },
+      healthLabel(ib) {
+        const h = this.healthOf(ib);
+        return h === 'NONE' ? '—' : h;
+      },
+      monClient(id) { return this.state.monClients.find(mc => mc.id === id) },
+      monClientName(id) { const mc = this.monClient(id); return mc ? (mc.name || mc.id) : id },
+      monClientRegion(id) { const mc = this.monClient(id); return mc && mc.region ? mc.region : '' },
+      now() { return Date.now() },
+      ago(ms) {
+        if (!ms) return '—';
+        return this.duration(Math.max(0, this.now() - ms)) + ' ' + '{{ i18n "pages.monitoring.ago" }}';
+      },
+      forDuration(ms) {
+        if (!ms) return '—';
+        return this.duration(Math.max(0, this.now() - ms));
+      },
+      duration(ms) {
+        const s = Math.floor(ms / 1000);
+        if (s < 60) return s + 's';
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + 'm';
+        const h = Math.floor(m / 60);
+        if (h < 24) return h + 'h ' + (m % 60) + 'm';
+        const d = Math.floor(h / 24);
+        return d + 'd ' + (h % 24) + 'h';
+      },
+      clock(ms) {
+        if (!ms) return '—';
+        return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      },
+      fullDate(ms) { return ms ? new Date(ms).toLocaleString() : '' },
+    },
+    async mounted() {
+      await this.fetchAll();
+      this.timer = setInterval(() => this.fetchAll(), 30000);
+    },
+    beforeDestroy() {
+      if (this.timer) clearInterval(this.timer);
+    },
+  });
+</script>
+{{ template "page/body_end" .}}

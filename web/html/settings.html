@@ -87,6 +87,13 @@
                     </template>
                     {{ template "settings/panel/subscription/json" . }}
                   </a-tab-pane>
+                  <a-tab-pane key="6" :style="{ paddingTop: '20px' }">
+                    <template #tab>
+                      <a-icon type="line-chart"></a-icon>
+                      <span>{{ i18n "pages.settings.monitoringSettings" }}</span>
+                    </template>
+                    {{ template "settings/panel/monitoring" . }}
+                  </a-tab-pane>
                 </a-tabs>
               </a-col>
             </a-row>
@@ -103,12 +110,13 @@
 {{template "component/aSidebar" .}}
 {{template "component/aThemeSwitch" .}}
 {{template "component/aSettingListItem" .}}
+{{template "settings/panel/monitoringScript" .}}
 {{template "modals/twoFactorModal" .}}
 {{template "modals/textModal" .}}
 <script>
   const app = new Vue({
     delimiters: ['[[', ']]'],
-    mixins: [MediaQueryMixin],
+    mixins: [MediaQueryMixin, MonitoringSettingsMixin],
     el: '#app',
     data: {
       themeSwitcher,

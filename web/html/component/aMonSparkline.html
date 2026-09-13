@@ -1,0 +1,144 @@
+{{define "component/aMonSparkline"}}
+<script>
+  // mon-sparkline draws an uptime series as an inline SVG, the way the
+  // dashboard's sparkline draws CPU, with one difference the monitoring page
+  // needs: a null point is a bucket that never arrived, and it breaks the
+  // line instead of being drawn as zero. No chart library.
+  Vue.component('mon-sparkline', {
+    props: {
+      data: { type: Array, required: true },   // percentages 0..100, or null for a gap
+      labels: { type: Array, default: () => [] },
+      vbWidth: { type: Number, default: 640 },
+      height: { type: Number, default: 96 },
+      stroke: { type: String, default: '#008771' },
+      gapColor: { type: String, default: 'rgba(128,128,128,0.25)' },
+      gridColor: { type: String, default: 'rgba(128,128,128,0.15)' },
+      textColor: { type: String, default: 'rgba(128,128,128,0.7)' },
+      strokeWidth: { type: Number, default: 2 },
+      fillOpacity: { type: Number, default: 0.15 },
+      paddingLeft: { type: Number, default: 34 },
+      paddingRight: { type: Number, default: 6 },
+      paddingTop: { type: Number, default: 8 },
+      paddingBottom: { type: Number, default: 18 },
+      tickCountX: { type: Number, default: 4 },
+      floor: { type: Number, default: 90 }, // the y axis starts here: 90..100 is where uptime lives
+    },
+    data() { return { hoverIdx: -1, uid: 'mspk' + Math.random().toString(36).slice(2, 8) } },
+    computed: {
+      viewBoxAttr() { return '0 0 ' + this.vbWidth + ' ' + this.height },
+      drawWidth() { return Math.max(1, this.vbWidth - this.paddingLeft - this.paddingRight) },
+      drawHeight() { return Math.max(1, this.height - this.paddingTop - this.paddingBottom) },
+      n() { return this.data.length },
+      dx() { return this.n > 1 ? this.drawWidth / (this.n - 1) : 0 },
+      yMin() {
+        // Drop the floor when the series dips under it, so a bad day still fits.
+        let min = this.floor
+        for (const v of this.data) if (v != null && v < min) min = v
+        return Math.max(0, Math.floor(min / 10) * 10)
+      },
+      pointsArr() {
+        const span = Math.max(1, 100 - this.yMin)
+        return this.data.map((v, i) => {
+          if (v == null) return null
+          const x = Math.round(this.paddingLeft + i * this.dx)
+          const clamped = Math.max(this.yMin, Math.min(100, v))
+          const y = Math.round(this.paddingTop + this.drawHeight - ((clamped - this.yMin) / span) * this.drawHeight)
+          return [x, y]
+        })
+      },
+      // Consecutive runs of present points, each drawn as its own polyline.
+      segments() {
+        const out = []
+        let run = []
+        for (const p of this.pointsArr) {
+          if (p) { run.push(p) } else if (run.length) { out.push(run); run = [] }
+        }
+        if (run.length) out.push(run)
+        return out
+      },
+      // Ranges of missing points, shaded so a gap reads as "no data", not "100 %".
+      gaps() {
+        const out = []
+        let start = -1
+        this.pointsArr.forEach((p, i) => {
+          if (!p && start < 0) start = i
+          if (p && start >= 0) { out.push([start, i - 1]); start = -1 }
+        })
+        if (start >= 0) out.push([start, this.n - 1])
+        return out.map(([a, b]) => ({
+          x: Math.round(this.paddingLeft + Math.max(0, a - 0.5) * this.dx),
+          w: Math.max(2, Math.round((b - a + 1) * this.dx)),
+        }))
+      },
+      areaPaths() {
+        const bottom = this.paddingTop + this.drawHeight
+        return this.segments.filter(s => s.length > 1).map(s =>
+          'M ' + s[0][0] + ',' + bottom + ' L ' + s.map(p => p[0] + ',' + p[1]).join(' L ') + ' L ' + s[s.length - 1][0] + ',' + bottom + ' Z')
+      },
+      yTicks() {
+        const ticks = []
+        const step = (100 - this.yMin) <= 10 ? 5 : (100 - this.yMin) <= 20 ? 10 : 25
+        for (let p = this.yMin; p <= 100; p += step) {
+          const y = Math.round(this.paddingTop + this.drawHeight - ((p - this.yMin) / Math.max(1, 100 - this.yMin)) * this.drawHeight)
+          ticks.push({ y, label: p + '%' })
+        }
+        return ticks
+      },
+      xTicks() {
+        if (this.n === 0 || !this.labels.length) return []
+        const m = Math.max(2, this.tickCountX)
+        const ticks = []
+        for (let i = 0; i < m; i++) {
+          const idx = Math.round((i * (this.n - 1)) / (m - 1))
+          ticks.push({ x: Math.round(this.paddingLeft + idx * this.dx), label: this.labels[idx] != null ? String(this.labels[idx]) : '' })
+        }
+        return ticks
+      },
+      hoverPoint() {
+        return this.hoverIdx >= 0 ? this.pointsArr[this.hoverIdx] : null
+      },
+    },
+    methods: {
+      onMouseMove(evt) {
+        if (this.n === 0) return
+        const rect = evt.currentTarget.getBoundingClientRect()
+        const x = ((evt.clientX - rect.left) / rect.width) * this.vbWidth
+        this.hoverIdx = Math.max(0, Math.min(this.n - 1, Math.round((x - this.paddingLeft) / (this.dx || 1))))
+      },
+      onMouseLeave() { this.hoverIdx = -1 },
+      hoverText() {
+        const idx = this.hoverIdx
+        if (idx < 0 || idx >= this.n) return ''
+        const v = this.data[idx]
+        const lab = this.labels[idx] != null ? this.labels[idx] : ''
+        return (v == null ? '—' : Number(v).toFixed(1) + '%') + (lab ? ' · ' + lab : '')
+      },
+    },
+    template: `
+      <svg width="100%" :height="height" :viewBox="viewBoxAttr" preserveAspectRatio="none" class="mon-sparkline"
+           @mousemove="onMouseMove" @mouseleave="onMouseLeave">
+        <defs>
+          <linearGradient :id="uid" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" :stop-color="stroke" :stop-opacity="fillOpacity"/>
+            <stop offset="100%" :stop-color="stroke" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <rect v-for="(g,i) in gaps" :key="'g'+i" :x="g.x" :y="paddingTop" :width="g.w" :height="drawHeight" :fill="gapColor"></rect>
+        <g>
+          <line v-for="(t,i) in yTicks" :key="'gl'+i" :x1="paddingLeft" :y1="t.y" :x2="paddingLeft + drawWidth" :y2="t.y" :stroke="gridColor" stroke-width="1"></line>
+          <text v-for="(t,i) in yTicks" :key="'yl'+i" :x="paddingLeft - 4" :y="t.y + 3" text-anchor="end" font-size="9" :fill="textColor" v-text="t.label"></text>
+          <text v-for="(t,i) in xTicks" :key="'xl'+i" :x="t.x" :y="paddingTop + drawHeight + 13" text-anchor="middle" font-size="9" :fill="textColor" v-text="t.label"></text>
+        </g>
+        <path v-for="(d,i) in areaPaths" :key="'a'+i" :d="d" :fill="'url(#' + uid + ')'" stroke="none"></path>
+        <polyline v-for="(s,i) in segments" :key="'s'+i" :points="s.map(p => p[0] + ',' + p[1]).join(' ')" fill="none" :stroke="stroke" :stroke-width="strokeWidth" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        <circle v-for="(s,i) in segments.filter(s => s.length === 1)" :key="'c'+i" :cx="s[0][0]" :cy="s[0][1]" r="2" :fill="stroke"></circle>
+        <g v-if="hoverIdx >= 0">
+          <line :x1="paddingLeft + hoverIdx * dx" :x2="paddingLeft + hoverIdx * dx" :y1="paddingTop" :y2="paddingTop + drawHeight" :stroke="textColor" stroke-width="1"></line>
+          <circle v-if="hoverPoint" :cx="hoverPoint[0]" :cy="hoverPoint[1]" r="3.5" :fill="stroke"></circle>
+          <text :x="Math.min(paddingLeft + drawWidth - 60, Math.max(paddingLeft + 60, paddingLeft + hoverIdx * dx))" :y="paddingTop + 10" text-anchor="middle" font-size="11" :fill="textColor" v-text="hoverText()"></text>
+        </g>
+      </svg>
+    `,
+  })
+</script>
+{{end}}

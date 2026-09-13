@@ -6,7 +6,7 @@
       v-if="record.hasLink() || record.isAmneziawg || record.isNativewg"
       @click="showQrcode(record.id,client);"></a-icon>
   </a-tooltip>
-  <a-tooltip>
+  <a-tooltip v-if="!(client.email && client.email.toLowerCase().startsWith('probe-'))">
     <template slot="title">{{ i18n "pages.client.edit" }}</template>
     <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="edit" @click="openEditClient(record.id,client);"></a-icon>
   </a-tooltip>
@@ -58,7 +58,10 @@
       <a-badge :class="isClientOnline(getClientLookupKey(record.protocol, client), record.protocol)? 'online-animation' : ''" :color="client.enable ? statsExpColor(record, getClientLookupKey(record.protocol, client)) : themeSwitcher.isDarkTheme ? '#2c3950' : '#bcbcbc'"></a-badge>
     </a-tooltip>
     <a-space direction="vertical" :size="2">
-      <span class="client-email">[[ client.email ]]</span>
+      <span class="client-email">[[ client.email ]]
+        <a-tag v-if="client.email && client.email.toLowerCase().startsWith('probe-')" :style="{ margin: '0 0 0 4px' }"
+          title='{{ i18n "pages.inbounds.probeBadgeTitle" }}'>{{ i18n "pages.inbounds.probeBadge" }}</a-tag>
+      </span>
       <template v-if="client.comment && client.comment.trim()">
         <a-tooltip v-if="client.comment.length > 50" :overlay-class-name="themeSwitcher.currentTheme">
           <template slot="title">
@@ -161,7 +164,7 @@
         <a-icon :style="{ fontSize: '14px' }" type="qrcode"></a-icon>
         {{ i18n "qrCode" }}
       </a-menu-item>
-      <a-menu-item @click="openEditClient(record.id,client);">
+      <a-menu-item v-if="!(client.email && client.email.toLowerCase().startsWith('probe-'))" @click="openEditClient(record.id,client);">
         <a-icon :style="{ fontSize: '14px' }" type="edit"></a-icon>
         {{ i18n "pages.client.edit" }}
       </a-menu-item>

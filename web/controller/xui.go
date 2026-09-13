@@ -26,6 +26,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 
 	g.GET("/", a.index)
 	g.GET("/inbounds", a.inbounds)
+	g.GET("/monitoring", a.monitoring) // monitoring_page.go
 	g.GET("/wg", a.wgPage)
 	g.GET("/awg", a.wgPage) // legacy redirect: /awg → same WG settings page
 	g.GET("/settings", a.settings)

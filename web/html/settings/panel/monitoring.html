@@ -1,0 +1,127 @@
+{{define "settings/panel/monitoring"}}
+<a-collapse default-active-key="1">
+    <a-collapse-panel key="1" header='{{ i18n "pages.settings.monitoringSettings" }}'>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monEnable" }}</template>
+            <template #description>{{ i18n "pages.settings.monEnableDesc" }}</template>
+            <template #control>
+                <a-switch v-model="allSetting.monEnable"></a-switch>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monToken" }}</template>
+            <template #description>{{ i18n "pages.settings.monTokenDesc" }}</template>
+            <template #control>
+                <a-input-group compact :style="{ display: 'flex' }">
+                    <a-input type="text" v-model="allSetting.monToken" read-only :style="{ flex: 1 }"
+                        placeholder='{{ i18n "pages.settings.monTokenEmpty" }}'></a-input>
+                    <a-button icon="copy" :disabled="!allSetting.monToken" @click="monCopyToken">{{ i18n "pages.settings.monTokenCopy" }}</a-button>
+                    <a-popconfirm @confirm="monRegenerateToken" title='{{ i18n "pages.settings.monTokenRegenerateConfirm" }}'
+                        :overlay-class-name="themeSwitcher.currentTheme" ok-text='{{ i18n "confirm" }}' cancel-text='{{ i18n "cancel" }}'>
+                        <a-icon slot="icon" type="question-circle-o" :style="{ color: '#e04141' }"></a-icon>
+                        <a-button icon="reload">{{ i18n "pages.settings.monTokenRegenerate" }}</a-button>
+                    </a-popconfirm>
+                </a-input-group>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monStaleMinutes" }}</template>
+            <template #description>{{ i18n "pages.settings.monStaleMinutesDesc" }}</template>
+            <template #control>
+                <a-input-number :min="1" v-model="allSetting.monStaleMinutes" :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monProbeTtlHours" }}</template>
+            <template #description>{{ i18n "pages.settings.monProbeTtlHoursDesc" }}</template>
+            <template #control>
+                <a-input-number :min="1" v-model="allSetting.monProbeTtlHours" :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monRetentionDays" }}</template>
+            <template #description>{{ i18n "pages.settings.monRetentionDaysDesc" }}</template>
+            <template #control>
+                <a-input-number :min="1" v-model="allSetting.monRetentionDays" :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monRollupRetentionDays" }}</template>
+            <template #description>{{ i18n "pages.settings.monRollupRetentionDaysDesc" }}</template>
+            <template #control>
+                <a-input-number :min="1" v-model="allSetting.monRollupRetentionDays" :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monRollupStepMinutes" }}</template>
+            <template #description>{{ i18n "pages.settings.monRollupStepMinutesDesc" }}</template>
+            <template #control>
+                <a-input-number :min="5" :step="5" v-model="allSetting.monRollupStepMinutes" :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monProbeSet" }}</template>
+            <template #description>{{ i18n "pages.settings.monProbeSetDesc" }}</template>
+            <template #control>
+                <a-space direction="vertical" :style="{ width: '100%' }">
+                    <span v-if="monStatus.probe && monStatus.probe.subId">
+                        <code>[[ monStatus.probe.subId ]]</code> · [[ monStatus.probe.count ]] {{ i18n "pages.settings.monProbeSetAccounts" }} ·
+                        {{ i18n "pages.settings.monProbeSetEnsured" }} [[ monStatus.probe.lastEnsured ? new Date(monStatus.probe.lastEnsured).toLocaleString() : '—' ]]
+                    </span>
+                    <span v-else>{{ i18n "pages.settings.monProbeSetNone" }}<template v-if="monStatus.probe && monStatus.probe.count"> ([[ monStatus.probe.count ]] {{ i18n "pages.settings.monProbeSetAccounts" }})</template></span>
+                    <a-popconfirm @confirm="monRemoveProbeSet" title='{{ i18n "pages.settings.monProbeSetRemoveConfirm" }}'
+                        :overlay-class-name="themeSwitcher.currentTheme" ok-text='{{ i18n "delete" }}' ok-type="danger" cancel-text='{{ i18n "cancel" }}'>
+                        <a-icon slot="icon" type="question-circle-o" :style="{ color: '#e04141' }"></a-icon>
+                        <a-button type="danger" icon="delete" :disabled="!(monStatus.probe && (monStatus.probe.subId || monStatus.probe.count))">{{ i18n "pages.settings.monProbeSetRemove" }}</a-button>
+                    </a-popconfirm>
+                </a-space>
+            </template>
+        </a-setting-list-item>
+    </a-collapse-panel>
+</a-collapse>
+{{end}}
+
+{{define "settings/panel/monitoringScript"}}
+<script>
+    // Mixed into the settings page: the Monitoring tab's own state and the
+    // two actions that take effect at once rather than on Save.
+    const MonitoringSettingsMixin = {
+        data() {
+            return {
+                monStatus: { probe: { subId: '', lastEnsured: 0, count: 0 }, lastContact: 0, stale: false },
+            };
+        },
+        methods: {
+            async monFetchStatus() {
+                const msg = await HttpUtil.get('/panel/api/monitoring/status');
+                if (msg.success && msg.obj) {
+                    this.monStatus = msg.obj;
+                }
+            },
+            monCopyToken() {
+                ClipboardManager.copyText(this.allSetting.monToken).then(() => {
+                    Vue.prototype.$message.success('{{ i18n "copied" }}');
+                });
+            },
+            async monRegenerateToken() {
+                const msg = await HttpUtil.post('/panel/api/monitoring/token/regenerate');
+                if (!msg.success) return;
+                // Stored already; keep the form and its baseline in step so the
+                // Save button does not light up for a value that is on disk.
+                this.allSetting.monToken = msg.obj;
+                this.oldAllSetting.monToken = msg.obj;
+                Vue.prototype.$message.success('{{ i18n "pages.settings.monTokenRegenerated" }}');
+            },
+            async monRemoveProbeSet() {
+                const msg = await HttpUtil.post('/panel/api/monitoring/probe/delete');
+                if (msg.success) {
+                    await this.monFetchStatus();
+                }
+            },
+        },
+        mounted() {
+            this.monFetchStatus();
+        },
+    };
+</script>
+{{end}}
