@@ -517,6 +517,7 @@ func (s *TunnelService[K]) GetOnlineClients() []string {
 	var uuids []string
 	db.Model(&model.TunnelClient{}).Where(s.clientScope(db)).
 		Where("enable = ? AND last_online > ?", true, threshold).
+		Where("email NOT LIKE ?", ProbePrefix+"%"). // probe peers are not users (monitoring_probe.go)
 		Pluck("uuid", &uuids)
 	return uuids
 }
@@ -555,6 +556,10 @@ func (s *TunnelService[K]) GetClientByUUID(clientUUID string) (*model.TunnelClie
 
 // AddClient creates a new client with auto-generated keys and allocated IPs.
 func (s *TunnelService[K]) AddClient(client *model.TunnelClient) error {
+	// Probe peers come only from MonitoringService, which grants them through (monitoring_probe.go).
+	if IsProbeAccount(client.Email) && !takeTunnelProbeGrant(client) {
+		return errProbeAccountReserved
+	}
 	server, err := s.GetServer()
 	if err != nil {
 		return err
@@ -675,6 +680,10 @@ func (s *TunnelService[K]) UpdateClient(client *model.TunnelClient) error {
 	// Capture old state so we can diff iptables port-forwarding rules.
 	var old model.TunnelClient
 	hasOld := db.First(&old, client.Id).Error == nil
+	// A probe peer is neither edited nor made out of a user (monitoring_probe.go).
+	if IsProbeAccount(client.Email) || (hasOld && IsProbeAccount(old.Email)) {
+		return errProbeAccountReserved
+	}
 
 	client.UpdatedAt = time.Now().UnixMilli()
 	client.ForwardedPorts = portfwd.Normalize(client.ForwardedPorts)

@@ -1226,6 +1226,10 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Probe accounts are created by MonitoringService only (monitoring_probe.go).
+	if err := refuseProbeAccounts(clientEmails(clients)...); err != nil {
+		return false, err
+	}
 
 	var settings map[string]any
 	err = json.Unmarshal([]byte(data.Settings), &settings)
@@ -1722,6 +1726,10 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	// Validate new client ID
 	if newClientId == "" || clientIndex == -1 {
 		return false, common.NewError("empty client ID")
+	}
+	// A probe account is neither edited nor made out of a user (monitoring_probe.go).
+	if err := refuseProbeAccounts(oldEmail, clients[0].Email); err != nil {
+		return false, err
 	}
 
 	if len(clients[0].Email) > 0 && clients[0].Email != oldEmail {
@@ -3721,7 +3729,8 @@ func (s *InboundService) getXrayOnlineClients() []string {
 }
 
 func (s *InboundService) GetOnlineClients() []string {
-	online := s.getXrayOnlineClients()
+	// Probe accounts are not users: they never count as online (monitoring_probe.go).
+	online := withoutProbeAccounts(s.getXrayOnlineClients())
 	// AWG / native WireGuard / MTProto clients track their own online state (by
 	// uuid) in dedicated tables. Merge them here so the realtime traffic
 	// broadcast and the /onlines endpoint report every protocol uniformly — the

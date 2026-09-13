@@ -260,6 +260,9 @@ func (j *LdapSyncJob) deleteClientsNotInLDAP(inboundTag string, ldapEmails map[s
 		// Collect clients for deletion
 		toDelete := []model.Client{}
 		for _, c := range clients {
+			if service.IsProbeAccount(c.Email) {
+				continue // monitoring probe, not an LDAP user
+			}
 			if _, ok := ldapEmails[c.Email]; !ok {
 				toDelete = append(toDelete, c)
 			}

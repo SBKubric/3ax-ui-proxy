@@ -2822,7 +2822,7 @@ func (t *Tgbot) prepareServerUsageInfo() string {
 		t.lastStatus = t.serverService.GetStatus(t.lastStatus)
 		t.setCachedStatus(t.lastStatus)
 	}
-	onlines := xrayOnlineClients()
+	onlines := withoutProbeAccounts(xrayOnlineClients()) // probes are not users (monitoring_probe.go)
 	// Include AWG online clients
 	awgOnlines := t.awgService.GetOnlineClients()
 	onlines = append(onlines, awgOnlines...)
@@ -3012,6 +3012,9 @@ func (t *Tgbot) getInboundClientsFor(inboundID int, action string) (*telego.Inli
 	} else {
 		if len(clients) > 0 {
 			for _, client := range clients {
+				if IsProbeAccount(client.Email) { // probes are not users (monitoring_probe.go)
+					continue
+				}
 				buttons = append(buttons, tu.InlineKeyboardButton(client.Email).WithCallbackData(t.encodeQuery(action+" "+client.Email)))
 			}
 
@@ -3090,6 +3093,9 @@ func (t *Tgbot) getInboundClients(id int) (*telego.InlineKeyboardMarkup, error) 
 	} else {
 		if len(clients) > 0 {
 			for _, client := range clients {
+				if IsProbeAccount(client.Email) { // probes are not users (monitoring_probe.go)
+					continue
+				}
 				buttons = append(buttons, tu.InlineKeyboardButton(client.Email).WithCallbackData(t.encodeQuery("client_get_usage "+client.Email)))
 			}
 
@@ -3383,7 +3389,7 @@ func (t *Tgbot) searchClient(chatId int64, email string, messageID ...int) {
 		t.SendMsgToTgbot(chatId, msg)
 		return
 	}
-	if traffic == nil {
+	if traffic == nil || IsProbeAccount(email) { // probes are not users (monitoring_probe.go)
 		msg := t.I18nBot("tgbot.noResult")
 		t.SendMsgToTgbot(chatId, msg)
 		return
@@ -3769,7 +3775,7 @@ func (t *Tgbot) onlineClients(chatId int64, messageID ...int) {
 		return
 	}
 
-	onlines := xrayOnlineClients()
+	onlines := withoutProbeAccounts(xrayOnlineClients()) // probes are not users (monitoring_probe.go)
 	onlinesCount := len(onlines)
 	output := t.I18nBot("tgbot.messages.onlinesCount", "Count=="+fmt.Sprint(onlinesCount))
 	keyboard := tu.InlineKeyboard(tu.InlineKeyboardRow(
