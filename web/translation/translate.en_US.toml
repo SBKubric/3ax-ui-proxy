@@ -1163,6 +1163,22 @@
 "FailedResetTraffic" = "📧 Email: {{ .ClientEmail }}\n🏁 Result: ❌ Failed \n\n🛠️ Error: [ {{ .ErrorMessage }} ]"
 "FinishProcess" = "🔚 Traffic reset process finished for all clients."
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} via {{ .Path }} · {{ .MonClient }} · reason: {{ .Reason }} · since {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }} via {{ .Path }} · {{ .MonClient }}{{ if .DownFor }} · down for {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} via {{ .Path }} · {{ .MonClient }} · reason: {{ .Reason }}"
+"flappingOff" = "〰 FLAPPING ended · {{ .Inbound }} via {{ .Path }} · {{ .MonClient }} · now {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · reason: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }} (was offline {{ .OfflineFor }}){{ end }}"
+"stale" = "🟡 monitoring silent since {{ .Since }}"
+"staleBack" = "🟢 monitoring back (was silent {{ .SilentFor }})"
+"digestTitle" = "📡 Monitoring, last 24h:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · {{ .Incidents }} incidents\r\n"
+"digestNoData" = "• no probe data yet\r\n"
+"digestWorst" = "📉 Worst target: {{ .Inbound }} via {{ .Path }} · {{ .MonClient }} · {{ .Uptime }} (cov {{ .Coverage }})\r\n"
+"digestOffline" = "🔴 mon-clients OFFLINE now: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 monitoring was silent for {{ .StaleFor }}\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ Close Keyboard"
 "cancel" = "❌ Cancel"

@@ -1158,6 +1158,22 @@
 "FinishProcess" = "🔚 Quá trình đặt lại lưu lượng đã hoàn tất cho tất cả khách hàng."
 "awgConfigUpdated" = "🔄 Che giấu AmneziaWG của máy chủ đã được cập nhật. Hãy nhập cấu hình mới bên dưới — cấu hình cũ sẽ không kết nối được nữa.\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} qua {{ .Path }} · {{ .MonClient }} · lý do: {{ .Reason }} · từ {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }} qua {{ .Path }} · {{ .MonClient }}{{ if .DownFor }} · đã ngừng {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} qua {{ .Path }} · {{ .MonClient }} · lý do: {{ .Reason }}"
+"flappingOff" = "〰 Hết FLAPPING · {{ .Inbound }} qua {{ .Path }} · {{ .MonClient }} · hiện {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · lý do: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }} (đã offline {{ .OfflineFor }}){{ end }}"
+"stale" = "🟡 giám sát im lặng từ {{ .Since }}"
+"staleBack" = "🟢 giám sát đã trở lại (im lặng {{ .SilentFor }})"
+"digestTitle" = "📡 Giám sát, 24 giờ qua:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · {{ .Incidents }} sự cố\r\n"
+"digestNoData" = "• chưa có dữ liệu thăm dò\r\n"
+"digestWorst" = "📉 Mục tiêu kém nhất: {{ .Inbound }} qua {{ .Path }} · {{ .MonClient }} · {{ .Uptime }} (bao phủ {{ .Coverage }})\r\n"
+"digestOffline" = "🔴 mon-client đang OFFLINE: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 giám sát đã im lặng {{ .StaleFor }}\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ Đóng Bàn Phím"
 "cancel" = "❌ Hủy"

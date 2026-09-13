@@ -1158,6 +1158,22 @@
 "FinishProcess" = "🔚 فرآیند بازنشانی ترافیک برای همه مشتریان به پایان رسید."
 "awgConfigUpdated" = "🔄 مبهم‌سازی AmneziaWG سرور به‌روز شد. پیکربندی جدید زیر را وارد کنید — پیکربندی قدیمی دیگر وصل نمی‌شود.\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} از طریق {{ .Path }} · {{ .MonClient }} · دلیل: {{ .Reason }} · از {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }} از طریق {{ .Path }} · {{ .MonClient }}{{ if .DownFor }} · مدت قطعی {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} از طریق {{ .Path }} · {{ .MonClient }} · دلیل: {{ .Reason }}"
+"flappingOff" = "〰 پایان FLAPPING · {{ .Inbound }} از طریق {{ .Path }} · {{ .MonClient }} · اکنون {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · دلیل: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }} (به مدت {{ .OfflineFor }} آفلاین بود){{ end }}"
+"stale" = "🟡 مانیتورینگ از {{ .Since }} ساکت است"
+"staleBack" = "🟢 مانیتورینگ برگشت ({{ .SilentFor }} ساکت بود)"
+"digestTitle" = "📡 مانیتورینگ ۲۴ ساعت اخیر:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · {{ .Incidents }} رخداد\r\n"
+"digestNoData" = "• هنوز داده‌ای از پروب‌ها نیست\r\n"
+"digestWorst" = "📉 بدترین هدف: {{ .Inbound }} از طریق {{ .Path }} · {{ .MonClient }} · {{ .Uptime }} (پوشش {{ .Coverage }})\r\n"
+"digestOffline" = "🔴 mon-client‌های OFFLINE اکنون: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 مانیتورینگ به مدت {{ .StaleFor }} ساکت بود\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ بستن کیبورد"
 "cancel" = "❌ لغو"

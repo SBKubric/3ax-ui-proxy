@@ -1158,6 +1158,22 @@
 "FinishProcess" = "🔚 所有客戶的流量重置已完成。"
 "awgConfigUpdated" = "🔄 伺服器的 AmneziaWG 混淆已更新。請匯入下面的新設定——舊設定將無法再連線。\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }}（經 {{ .Path }}）· {{ .MonClient }} · 原因：{{ .Reason }} · 自 {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }}（經 {{ .Path }}）· {{ .MonClient }}{{ if .DownFor }} · 中斷時長 {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }}（經 {{ .Path }}）· {{ .MonClient }} · 原因：{{ .Reason }}"
+"flappingOff" = "〰 FLAPPING 結束 · {{ .Inbound }}（經 {{ .Path }}）· {{ .MonClient }} · 現在 {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · 原因：{{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }}（離線 {{ .OfflineFor }}）{{ end }}"
+"stale" = "🟡 監控自 {{ .Since }} 起無回應"
+"staleBack" = "🟢 監控已恢復（無回應 {{ .SilentFor }}）"
+"digestTitle" = "📡 監控，最近 24 小時：\r\n"
+"digestLine" = "• {{ .Inbound }}：{{ .Paths }} · {{ .Incidents }} 次事件\r\n"
+"digestNoData" = "• 尚無探測資料\r\n"
+"digestWorst" = "📉 最差目標：{{ .Inbound }}（經 {{ .Path }}）· {{ .MonClient }} · {{ .Uptime }}（覆蓋 {{ .Coverage }}）\r\n"
+"digestOffline" = "🔴 目前 OFFLINE 的 mon-client：{{ .MonClients }}\r\n"
+"digestStale" = "🟡 監控無回應了 {{ .StaleFor }}\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ 關閉鍵盤"
 "cancel" = "❌ 取消"

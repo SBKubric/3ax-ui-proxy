@@ -1158,6 +1158,22 @@
 "FinishProcess" = "🔚 すべてのクライアントのトラフィックリセットが完了しました。"
 "awgConfigUpdated" = "🔄 サーバーの AmneziaWG 難読化が更新されました。下の新しい設定を取り込んでください。古い設定では接続できません。\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }}（{{ .Path }} 経由）· {{ .MonClient }} · 理由: {{ .Reason }} · {{ .Since }} から"
+"up" = "✅ UP · {{ .Inbound }}（{{ .Path }} 経由）· {{ .MonClient }}{{ if .DownFor }} · 停止時間 {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }}（{{ .Path }} 経由）· {{ .MonClient }} · 理由: {{ .Reason }}"
+"flappingOff" = "〰 FLAPPING 終了 · {{ .Inbound }}（{{ .Path }} 経由）· {{ .MonClient }} · 現在 {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · 理由: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }}（{{ .OfflineFor }} オフラインでした）{{ end }}"
+"stale" = "🟡 監視が {{ .Since }} から沈黙しています"
+"staleBack" = "🟢 監視が復帰しました（{{ .SilentFor }} 沈黙）"
+"digestTitle" = "📡 監視（過去24時間）:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · インシデント {{ .Incidents }} 件\r\n"
+"digestNoData" = "• プローブのデータはまだありません\r\n"
+"digestWorst" = "📉 最悪のターゲット: {{ .Inbound }}（{{ .Path }} 経由）· {{ .MonClient }} · {{ .Uptime }}（カバレッジ {{ .Coverage }}）\r\n"
+"digestOffline" = "🔴 現在 OFFLINE の mon-client: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 監視は {{ .StaleFor }} 沈黙していました\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ キーボードを閉じる"
 "cancel" = "❌ キャンセル"

@@ -1158,6 +1158,22 @@
 "FinishProcess" = "🔚 Процес скидання трафіку завершено для всіх клієнтів."
 "awgConfigUpdated" = "🔄 Обфускацію AmneziaWG на сервері оновлено. Імпортуйте нову конфігурацію нижче — стара більше не підключиться.\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} через {{ .Path }} · {{ .MonClient }} · причина: {{ .Reason }} · з {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }} через {{ .Path }} · {{ .MonClient }}{{ if .DownFor }} · лежав {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} через {{ .Path }} · {{ .MonClient }} · причина: {{ .Reason }}"
+"flappingOff" = "〰 FLAPPING закінчився · {{ .Inbound }} через {{ .Path }} · {{ .MonClient }} · тепер {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · причина: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }} (був недоступний {{ .OfflineFor }}){{ end }}"
+"stale" = "🟡 моніторинг мовчить з {{ .Since }}"
+"staleBack" = "🟢 моніторинг повернувся (мовчав {{ .SilentFor }})"
+"digestTitle" = "📡 Моніторинг за 24 год:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · інцидентів: {{ .Incidents }}\r\n"
+"digestNoData" = "• даних проб поки немає\r\n"
+"digestWorst" = "📉 Найгірший target: {{ .Inbound }} через {{ .Path }} · {{ .MonClient }} · {{ .Uptime }} (покриття {{ .Coverage }})\r\n"
+"digestOffline" = "🔴 mon-clients OFFLINE зараз: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 моніторинг мовчав {{ .StaleFor }}\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ Закрити клавіатуру"
 "cancel" = "❌ Скасувати"

@@ -164,6 +164,7 @@ var monRuntime = struct {
 
 	stale      bool
 	staleSince int64
+	staleSpans []monStaleSpan
 
 	renderLinks ProbeLinkRenderer
 	ensureMu    sync.Mutex
@@ -663,6 +664,9 @@ func (s *MonitoringService) TouchLastContact(now time.Time) (wasStale bool, stal
 		monRuntime.lastContactPersisted = ms
 	}
 	wasStale, staleSince = monRuntime.stale, monRuntime.staleSince
+	if wasStale {
+		rememberStaleSpan(staleSince, ms)
+	}
 	monRuntime.stale, monRuntime.staleSince = false, 0
 	monRuntime.mu.Unlock()
 	if persist {
@@ -715,6 +719,7 @@ func resetMonRuntime() {
 	monRuntime.snapshot, monRuntime.snapshotLoaded = nil, false
 	monRuntime.lastContact, monRuntime.lastContactLoaded, monRuntime.lastContactPersisted = 0, false, 0
 	monRuntime.stale, monRuntime.staleSince = false, 0
+	monRuntime.staleSpans = nil
 }
 
 // MonStatusHooks hear the panel's own transitions: Stale when the silence

@@ -1158,6 +1158,22 @@
 "FinishProcess" = "🔚 Tüm müşteriler için trafik sıfırlama işlemi tamamlandı."
 "awgConfigUpdated" = "🔄 Sunucunun AmneziaWG karartması güncellendi. Aşağıdaki yeni yapılandırmayı içe alın — eski yapılandırmanız artık bağlanmayacak.\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} {{ .Path }} üzerinden · {{ .MonClient }} · neden: {{ .Reason }} · {{ .Since }} itibarıyla"
+"up" = "✅ UP · {{ .Inbound }} {{ .Path }} üzerinden · {{ .MonClient }}{{ if .DownFor }} · {{ .DownFor }} boyunca kapalıydı{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} {{ .Path }} üzerinden · {{ .MonClient }} · neden: {{ .Reason }}"
+"flappingOff" = "〰 FLAPPING bitti · {{ .Inbound }} {{ .Path }} üzerinden · {{ .MonClient }} · şimdi {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · neden: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }} ({{ .OfflineFor }} boyunca çevrimdışıydı){{ end }}"
+"stale" = "🟡 izleme {{ .Since }} itibarıyla sessiz"
+"staleBack" = "🟢 izleme geri döndü ({{ .SilentFor }} boyunca sessizdi)"
+"digestTitle" = "📡 İzleme, son 24 saat:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · {{ .Incidents }} olay\r\n"
+"digestNoData" = "• henüz sonda verisi yok\r\n"
+"digestWorst" = "📉 En kötü hedef: {{ .Inbound }} {{ .Path }} üzerinden · {{ .MonClient }} · {{ .Uptime }} (kapsam {{ .Coverage }})\r\n"
+"digestOffline" = "🔴 Şu an OFFLINE mon-client'lar: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 izleme {{ .StaleFor }} boyunca sessizdi\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ Klavyeyi Kapat"
 "cancel" = "❌ İptal"

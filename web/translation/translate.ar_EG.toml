@@ -1158,6 +1158,22 @@
 "FinishProcess" = "🔚 عملية إعادة ضبط الترافيك خلصت لكل العملاء."
 "awgConfigUpdated" = "🔄 تم تحديث تعمية AmneziaWG على الخادم. استورد الإعداد الجديد أدناه — فإعدادك القديم لن يتصل بعد الآن.\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} عبر {{ .Path }} · {{ .MonClient }} · السبب: {{ .Reason }} · منذ {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }} عبر {{ .Path }} · {{ .MonClient }}{{ if .DownFor }} · كان متوقفًا {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} عبر {{ .Path }} · {{ .MonClient }} · السبب: {{ .Reason }}"
+"flappingOff" = "〰 انتهى FLAPPING · {{ .Inbound }} عبر {{ .Path }} · {{ .MonClient }} · الآن {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · السبب: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }} (كان غير متصل {{ .OfflineFor }}){{ end }}"
+"stale" = "🟡 المراقبة صامتة منذ {{ .Since }}"
+"staleBack" = "🟢 عادت المراقبة (كانت صامتة {{ .SilentFor }})"
+"digestTitle" = "📡 المراقبة، آخر 24 ساعة:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · {{ .Incidents }} حوادث\r\n"
+"digestNoData" = "• لا توجد بيانات فحص بعد\r\n"
+"digestWorst" = "📉 أسوأ هدف: {{ .Inbound }} عبر {{ .Path }} · {{ .MonClient }} · {{ .Uptime }} (تغطية {{ .Coverage }})\r\n"
+"digestOffline" = "🔴 mon-clients غير متصلة الآن: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 كانت المراقبة صامتة لمدة {{ .StaleFor }}\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ اقفل الكيبورد"
 "cancel" = "❌ إلغاء"

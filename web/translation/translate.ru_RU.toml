@@ -1163,6 +1163,22 @@
 "FailedResetTraffic" = "📧 Почта: {{ .ClientEmail }}\n🏁 Результат: ❌ Неудача \n\n🛠️ Ошибка: [ {{ .ErrorMessage }} ]"
 "FinishProcess" = "🔚 Сброс трафика завершён для всех клиентов."
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} через {{ .Path }} · {{ .MonClient }} · причина: {{ .Reason }} · с {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }} через {{ .Path }} · {{ .MonClient }}{{ if .DownFor }} · лежал {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} через {{ .Path }} · {{ .MonClient }} · причина: {{ .Reason }}"
+"flappingOff" = "〰 FLAPPING закончился · {{ .Inbound }} через {{ .Path }} · {{ .MonClient }} · теперь {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · причина: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }} (был недоступен {{ .OfflineFor }}){{ end }}"
+"stale" = "🟡 мониторинг молчит с {{ .Since }}"
+"staleBack" = "🟢 мониторинг вернулся (молчал {{ .SilentFor }})"
+"digestTitle" = "📡 Мониторинг за 24 ч:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · инцидентов: {{ .Incidents }}\r\n"
+"digestNoData" = "• данных проб пока нет\r\n"
+"digestWorst" = "📉 Худший target: {{ .Inbound }} через {{ .Path }} · {{ .MonClient }} · {{ .Uptime }} (покрытие {{ .Coverage }})\r\n"
+"digestOffline" = "🔴 mon-clients OFFLINE сейчас: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 мониторинг молчал {{ .StaleFor }}\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ Закрыть клавиатуру"
 "cancel" = "❌ Отмена"

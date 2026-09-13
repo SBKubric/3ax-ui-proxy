@@ -1158,6 +1158,22 @@
 "FinishProcess" = "🔚 Processo de redefinição de tráfego concluído para todos os clientes."
 "awgConfigUpdated" = "🔄 A obfuscação AmneziaWG do servidor foi atualizada. Importe a nova configuração abaixo — a antiga não vai mais conectar.\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} via {{ .Path }} · {{ .MonClient }} · motivo: {{ .Reason }} · desde {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }} via {{ .Path }} · {{ .MonClient }}{{ if .DownFor }} · fora do ar por {{ .DownFor }}{{ end }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} via {{ .Path }} · {{ .MonClient }} · motivo: {{ .Reason }}"
+"flappingOff" = "〰 FLAPPING encerrado · {{ .Inbound }} via {{ .Path }} · {{ .MonClient }} · agora {{ .State }}"
+"clientOffline" = "🔴 mon-client {{ .MonClient }} OFFLINE{{ if .Reason }} · motivo: {{ .Reason }}{{ end }}"
+"clientOnline" = "🟢 mon-client {{ .MonClient }} ONLINE{{ if .OfflineFor }} (ficou offline {{ .OfflineFor }}){{ end }}"
+"stale" = "🟡 monitoramento em silêncio desde {{ .Since }}"
+"staleBack" = "🟢 monitoramento de volta (em silêncio por {{ .SilentFor }})"
+"digestTitle" = "📡 Monitoramento, últimas 24 h:\r\n"
+"digestLine" = "• {{ .Inbound }}: {{ .Paths }} · {{ .Incidents }} incidentes\r\n"
+"digestNoData" = "• ainda sem dados das sondas\r\n"
+"digestWorst" = "📉 Pior alvo: {{ .Inbound }} via {{ .Path }} · {{ .MonClient }} · {{ .Uptime }} (cob {{ .Coverage }})\r\n"
+"digestOffline" = "🔴 mon-clients OFFLINE agora: {{ .MonClients }}\r\n"
+"digestStale" = "🟡 o monitoramento ficou em silêncio por {{ .StaleFor }}\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ Fechar teclado"
 "cancel" = "❌ Cancelar"

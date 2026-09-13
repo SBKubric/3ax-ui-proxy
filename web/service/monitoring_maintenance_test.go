@@ -15,11 +15,12 @@ import (
 func TestCheckStaleRaisesOnceAndClearsOnContact(t *testing.T) {
 	m, _ := newMonitoringTestDB(t)
 	var staleSince, backSince, backNow int64
+	prevHooks := currentMonStatusHooks()
+	t.Cleanup(func() { SetMonStatusHooks(prevHooks) })
 	SetMonStatusHooks(MonStatusHooks{
 		Stale: func(since int64) { staleSince = since },
 		Back:  func(since, now int64) { backSince, backNow = since, now },
 	})
-	t.Cleanup(func() { SetMonStatusHooks(MonStatusHooks{}) })
 	now := time.UnixMilli(1_757_721_600_000)
 
 	if m.CheckStale(now) {

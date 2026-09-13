@@ -50,8 +50,9 @@ func TestApplyEventsFeedAndState(t *testing.T) {
 		t.Fatal(err)
 	}
 	var notified []MonNotification
+	prevNotifier := currentMonEventNotifier()
 	SetMonEventNotifier(func(n []MonNotification) { notified = append(notified, n...) })
-	t.Cleanup(func() { SetMonEventNotifier(nil) })
+	t.Cleanup(func() { SetMonEventNotifier(prevNotifier) })
 
 	down := targetEvent(t, 2_000, "ams-1", ib.Id, "UP", "DOWN", "tls_timeout")
 	offline := MonEventIn{Id: v7(t), Ts: 3_000, Kind: model.MonEventMonClient, MonClientId: "msk-1", From: "ONLINE", To: "OFFLINE", Reason: "heartbeat_missed"}

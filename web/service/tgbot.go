@@ -2751,6 +2751,11 @@ func (t *Tgbot) SendReport() {
 	info := t.sendServerUsage()
 	t.SendMsgToTgbotAdmins(info)
 
+	// Inbound monitoring digest (monitoring_telegram.go), empty when off.
+	if digest := t.MonitoringDigest(); digest != "" {
+		t.SendMsgToTgbotAdmins(digest)
+	}
+
 	t.sendExhaustedToAdmins()
 	t.notifyExhausted()
 
