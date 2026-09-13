@@ -47,7 +47,7 @@ _Avoid_: monitoring hub, collector, watchdog server
 _Avoid_: agent, probe node, sensor
 
 **Target**:
-Пара «inbound real server × path», которую проверяет один mon-client через свой probe account. Единица состояния UP/DOWN и статистики.
+Пара «inbound real server × path», которую проверяет один mon-client через probe account этого inbound'а. Единица состояния UP/DOWN и статистики.
 _Avoid_: check, monitor, endpoint
 
 **Path**:
@@ -55,7 +55,7 @@ _Avoid_: check, monitor, endpoint
 _Avoid_: mode, route
 
 **Probe account**:
-Служебная учётная запись клиента в inbound'е (или AWG-клиент), созданная по запросу mon-server для одного target; отличается от пользовательских соглашением по имени и не считается пользователем.
+Служебный клиент с именем `probe-…`, который панель заводит по запросу mon-server в каждом клиентском inbound'е (и в AWG-сервере); один набор на панель под общим subId, общий для всех mon-clients и обоих path. Отличается от пользовательских префиксом имени, не считается пользователем и чистится панелью по таймауту, когда mon-server перестаёт его подтверждать.
 _Avoid_: monitoring client, service user, test client
 
 **Tunnel probe**:
