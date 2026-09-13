@@ -1,8 +1,8 @@
 # Контракт API панели для mon-server (v1)
 
-Статус: черновик по тикету [Контракт API панели для mon-server](https://github.com/SBKubric/3ax-ui-proxy/issues/21) карты [Healthcheck-мониторинг inbound'ов](https://github.com/SBKubric/3ax-ui-proxy/issues/20). Термины — по `CONTEXT.md` (real server, proxy front, host override, mon-server, mon-client, target, path, probe account, heartbeat, stale).
+Статус: **принят** — итог карты [Healthcheck-мониторинг inbound'ов: mon-server, mon-clients и контракт с панелью](https://github.com/SBKubric/3ax-ui-proxy/issues/20); черновик принят в тикете [Контракт API панели для mon-server](https://github.com/SBKubric/3ax-ui-proxy/issues/21), собран в [Собрать спеку](https://github.com/SBKubric/3ax-ui-proxy/issues/29). Термины — по [CONTEXT.md](../../CONTEXT.md) (real server, proxy front, host override, mon-server, mon-client, target, path, probe account, heartbeat, stale). Панельная сторона контракта — [monitoring-panel.md](monitoring-panel.md); сторона mon-server — [спека mon-server](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-server.md) в репо `3ax-ui-monitoring`. Принцип «mon-server — единственный источник, панель — пассивный приёмник» зафиксирован в [ADR 0003](../adr/0003-mon-server-single-source-panel-passive.md).
 
-Контракт описывает **только** ручки, которые панель (real server) открывает mon-server. Протокол mon-server ↔ mon-client — отдельный тикет. Панель наружу не звонит: все запросы инициирует mon-server.
+Контракт описывает **только** ручки, которые панель (real server) открывает mon-server. Протокол mon-server ↔ mon-client — [mon-protocol.md](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-protocol.md) в репо `3ax-ui-monitoring`. Панель наружу не звонит: все запросы инициирует mon-server.
 
 ## 1. Версия и адрес
 
@@ -123,7 +123,7 @@
  ]}
 ```
 
-- `link` — ссылка того же формата, что в `/sub` (по одной на inbound; multi-link inbound'ы отдают первую ссылку, т.к. probe один). `conf` — текст, идентичный элементу `/tun`.
+- `link` — ссылка того же формата, что в `/sub` (по одной на inbound; multi-link inbound'ы отдают первую ссылку, т.к. probe один). `conf` — текст, идентичный элементу `/tun` ([tunnel subscription](tunnel-subscription.md) §6), с уже применённым host override к `Endpoint` для path `proxy` и с адресом из `host` для `direct`.
 - Выключенные inbound'ы в `items` **не попадают** (как и в подписке) — так mon-server видит `PAUSED`. `revision` в ответе позволяет mon-server отбросить ответ, если ревизия уже устарела относительно `/state`.
 - Если probe-набор ещё не создан — `409` `probe_not_ensured`.
 
