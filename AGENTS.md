@@ -15,3 +15,7 @@ Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 ### Domain docs
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root (created lazily by `/domain-modeling`). See `docs/agents/domain.md`.
+
+### Testing
+
+Legacy code stays untested; a fix in it ships with a unit test reproducing the bug; new functionality ships with unit tests and Playwright e2e tests against the repo's Docker image. See `docs/agents/testing.md` before writing or reviewing tests.
