@@ -475,11 +475,12 @@ func (s *MonitoringService) UpsertStats(batch *MonStatsBatch) (*MonStatsResult, 
 }
 
 // ensureTargetRow creates the target row of a series the first aggregate
-// arrives for, in UNKNOWN: the state comes with the first event.
+// arrives for, in UNKNOWN with no since: the state, and its time, come with
+// the first event, which must not read as older than this placeholder.
 func ensureTargetRow(tx *gorm.DB, monClientId, kind string, inboundId int, path string, now int64) error {
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.MonTarget{
 		MonClientId: monClientId, InboundKind: kind, InboundId: inboundId, Path: path,
-		State: model.MonStateUnknown, Since: now, UpdatedAt: now,
+		State: model.MonStateUnknown, Since: 0, UpdatedAt: now,
 	}).Error
 }
 

@@ -71,6 +71,9 @@ func (a *APIController) initRouter(g *gin.RouterGroup, customGeo *service.Custom
 	// Custom Geo API
 	NewCustomGeoController(api.Group("/custom-geo"), customGeo)
 
+	// Inbound monitoring UI API (monitoring_ui.go)
+	NewMonitoringUIController(api.Group("/monitoring"))
+
 	// Extra routes
 	api.GET("/backuptotgbot", a.BackuptoTgbot)
 }
