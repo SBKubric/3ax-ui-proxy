@@ -276,6 +276,9 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	s.index = controller.NewIndexController(g)
 	s.panel = controller.NewXUIController(g)
 	s.api = controller.NewAPIController(g, s.customGeoService)
+	// mon-server contract (docs/spec/monitoring-contract.md): bearer token,
+	// bare 404 when monitoring is off.
+	controller.NewMonitoringController(g)
 
 	// Initialize WebSocket hub
 	s.wsHub = websocket.NewHub()

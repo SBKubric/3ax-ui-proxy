@@ -716,3 +716,43 @@ func resetMonRuntime() {
 	monRuntime.lastContact, monRuntime.lastContactLoaded, monRuntime.lastContactPersisted = 0, false, 0
 	monRuntime.stale, monRuntime.staleSince = false, 0
 }
+
+// MonStatusHooks hear the panel's own transitions: Stale when the silence
+// crosses the threshold, Back on the first authorized request after it. The
+// Telegram side installs them; nil hooks are skipped.
+type MonStatusHooks struct {
+	Stale func(since int64)
+	Back  func(since, now int64)
+}
+
+var monStatusHooks MonStatusHooks
+
+// SetMonStatusHooks installs the STALE/back hooks.
+func SetMonStatusHooks(h MonStatusHooks) {
+	monRuntime.mu.Lock()
+	defer monRuntime.mu.Unlock()
+	monStatusHooks = h
+}
+
+func currentMonStatusHooks() MonStatusHooks {
+	monRuntime.mu.Lock()
+	defer monRuntime.mu.Unlock()
+	return monStatusHooks
+}
+
+// RecordContact is what an authorized mon-server request does: it touches
+// the last-contact time and, when the panel was STALE, announces the return.
+func (s *MonitoringService) RecordContact(now time.Time) {
+	wasStale, since := s.TouchLastContact(now)
+	if wasStale {
+		if hooks := currentMonStatusHooks(); hooks.Back != nil {
+			hooks.Back(since, now.UnixMilli())
+		}
+	}
+}
+
+// ResetMonRuntime forgets the in-memory monitoring state (snapshot cache,
+// last contact, STALE flag). Tests call it between databases.
+func ResetMonRuntime() {
+	resetMonRuntime()
+}
