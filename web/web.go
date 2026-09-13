@@ -384,6 +384,11 @@ func (s *Server) startTask() {
 	// check client ips from log file every day
 	s.addJob("@daily", job.NewClearLogsJob())
 
+	// Inbound monitoring: STALE detection every minute; probe-set TTL,
+	// retention and rollup rebuild every hour (docs/spec/monitoring-panel.md §5).
+	s.addJob("@every 1m", job.NewMonitoringJob())
+	s.addJob("@hourly", job.NewMonitoringMaintenanceJob())
+
 	// Inbound traffic reset jobs
 	// Run every hour
 	s.addJob("@hourly", job.NewPeriodicTrafficResetJob("hourly"))
