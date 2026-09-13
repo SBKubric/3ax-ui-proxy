@@ -835,6 +835,17 @@ func (s *InboundService) DelInbound(id int) (bool, error) {
 		}
 	}
 
+	// Monitoring rows go with the inbound (docs/spec/monitoring-panel.md §3.6);
+	// the AWG server is addressed by monitoring as kind "awg", id 0.
+	if err := database.DeleteMonitoringForInbound(db, model.MonKindXray, id); err != nil {
+		return false, err
+	}
+	if inbound.Protocol == model.AmneziaWG {
+		if err := database.DeleteMonitoringForInbound(db, model.MonKindAwg, 0); err != nil {
+			return false, err
+		}
+	}
+
 	// Clean up AmneziaWG clients and server when deleting an AWG inbound
 	if inbound.Protocol == model.AmneziaWG {
 		awgService := AwgService{}
