@@ -140,7 +140,7 @@ const (
 var (
 	monClientIdRe  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 	monTargetState = map[string]bool{model.MonStateUp: true, model.MonStateDown: true, model.MonStateFlapping: true, model.MonStateUnknown: true, model.MonStatePaused: true}
-	monClientState = map[string]bool{"ONLINE": true, "OFFLINE": true}
+	monClientState = map[string]bool{model.MonClientOnline: true, model.MonClientOffline: true}
 	monPanelState  = map[string]bool{"PANEL_UP": true, "PANEL_DOWN": true}
 )
 
@@ -152,6 +152,10 @@ func batchTooLarge(what string, n, limit int) *MonError {
 	return &MonError{Status: http.StatusRequestEntityTooLarge, Code: MonErrBatchTooLarge,
 		Message: fmt.Sprintf("%s: %d elements, the limit is %d", what, n, limit)}
 }
+
+// ValidMonClientId reports whether id has the shape contract §3 gives a
+// mon-client id: 1–64 characters of [A-Za-z0-9_.-].
+func ValidMonClientId(id string) bool { return monClientIdRe.MatchString(id) }
 
 func validKind(kind string) bool { return kind == model.MonKindXray || kind == model.MonKindAwg }
 func validPath(path string) bool { return path == model.MonPathDirect || path == model.MonPathProxy }
@@ -175,7 +179,7 @@ func validateEvents(batch *MonEventsBatch) error {
 		}
 		switch e.Kind {
 		case model.MonEventTarget:
-			if !monClientIdRe.MatchString(e.MonClientId) {
+			if !ValidMonClientId(e.MonClientId) {
 				return invalidBody("%s.monClientId: required, at most 64 of [A-Za-z0-9_.-]", at)
 			}
 			if !validKind(e.InboundKind) {
@@ -194,7 +198,7 @@ func validateEvents(batch *MonEventsBatch) error {
 				return invalidBody("%s.from: unknown value %q", at, e.From)
 			}
 		case model.MonEventMonClient:
-			if !monClientIdRe.MatchString(e.MonClientId) {
+			if !ValidMonClientId(e.MonClientId) {
 				return invalidBody("%s.monClientId: required, at most 64 of [A-Za-z0-9_.-]", at)
 			}
 			if !monClientState[e.To] || (e.From != "" && !monClientState[e.From]) {
@@ -219,7 +223,7 @@ func validateStats(batch *MonStatsBatch) error {
 	for i := range batch.Stats {
 		s := &batch.Stats[i]
 		at := fmt.Sprintf("stats[%d]", i)
-		if !monClientIdRe.MatchString(s.MonClientId) {
+		if !ValidMonClientId(s.MonClientId) {
 			return invalidBody("%s.monClientId: required, at most 64 of [A-Za-z0-9_.-]", at)
 		}
 		if !validKind(s.InboundKind) {
@@ -454,11 +458,11 @@ func (s *MonitoringService) UpsertStats(batch *MonStatsBatch) (*MonStatsResult, 
 			}).Create(&row).Error; err != nil {
 				return err
 			}
-			if err := ensureTargetRow(tx, in.MonClientId, in.InboundKind, in.InboundId, in.Path, now.UnixMilli()); err != nil {
+			key := monSeriesKey{in.MonClientId, in.InboundKind, in.InboundId, in.Path}
+			if err := ensureTargetRow(tx, key, now.UnixMilli()); err != nil {
 				return err
 			}
 			result.Accepted++
-			key := monSeriesKey{in.MonClientId, in.InboundKind, in.InboundId, in.Path}
 			affected[rollupKey{key, in.BucketStart - in.BucketStart%stepMs}] = struct{}{}
 		}
 		for k := range affected {
@@ -477,9 +481,9 @@ func (s *MonitoringService) UpsertStats(batch *MonStatsBatch) (*MonStatsResult, 
 // ensureTargetRow creates the target row of a series the first aggregate
 // arrives for, in UNKNOWN with no since: the state, and its time, come with
 // the first event, which must not read as older than this placeholder.
-func ensureTargetRow(tx *gorm.DB, monClientId, kind string, inboundId int, path string, now int64) error {
+func ensureTargetRow(tx *gorm.DB, key monSeriesKey, now int64) error {
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.MonTarget{
-		MonClientId: monClientId, InboundKind: kind, InboundId: inboundId, Path: path,
+		MonClientId: key.MonClientId, InboundKind: key.InboundKind, InboundId: key.InboundId, Path: key.Path,
 		State: model.MonStateUnknown, Since: 0, UpdatedAt: now,
 	}).Error
 }

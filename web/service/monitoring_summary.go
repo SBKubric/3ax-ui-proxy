@@ -202,7 +202,7 @@ func (s *MonitoringService) Summary(now time.Time, window time.Duration) (*MonSu
 		out.Inbounds = append(out.Inbounds, entry)
 	}
 	for _, c := range snapshot {
-		if c.State == "OFFLINE" {
+		if c.State == model.MonClientOffline {
 			out.OfflineMonClients = append(out.OfflineMonClients, c)
 		}
 	}

@@ -65,9 +65,9 @@ func (t *Tgbot) MonitoringEventMessage(n MonNotification) string {
 		}
 	case model.MonEventMonClient:
 		switch e.ToState {
-		case "OFFLINE":
+		case model.MonClientOffline:
 			return t.I18nBot("tgbot.messages.monitoring.clientOffline", "MonClient=="+monClient, "Reason=="+e.Reason)
-		case "ONLINE":
+		case model.MonClientOnline:
 			offlineFor := ""
 			if since := lastOfflineSince(e.MonClientId, e.Ts); since > 0 {
 				offlineFor = monDuration(e.Ts - since)
@@ -210,7 +210,7 @@ func monPercent(ratio float64) string {
 func lastOfflineSince(monClientId string, ts int64) int64 {
 	var since int64
 	database.GetDB().Model(&model.MonEvent{}).
-		Where("kind = ? AND mon_client_id = ? AND to_state = ? AND ts < ?", model.MonEventMonClient, monClientId, "OFFLINE", ts).
+		Where("kind = ? AND mon_client_id = ? AND to_state = ? AND ts < ?", model.MonEventMonClient, monClientId, model.MonClientOffline, ts).
 		Order("ts desc").Limit(1).Pluck("ts", &since)
 	return since
 }

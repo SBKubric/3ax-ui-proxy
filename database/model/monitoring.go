@@ -27,6 +27,12 @@ const (
 	MonStatePaused   = "PAUSED"
 )
 
+// Registry states of a mon-client, as mon-server reports them.
+const (
+	MonClientOnline  = "ONLINE"
+	MonClientOffline = "OFFLINE"
+)
+
 // Event kinds.
 const (
 	MonEventTarget    = "target"

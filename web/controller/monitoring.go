@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,8 +28,6 @@ type MonitoringController struct {
 
 // monMaxBody caps a contract request body (contract §3).
 const monMaxBody = 1 << 20
-
-var monClientIdPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
 // NewMonitoringController mounts the contract under g.
 func NewMonitoringController(g *gin.RouterGroup) *MonitoringController {
@@ -134,7 +131,7 @@ func (a *MonitoringController) probeEnsure(c *gin.Context) {
 		return
 	}
 	for i, mc := range body.MonClients {
-		if !monClientIdPattern.MatchString(mc.Id) {
+		if !service.ValidMonClientId(mc.Id) {
 			monFail(c, &service.MonError{Status: http.StatusBadRequest, Code: service.MonErrInvalidBody,
 				Message: fmt.Sprintf("monClients[%d].id: required, at most 64 of [A-Za-z0-9_.-]", i)})
 			return
