@@ -1,0 +1,418 @@
+<title>Monitoring Page Variants</title>
+<!--
+  PROTOTYPE, throwaway. Three structurally different variants of the panel's monitoring UI,
+  switchable via ?variant=A|B|C (also #A/#B/#C and ← → keys), shown as a storyboard of the three
+  real surfaces: the new Monitoring page inside the panel shell, the inbound row badge in the
+  Inbounds table, and where the monitoring settings live.
+  Question it answers: wayfinder ticket #26 of map #20 (SBKubric/3ax-ui-proxy).
+  Data is sample data; nothing is fetched or persisted.
+-->
+<style>
+  :root {
+    /* panel tokens (fork's custom.min.css, light) */
+    --pn-bg: #f0f2f5; --pn-card: #ffffff; --pn-card2: #fafafa; --pn-text: rgba(0,0,0,.75); --pn-muted: rgba(0,0,0,.45);
+    --pn-line: #f0f0f0; --pn-stroke: #d9d9d9; --pn-primary: #008771; --pn-primary-soft: #e6f7f3;
+    --pn-menu: #151f31; --pn-menu-text: rgba(255,255,255,.65); --pn-menu-active: #008771;
+    --st-up: #008771; --st-up-soft: #e6f7f3; --st-down: #cf3c3c; --st-down-soft: #fdecec;
+    --st-flap: #f37b24; --st-flap-soft: #fff1e6; --st-unk: #7a316f; --st-unk-soft: #f6e9f4;
+    --st-pause: #bcbcbc; --st-pause-soft: #f2f2f2; --st-stale: #b58a00; --st-stale-soft: #fff8dc;
+    --tag-blue: #1c6fd1; --tag-blue-soft: #e8f1fc; --tag-purple: #7a316f; --tag-purple-soft: #f6e9f4;
+    --grid: rgba(0,0,0,.08);
+    /* prototype chrome, deliberately not Ant */
+    --ch-ink: #111; --ch-paper: #fffdf7; --ch-accent: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --pn-bg: #0a1222; --pn-card: #151f31; --pn-card2: #0a1222; --pn-text: rgba(255,255,255,.75); --pn-muted: rgba(255,255,255,.45);
+      --pn-line: #2c3950; --pn-stroke: #2c3950; --pn-primary: #008771; --pn-primary-soft: #0f2a2a;
+      --pn-menu: #151f31; --pn-menu-text: rgba(255,255,255,.65); --pn-menu-active: #008771;
+      --st-up: #3ad3ba; --st-up-soft: #10302b; --st-down: #e04141; --st-down-soft: #3a1717;
+      --st-flap: #ffa031; --st-flap-soft: #3a2a12; --st-unk: #b06aa5; --st-unk-soft: #33203a;
+      --st-pause: #2c3950; --st-pause-soft: #1b2436; --st-stale: #e0b93a; --st-stale-soft: #3a3212;
+      --tag-blue: #529fff; --tag-blue-soft: #16294a; --tag-purple: #b06aa5; --tag-purple-soft: #33203a;
+      --grid: rgba(255,255,255,.08);
+      --ch-ink: #f2f2f2; --ch-paper: #1a1814; --ch-accent: #ff6b5e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --pn-bg: #0a1222; --pn-card: #151f31; --pn-card2: #0a1222; --pn-text: rgba(255,255,255,.75); --pn-muted: rgba(255,255,255,.45);
+    --pn-line: #2c3950; --pn-stroke: #2c3950; --pn-primary: #008771; --pn-primary-soft: #0f2a2a;
+    --pn-menu: #151f31; --pn-menu-text: rgba(255,255,255,.65); --pn-menu-active: #008771;
+    --st-up: #3ad3ba; --st-up-soft: #10302b; --st-down: #e04141; --st-down-soft: #3a1717;
+    --st-flap: #ffa031; --st-flap-soft: #3a2a12; --st-unk: #b06aa5; --st-unk-soft: #33203a;
+    --st-pause: #2c3950; --st-pause-soft: #1b2436; --st-stale: #e0b93a; --st-stale-soft: #3a3212;
+    --tag-blue: #529fff; --tag-blue-soft: #16294a; --tag-purple: #b06aa5; --tag-purple-soft: #33203a;
+    --grid: rgba(255,255,255,.08);
+    --ch-ink: #f2f2f2; --ch-paper: #1a1814; --ch-accent: #ff6b5e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--pn-bg); color: var(--pn-text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; font-variant-numeric: tabular-nums; padding: 24px 16px 96px; }
+  h1, h2, h3, h4 { margin: 0; font-weight: 600; text-wrap: balance; }
+  a { color: var(--pn-primary); }
+  .wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 28px; }
+  .intro { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ch-ink); background: var(--ch-paper); border: 1px dashed var(--ch-accent); padding: 12px 16px; font-size: 13px; }
+  .intro b { color: var(--ch-accent); }
+  .surface { display: grid; gap: 10px; }
+  .surface > .label { font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ch-accent); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .surface > .label span { color: var(--pn-muted); letter-spacing: 0; text-transform: none; }
+  .switcher { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; background: var(--ch-ink); color: var(--ch-paper); border-radius: 999px; padding: 6px 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); font-family: ui-monospace, Menlo, monospace; font-size: 13px; z-index: 50; }
+  .switcher button { background: transparent; color: inherit; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; width: 32px; height: 32px; cursor: pointer; font-size: 16px; }
+  .switcher button:focus-visible { outline: 2px solid var(--ch-accent); }
+  .switcher .lbl { padding: 0 10px; min-width: 230px; text-align: center; }
+  .switcher .lbl b { color: var(--ch-accent); }
+
+  /* ---- panel shell ---- */
+  .shell { display: grid; grid-template-columns: 220px 1fr; background: var(--pn-bg); border: 1px solid var(--pn-line); border-radius: 8px; overflow: hidden; min-height: 520px; }
+  .sider { background: var(--pn-menu); color: var(--pn-menu-text); padding: 12px 0; display: grid; align-content: start; gap: 2px; }
+  .sider .mi { display: flex; align-items: center; gap: 10px; padding: 0 24px; height: 40px; font-size: 14px; }
+  .sider .mi .ic { width: 14px; text-align: center; opacity: .8; font-size: 13px; }
+  .sider .mi.active { background: var(--pn-menu-active); color: #fff; }
+  .sider .mi.new { outline: 1px dashed var(--ch-accent); outline-offset: -4px; }
+  .sider .cnt { margin-left: auto; background: var(--st-down); color: #fff; border-radius: 10px; font-size: 11px; padding: 0 6px; line-height: 18px; }
+  .content { padding: 24px 16px; display: grid; gap: 16px; align-content: start; min-width: 0; }
+  @media (max-width: 720px) { .shell { grid-template-columns: 1fr; } .sider { display: none; } }
+
+  /* ---- Ant-ish primitives ---- */
+  .card { background: var(--pn-card); border-radius: 1.5rem; padding: 14px 18px; border: 1px solid var(--pn-line); }
+  .card.tight { padding: 10px 14px; }
+  .card h3 { font-size: 15px; }
+  .hd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .hd .sp { flex: 1; }
+  .tag { display: inline-flex; align-items: center; gap: 5px; border: 1px solid transparent; border-radius: 4px; padding: 0 7px; line-height: 20px; font-size: 12px; white-space: nowrap; }
+  .tag.blue { color: var(--tag-blue); background: var(--tag-blue-soft); }
+  .tag.purple { color: var(--tag-purple); background: var(--tag-purple-soft); }
+  .tag.plain { color: var(--pn-muted); background: var(--pn-card2); border-color: var(--pn-line); }
+  .st { display: inline-flex; align-items: center; gap: 6px; border-radius: 4px; padding: 0 8px; line-height: 22px; font-size: 12px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+  .st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .st.UP { color: var(--st-up); background: var(--st-up-soft); }
+  .st.DOWN { color: var(--st-down); background: var(--st-down-soft); }
+  .st.FLAPPING { color: var(--st-flap); background: var(--st-flap-soft); }
+  .st.UNKNOWN { color: var(--st-unk); background: var(--st-unk-soft); }
+  .st.PAUSED { color: var(--pn-muted); background: var(--st-pause-soft); }
+  .st.PAUSED::before { background: var(--st-pause); }
+  .st.STALE { color: var(--st-stale); background: var(--st-stale-soft); }
+  .st.STALE::before { background: repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 4px); border-radius: 1px; }
+  .st.ONLINE { color: var(--st-up); background: var(--st-up-soft); }
+  .st.OFFLINE { color: var(--st-down); background: var(--st-down-soft); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+  .dot.UP { background: var(--st-up); } .dot.DOWN { background: var(--st-down); } .dot.FLAPPING { background: var(--st-flap); }
+  .dot.UNKNOWN { background: var(--st-unk); } .dot.PAUSED { background: var(--st-pause); } .dot.STALE { background: var(--st-stale); }
+  .dot.pulse { animation: pulse 1.2s linear infinite; }
+  @keyframes pulse { 0%,50%,100% { transform: scale(1); opacity: 1; } 10% { transform: scale(1.5); opacity: .2; } }
+  @media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } }
+  .muted { color: var(--pn-muted); }
+  .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.t th { text-align: left; font-weight: 500; color: var(--pn-muted); padding: 6px 8px; border-bottom: 1px solid var(--pn-line); background: var(--pn-card2); font-size: 12px; }
+  table.t td { padding: 7px 8px; border-bottom: 1px solid var(--pn-line); vertical-align: middle; }
+  table.t tr:last-child td { border-bottom: 0; }
+  table.t td.r, table.t th.r { text-align: right; }
+  table.t td.c, table.t th.c { text-align: center; }
+  .scroll { overflow-x: auto; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--pn-stroke); background: var(--pn-card); color: var(--pn-text); border-radius: 4px; padding: 0 12px; line-height: 30px; font-size: 13px; cursor: pointer; }
+  .btn.primary { background: var(--pn-primary); border-color: var(--pn-primary); color: #fff; }
+  .btn.danger { color: var(--st-down); border-color: var(--st-down); }
+  .btn.sm { line-height: 22px; padding: 0 8px; font-size: 12px; }
+  .seg { display: inline-flex; border: 1px solid var(--pn-stroke); border-radius: 4px; overflow: hidden; }
+  .seg span { padding: 0 10px; line-height: 26px; font-size: 12px; border-right: 1px solid var(--pn-stroke); }
+  .seg span:last-child { border-right: 0; }
+  .seg span.on { background: var(--pn-primary); color: #fff; }
+  .switch { display: inline-block; width: 36px; height: 20px; border-radius: 10px; background: var(--pn-primary); position: relative; vertical-align: middle; }
+  .switch::after { content: ""; position: absolute; right: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+  .switch.off { background: var(--pn-stroke); } .switch.off::after { right: auto; left: 2px; }
+  .in { display: flex; align-items: center; gap: 6px; border: 1px solid var(--pn-stroke); border-radius: 4px; padding: 4px 10px; background: var(--pn-card); color: var(--pn-text); min-height: 32px; font-size: 13px; }
+  .in .ph { color: var(--pn-muted); }
+  .in.num::after { content: "▴▾"; margin-left: auto; color: var(--pn-muted); font-size: 9px; letter-spacing: -2px; }
+  .alert { border-radius: 6px; padding: 8px 12px; display: flex; gap: 8px; align-items: center; font-size: 13px; }
+  .alert.warn { background: var(--st-stale-soft); color: var(--st-stale); border: 1px solid color-mix(in srgb, var(--st-stale) 40%, transparent); }
+  .alert.ok { background: var(--st-up-soft); color: var(--st-up); border: 1px solid color-mix(in srgb, var(--st-up) 40%, transparent); }
+  .feed { display: grid; gap: 0; }
+  .feed .ev { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--pn-line); font-size: 13px; align-items: start; }
+  .feed .ev:last-child { border-bottom: 0; }
+  .feed .ev .tm { color: var(--pn-muted); font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding-top: 2px; }
+  .feed .ev .dot { margin-right: 6px; }
+  .feed .day { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--pn-muted); padding: 10px 0 4px; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--pn-line); background: var(--pn-card2); border-radius: 999px; padding: 3px 12px 3px 8px; font-size: 13px; }
+  .pill .rg { color: var(--pn-muted); font-size: 12px; }
+  .spark svg { width: 100%; height: auto; display: block; }
+  .strip { display: grid; grid-template-columns: repeat(168, 1fr); gap: 1px; height: 18px; }
+  .strip i { display: block; border-radius: 1px; background: var(--st-up); }
+  .strip i.w { background: var(--st-flap); } .strip i.d { background: var(--st-down); } .strip i.n { background: var(--pn-line); }
+  .strip i.p { background: var(--st-pause-soft); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--pn-card); border-radius: 1.5rem; padding: 12px 16px; border: 1px solid var(--pn-line); border-left: 4px solid var(--pn-primary); }
+  .tile .k { font-size: 12px; color: var(--pn-muted); }
+  .tile .v { font-size: 22px; font-weight: 600; line-height: 1.2; }
+  .tile.down { border-left-color: var(--st-down); } .tile.unk { border-left-color: var(--st-unk); } .tile.stale { border-left-color: var(--st-stale); }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+  .two.left { grid-template-columns: 240px minmax(0, 1fr); }
+  @media (max-width: 900px) { .two, .two.left { grid-template-columns: 1fr; } }
+  .matrix td.cell { padding: 6px 8px; }
+  .matrix .cellbox { display: grid; gap: 4px; border: 1px solid var(--pn-line); border-radius: 6px; padding: 5px 8px; cursor: pointer; background: var(--pn-card2); min-width: 120px; }
+  .matrix .cellbox.sel { outline: 2px solid var(--pn-primary); }
+  .matrix .cellbox .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+  .list .li { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; padding: 10px 0; border-bottom: 1px solid var(--pn-line); }
+  .list .li:last-child { border-bottom: 0; }
+  .list .li .nm { font-weight: 600; }
+  .list .li .sub { grid-column: 1 / -1; font-size: 12px; color: var(--pn-muted); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 13px; }
+  .kv dt { color: var(--pn-muted); } .kv dd { margin: 0; }
+  .tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--pn-line); padding: 0 6px; overflow-x: auto; }
+  .tabs span { padding: 8px 0 10px; font-size: 14px; white-space: nowrap; color: var(--pn-muted); }
+  .tabs span.on { color: var(--pn-primary); border-bottom: 2px solid var(--pn-primary); }
+  .tabs span.new { outline: 1px dashed var(--ch-accent); outline-offset: 3px; border-radius: 2px; }
+  .sli { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 1fr); gap: 8px 16px; padding: 10px 20px; border-bottom: 1px solid var(--pn-line); align-items: center; }
+  .sli:last-child { border-bottom: 0; }
+  .sli .t { font-weight: 500; } .sli .d { font-size: 12px; color: var(--pn-muted); }
+  @media (max-width: 640px) { .sli { grid-template-columns: 1fr; } }
+  .collapse { border: 1px solid var(--pn-line); border-radius: 6px; overflow: hidden; }
+  .collapse .ch { background: var(--pn-card2); padding: 8px 14px; font-weight: 500; font-size: 13px; }
+  .expand { border-left: 3px solid var(--pn-primary); }
+  .rule { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--ch-paper); color: var(--ch-ink); border: 1px dashed var(--ch-accent); border-radius: 6px; padding: 8px 12px; }
+  .rule b { color: var(--ch-accent); }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--pn-muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+  .bars { display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; align-items: end; height: 46px; }
+  .bars i { display: block; background: var(--st-down); border-radius: 2px 2px 0 0; min-height: 1px; }
+  .bars i.z { background: var(--pn-line); }
+  .lat { font-variant-numeric: tabular-nums; }
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <b>PROTOTYPE · not production.</b> Monitoring UI of the 3AX-UI panel: three structurally different variants (A / B / C) across
+    three surfaces — the new <b>Monitoring page</b> inside the real panel shell, the <b>inbound row badge</b> in the Inbounds table, and where the
+    <b>monitoring settings</b> live. Switch with the bar at the bottom, <b>← →</b> keys, or <b>?variant=A|B|C</b>. Sample data, nothing is fetched.
+    Colors are the panel's own: UP green · DOWN red · FLAPPING orange · UNKNOWN purple · PAUSED gray · STALE hatched amber.
+  </div>
+  <div id="root"></div>
+</div>
+
+<div class="switcher" id="switcher">
+  <button id="prev" aria-label="Previous variant">←</button>
+  <div class="lbl">Variant <b id="vkey">A</b> <span id="vname"></span></div>
+  <button id="next" aria-label="Next variant">→</button>
+</div>
+
+<script>
+/* ---------- sample data ---------- */
+const NOW = Date.UTC(2026, 8, 13, 12, 58); // 2026-09-13 12:58 UTC
+const monClients = [
+  { id: 'ams-1', name: 'Amsterdam #1', region: 'NL', state: 'ONLINE',  lastHeartbeat: NOW - 8e3 },
+  { id: 'fra-1', name: 'Frankfurt #1', region: 'DE', state: 'ONLINE',  lastHeartbeat: NOW - 21e3 },
+  { id: 'msk-1', name: 'Moscow #1',    region: 'RU', state: 'OFFLINE', lastHeartbeat: NOW - 14 * 60e3 },
+];
+const inbounds = [
+  { kind: 'xray', inboundId: 12, remark: 'Reality main', protocol: 'vless', port: 443,   enable: true,  net: 'tcp', sec: 'Reality', clients: 23 },
+  { kind: 'xray', inboundId: 15, remark: 'VMess WS',     protocol: 'vmess', port: 8443,  enable: false, net: 'ws',  sec: 'TLS',     clients: 4 },
+  { kind: 'awg',  inboundId: 0,  remark: 'AmneziaWG',    protocol: 'awg',   port: 51820, enable: true,  net: 'udp', sec: '',        clients: 9 },
+];
+const override = { enabled: true, host: 'front.example.net' };
+const paths = ['direct', 'proxy'];
+// targets: monClientId × inbound × path
+const targets = [];
+for (const mc of monClients) for (const ib of inbounds) for (const p of paths) {
+  let state = 'UP', since = NOW - 5 * 24 * 3600e3, reason = '';
+  if (!ib.enable) { state = 'PAUSED'; since = NOW - 2 * 24 * 3600e3; reason = 'config_disabled'; }
+  else if (mc.state === 'OFFLINE') { state = 'UNKNOWN'; since = mc.lastHeartbeat + 3 * 60e3; reason = 'mon_client_offline'; }
+  else if (mc.id === 'ams-1' && ib.inboundId === 12 && p === 'proxy') { state = 'DOWN'; since = NOW - 17 * 60e3; reason = 'tls_timeout'; }
+  else if (mc.id === 'fra-1' && ib.kind === 'awg' && p === 'proxy') { state = 'FLAPPING'; since = NOW - 9 * 60e3; reason = 'awg_no_handshake'; }
+  targets.push({ monClientId: mc.id, kind: ib.kind, inboundId: ib.inboundId, path: p, state, since, reason,
+    uptime24: state === 'DOWN' ? 96.4 : state === 'FLAPPING' ? 91.2 : state === 'UNKNOWN' ? 99.7 : state === 'PAUSED' ? null : 99.9 + (hash(mc.id + ib.inboundId + p) % 10) / 100,
+    coverage24: state === 'UNKNOWN' ? 95 : state === 'PAUSED' ? 0 : 100,
+    latAvg: state === 'PAUSED' ? null : (p === 'proxy' ? 61 : 38) + (hash(mc.id + p) % 30) });
+}
+const events = [
+  { ts: NOW - 17 * 60e3, kind: 'target', mc: 'ams-1', ib: 12, path: 'proxy', to: 'DOWN', reason: 'tls_timeout' },
+  { ts: NOW - 14 * 60e3, kind: 'mon_client', mc: 'msk-1', to: 'OFFLINE', reason: 'heartbeat_missed' },
+  { ts: NOW - 9 * 60e3,  kind: 'target', mc: 'fra-1', ib: 0, path: 'proxy', to: 'FLAPPING', reason: 'flapping' },
+  { ts: NOW - 2 * 3600e3 - 5 * 60e3, kind: 'target', mc: 'ams-1', ib: 12, path: 'proxy', to: 'UP', reason: 'recovered', dur: '7m' },
+  { ts: NOW - 2 * 3600e3 - 12 * 60e3, kind: 'target', mc: 'ams-1', ib: 12, path: 'proxy', to: 'DOWN', reason: 'tcp_timeout' },
+  { ts: NOW - 26 * 3600e3, kind: 'panel', to: 'PANEL_UP', reason: 'recovered', dur: '12m', via: true },
+  { ts: NOW - 26 * 3600e3 - 12 * 60e3, kind: 'panel', to: 'PANEL_DOWN', reason: 'http_timeout', via: true },
+  { ts: NOW - 2 * 24 * 3600e3 - 40 * 60e3, kind: 'target', mc: '*', ib: 15, path: '*', to: 'PAUSED', reason: 'config_disabled' },
+];
+function hash(s) { let h = 7; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
+function series(seed, n, base, dip) { // uptime % per bucket
+  const out = []; for (let i = 0; i < n; i++) { let v = base - (hash(seed + i) % 7) / 10; if (dip && i > n - dip.at && i < n - dip.at + dip.len) v = dip.v; out.push(Math.max(0, Math.min(100, v))); } return out;
+}
+const ibById = (k, id) => inbounds.find(i => i.kind === k && i.inboundId === id);
+const mcById = id => monClients.find(m => m.id === id);
+const fmtT = ts => { const d = new Date(ts); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); };
+const fmtD = ts => { const d = new Date(ts); return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()] + ' ' + d.getUTCDate() + ' Sep'; };
+const ago = ts => { const s = Math.round((NOW - ts) / 1e3); if (s < 60) return s + 's ago'; const m = Math.round(s / 60); if (m < 60) return m + 'm ago'; const h = Math.round(m / 60); if (h < 48) return h + 'h ago'; return Math.round(h / 24) + 'd ago'; };
+const dur = ts => { const m = Math.round((NOW - ts) / 60e3); if (m < 60) return m + 'm'; const h = Math.floor(m / 60); if (h < 48) return h + 'h ' + (m % 60) + 'm'; return Math.round(h / 24) + 'd'; };
+const ibLabel = ib => `${ib.remark} <span class="tag purple">${ib.protocol}</span><span class="muted">:${ib.port}</span>`;
+
+/* ---------- rolled-up badge rules ---------- */
+const live = ib => targets.filter(t => t.kind === ib.kind && t.inboundId === ib.inboundId && mcById(t.monClientId));
+const rank = { DOWN: 0, FLAPPING: 1, UNKNOWN: 2, UP: 3, PAUSED: 4 };
+function worst(ib) { const ts = live(ib); if (!ts.length) return null; return ts.slice().sort((a, b) => rank[a.state] - rank[b.state])[0].state; }
+function worstByPath(ib, p) { const ts = live(ib).filter(t => t.path === p); if (!ts.length) return null; return ts.slice().sort((a, b) => rank[a.state] - rank[b.state])[0].state; }
+function counts(ib) { const ts = live(ib); const c = { UP: 0, DOWN: 0, FLAPPING: 0, UNKNOWN: 0, PAUSED: 0, total: ts.length }; ts.forEach(t => c[t.state]++); return c; }
+
+/* ---------- shared bits ---------- */
+function sparkline(data, { h = 70, w = 360, min = 90, stroke = 'var(--pn-primary)', labels = [] } = {}) {
+  const pl = 30, pr = 6, pt = 6, pb = 18, dw = w - pl - pr, dh = h - pt - pb, n = data.length;
+  const x = i => pl + (i / (n - 1)) * dw, y = v => pt + dh - ((v - min) / (100 - min)) * dh;
+  const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const area = `M${x(0).toFixed(1)},${(pt + dh).toFixed(1)} L${pts.replace(/ /g, ' L')} L${x(n - 1).toFixed(1)},${(pt + dh).toFixed(1)} Z`;
+  const gid = 'g' + hash(pts).toString(36);
+  const grid = [min, (min + 100) / 2, 100].map(v => `<line x1="${pl}" x2="${w - pr}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--grid)" stroke-width="1"/><text x="${pl - 4}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--pn-muted)">${v}%</text>`).join('');
+  const xl = labels.map((l, i) => `<text x="${(pl + (i / (labels.length - 1)) * dw).toFixed(1)}" y="${h - 4}" text-anchor="middle" font-size="9" fill="var(--pn-muted)">${l}</text>`).join('');
+  const last = `${x(n - 1).toFixed(1)},${y(data[n - 1]).toFixed(1)}`.split(',');
+  return `<div class="spark"><svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="uptime sparkline"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${stroke}" stop-opacity=".18"/><stop offset="100%" stop-color="${stroke}" stop-opacity="0"/></linearGradient></defs>${grid}${xl}<path d="${area}" fill="url(#${gid})" stroke="none"/><polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${last[0]}" cy="${last[1]}" r="2.8" fill="${stroke}"/></svg></div>`;
+}
+function strip(seed, ib, mc, p) { // 168 hourly cells
+  const cells = []; for (let i = 0; i < 168; i++) {
+    let cls = ''; const v = hash(seed + i) % 100;
+    if (!ib.enable && i > 168 - 49) cls = 'p';
+    else if (mc && mc.state === 'OFFLINE' && i > 168 - 1) cls = 'n';
+    else if (seed.includes('ams-1-12-proxy') && (i === 167 || i === 165)) cls = 'd';
+    else if (seed.includes('fra-1-0-proxy') && i === 167) cls = 'w';
+    else if (v < 2) cls = 'w';
+    cells.push(`<i class="${cls}" title="${168 - i}h ago"></i>`);
+  } return `<div class="strip">${cells.join('')}</div>`;
+}
+function evText(e) {
+  if (e.kind === 'target') { const ib = e.ib === 15 ? inbounds[1] : ibById(e.ib === 0 ? 'awg' : 'xray', e.ib); const who = e.mc === '*' ? 'all mon-clients' : e.mc; const via = e.path === '*' ? '' : ` via <b>${e.path}</b>`; return `<span class="dot ${e.to}"></span><b>${e.to}</b> · ${ib.remark}${via} · ${who}${e.dur ? ` · down for ${e.dur}` : ''}${e.reason && e.to !== 'UP' ? ` · <span class="mono">${e.reason}</span>` : ''}`; }
+  if (e.kind === 'mon_client') return `<span class="dot ${e.to === 'ONLINE' ? 'UP' : 'DOWN'}"></span><b>mon-client ${e.to}</b> · ${mcById(e.mc).name} (${mcById(e.mc).region}) · <span class="mono">${e.reason}</span>`;
+  return `<span class="dot ${e.to === 'PANEL_UP' ? 'UP' : 'STALE'}"></span><b>${e.to === 'PANEL_UP' ? 'panel back' : 'panel unreachable'}</b>${e.dur ? ` · was unreachable ${e.dur}` : ''} <span class="muted">· via mon-server</span>`;
+}
+function feed(list, grouped) {
+  let out = '', day = ''; for (const e of list) { const d = fmtD(e.ts); if (grouped && d !== day) { out += `<div class="day">${d}</div>`; day = d; } out += `<div class="ev"><div class="tm">${grouped ? fmtT(e.ts) : fmtT(e.ts)}</div><div>${evText(e)}</div></div>`; } return `<div class="feed">${out}</div>`;
+}
+function sider(active, badge) {
+  const items = [['⌂', 'Overview', 'panel'], ['👤', 'Inbounds', 'inbounds'], ['📈', 'Monitoring', 'monitoring', true], ['⚙', '3AX-UI Settings', 'settings'], ['🛠', 'Xray Configs', 'xray'], ['🔒', 'AWG Settings', 'wg'], ['🌐', 'Nginx camouflage', 'nginx'], ['⏻', 'Log Out', 'logout']];
+  return `<div class="sider"><div class="mi"><span class="ic">💡</span>Theme</div>${items.map(([ic, t, k, nw]) => `<div class="mi ${k === active ? 'active' : ''} ${nw ? 'new' : ''}"><span class="ic">${ic}</span>${t}${nw && badge ? `<span class="cnt">${badge}</span>` : ''}</div>`).join('')}</div>`;
+}
+const stalePill = `<span class="pill"><span class="dot UP pulse"></span>monitoring live <span class="rg">· last contact 12s ago</span></span>`;
+function mcPill(mc) { return `<span class="pill"><span class="dot ${mc.state === 'ONLINE' ? 'UP' : 'DOWN'} ${mc.state === 'ONLINE' ? 'pulse' : ''}"></span>${mc.name} <span class="rg">${mc.region} · ${mc.state === 'ONLINE' ? 'hb ' + ago(mc.lastHeartbeat) : 'OFFLINE ' + dur(mc.lastHeartbeat)}</span></span>`; }
+function settingsItems(extra) {
+  return `
+  <div class="sli"><div><div class="t">Enable monitoring API</div><div class="d">Opens <span class="mono">/mon/v1</span> for the mon-server. Everything answers 404 while off.</div></div><div><span class="switch"></span></div></div>
+  <div class="sli"><div><div class="t">Monitoring token</div><div class="d">Bearer token the mon-server sends. Regenerating invalidates the old one immediately.</div></div><div style="display:flex;gap:6px"><div class="in mono" style="flex:1">mZq8•••••••••••••••••••••••••Yt2</div><span class="btn">Copy</span><span class="btn danger">Regenerate</span></div></div>
+  <div class="sli"><div><div class="t">Stale after (minutes)</div><div class="d">No request from the mon-server for this long marks every target STALE and sends one Telegram message.</div></div><div class="in num">15</div></div>
+  <div class="sli"><div><div class="t">Keep 5-minute stats and events (days)</div><div class="d">Rolling window for detail charts and the event feed.</div></div><div class="in num">7</div></div>
+  <div class="sli"><div><div class="t">Keep hourly rollups (days)</div><div class="d">Longer window for the 30-day view.</div></div><div class="in num">30</div></div>
+  <div class="sli"><div><div class="t">Probe accounts</div><div class="d">One probe client per inbound under subId <span class="mono">k3j9d8s7f6g5h4j3</span>, last ensured 40s ago. Removed after 24h without a mon-server.</div></div><div><span class="btn">Remove probe set</span></div></div>
+  ${extra || ''}`;
+}
+function settingsPage(tabOn, body) {
+  return `<div class="shell">${sider('settings')}<div class="content">
+    <div class="card tight hd"><span class="btn primary">Save</span><span class="btn danger">Restart panel</span><span class="sp"></span><span class="alert warn">⚠ Settings apply after the panel restarts</span></div>
+    <div class="card" style="padding:8px 12px 0"><div class="tabs"><span>⚙ General</span><span>🛡 Authentication</span><span>💬 Telegram Bot</span><span>☁ Subscription</span><span class="${tabOn ? 'on' : ''} new">📈 Monitoring</span></div>
+    <div style="padding:14px 0 6px">${body}</div></div></div></div>`;
+}
+function inboundRow(ib, badgeHtml, expanded) {
+  return `<tr><td class="c">${ib.inboundId || '—'}</td><td class="c"><span class="btn sm">⋯</span></td><td class="c"><span class="switch ${ib.enable ? '' : 'off'}"></span></td><td>${ib.remark}</td><td class="c">${ib.port}</td><td><span class="tag purple">${ib.protocol}</span> <span class="tag" style="color:var(--st-up);background:var(--st-up-soft)">${ib.net}</span>${ib.sec ? ` <span class="tag blue">${ib.sec}</span>` : ''}</td><td class="c"><span class="tag" style="color:var(--st-up);background:var(--st-up-soft)">${ib.clients}</span></td><td class="c">${badgeHtml}</td><td class="c muted">12.4 GB / ∞</td><td class="c muted">∞</td></tr>${expanded || ''}`;
+}
+function inboundsTable(badgeFor, expandedFor) {
+  return `<div class="shell">${sider('inbounds')}<div class="content"><div class="card" style="padding:12px"><div class="hd" style="margin-bottom:10px"><span class="btn primary">+ Add Inbound</span><span class="btn">⋯</span><span class="sp"></span><span class="seg"><span class="on">all</span><span>depleted</span><span>expiring</span><span>online</span><span class="new" style="outline:1px dashed var(--ch-accent);outline-offset:-3px">down</span></span></div>
+  <div class="scroll"><table class="t"><thead><tr><th class="c">ID</th><th class="c">Operate</th><th class="c">Enable</th><th>Remark</th><th class="c">Port</th><th>Protocol</th><th class="c">Clients</th><th class="c" style="outline:1px dashed var(--ch-accent);outline-offset:-3px">Health</th><th class="c">Traffic</th><th class="c">Expire</th></tr></thead><tbody>
+  ${inbounds.map(ib => inboundRow(ib, badgeFor(ib), expandedFor ? expandedFor(ib) : '')).join('')}</tbody></table></div></div></div></div>`;
+}
+const wk = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'now'];
+
+/* ---------- Variant A: by inbound ---------- */
+const VariantA = {
+  name: 'A · Inbound cards',
+  page() {
+    const cards = inbounds.map(ib => {
+      const w = worst(ib); const rows = live(ib).map(t => { const mc = mcById(t.monClientId); return `<tr><td>${mc.name} <span class="muted">${mc.region}</span></td><td><span class="tag ${t.path === 'proxy' ? 'blue' : 'plain'}">${t.path}</span></td><td><span class="st ${t.state}">${t.state}</span></td><td class="muted">${t.state === 'PAUSED' ? '—' : dur(t.since) + (t.state === 'UP' ? ' up' : '')}</td><td class="r lat">${t.uptime24 == null ? '—' : t.uptime24.toFixed(1) + '%'}${t.coverage24 < 100 && t.coverage24 > 0 ? ` <span class="muted">(cov ${t.coverage24}%)</span>` : ''}</td><td class="r lat">${t.latAvg == null ? '—' : t.latAvg + ' ms'}</td><td class="mono muted">${t.reason}</td></tr>`; }).join('');
+      const dip = ib.inboundId === 12 ? { at: 3, len: 1, v: 96.4 } : null;
+      return `<div class="card"><div class="hd"><h3>${ibLabel(ib)}</h3><span class="sp"></span>${override.enabled ? `<span class="muted" style="font-size:12px">proxy → ${override.host}</span>` : ''}<span class="st ${w}">${w}</span></div>
+        <div class="scroll" style="margin-top:8px"><table class="t"><thead><tr><th>mon-client</th><th>path</th><th>state</th><th>for</th><th class="r">uptime 24h</th><th class="r">latency</th><th>reason</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div style="margin-top:10px;display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center"><div>${sparkline(series(ib.remark, 56, ib.enable ? 99.9 : 100, dip), { labels: wk, stroke: ib.enable ? 'var(--pn-primary)' : 'var(--st-pause)' })}</div><div class="seg"><span>24h</span><span class="on">7d</span><span>30d</span></div></div></div>`;
+    }).join('');
+    return `<div class="shell">${sider('monitoring')}<div class="content">
+      <div class="hd"><h2>Monitoring</h2><span class="sp"></span>${stalePill}</div>
+      <div class="hd">${monClients.map(mcPill).join('')}</div>
+      <div class="two"><div style="display:grid;gap:16px">${cards}</div>
+        <div class="card"><div class="hd"><h3>Events</h3><span class="sp"></span><span class="muted" style="font-size:12px">last 7 days</span></div>${feed(events, false)}</div></div>
+    </div></div>`;
+  },
+  badge(ib) { const w = worst(ib); return `<span class="st ${w}">${w}</span>`; },
+  rule: '<b>Badge = worst live target.</b> DOWN &gt; FLAPPING &gt; UNKNOWN &gt; UP &gt; PAUSED across every mon-client and both paths; STALE replaces all when the mon-server is silent. Tooltip lists the failing targets.',
+  expanded(ib) { if (ib.inboundId !== 12) return ''; return `<tr class="expand"><td colspan="10" style="padding:6px 22px"><div class="muted" style="font-size:12px;margin-bottom:4px">Health detail (from the inbound tooltip / expand)</div>${live(ib).map(t => `<span class="st ${t.state}" style="margin:2px 6px 2px 0">${t.monClientId} · ${t.path}</span>`).join('')}</td></tr>`; },
+  settings() { return settingsPage(true, settingsItems()); },
+  settingsLabel: 'Settings → new tab “Monitoring” (same a-setting-list-item rows as other tabs)',
+};
+
+/* ---------- Variant B: matrix ---------- */
+const VariantB = {
+  name: 'B · Matrix inbound × mon-client',
+  page() {
+    const sel = targets.find(t => t.monClientId === 'ams-1' && t.inboundId === 12 && t.path === 'proxy');
+    const head = monClients.map(mc => `<th class="c"><span class="dot ${mc.state === 'ONLINE' ? 'UP' : 'DOWN'}"></span> ${mc.name}<div class="muted" style="font-weight:400">${mc.region} · ${mc.state === 'ONLINE' ? ago(mc.lastHeartbeat) : 'OFFLINE ' + dur(mc.lastHeartbeat)}</div></th>`).join('');
+    const rows = inbounds.map(ib => `<tr><td>${ibLabel(ib)}</td>${monClients.map(mc => { const cell = paths.map(p => { const t = targets.find(x => x.monClientId === mc.id && x.kind === ib.kind && x.inboundId === ib.inboundId && x.path === p); return `<div class="row"><span class="tag ${p === 'proxy' ? 'blue' : 'plain'}">${p}</span><span class="st ${t.state}">${t.state}</span></div>`; }).join(''); const isSel = mc.id === 'ams-1' && ib.inboundId === 12; return `<td class="cell"><div class="cellbox ${isSel ? 'sel' : ''}">${cell}</div></td>`; }).join('')}</tr>`).join('');
+    const bars = Array.from({ length: 24 }, (_, i) => { const f = i === 21 ? 5 : i === 23 ? 3 : (hash('b' + i) % 9 === 0 ? 1 : 0); return `<i class="${f ? '' : 'z'}" style="height:${Math.max(6, f * 20)}%" title="${23 - i}h ago · ${f} failed"></i>`; }).join('');
+    const tEvents = events.filter(e => e.kind === 'target' && e.mc === 'ams-1' && e.ib === 12);
+    return `<div class="shell">${sider('monitoring', 1)}<div class="content">
+      <div class="hd"><h2>Monitoring</h2><span class="sp"></span>${stalePill}<span class="btn">⚙ Settings</span></div>
+      <div class="card" style="padding:0;overflow:hidden"><div class="scroll matrix"><table class="t"><thead><tr><th>inbound</th>${head}</tr></thead><tbody>${rows}</tbody></table></div></div>
+      <div class="card"><div class="hd"><h3>Reality main · <span class="tag blue">proxy</span> · Amsterdam #1</h3><span class="st DOWN">DOWN</span><span class="muted">for ${dur(sel.since)} · <span class="mono">tls_timeout</span></span><span class="sp"></span><span class="seg"><span class="on">24h</span><span>7d</span><span>30d</span></span></div>
+        <div class="two" style="margin-top:10px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
+          <div><div class="muted" style="font-size:12px;margin-bottom:4px">latency, avg per 5 min (ms)</div>${sparkline(series('lat', 48, 97).map(v => 40 + (100 - v) * 30), { min: 0, labels: ['-24h', '-18h', '-12h', '-6h', 'now'], stroke: 'var(--tag-blue)' }).replace(/(\d+)%<\/text>/g, (m, n) => (n === '0' ? '0' : n === '50' ? '45' : '90') + ' ms</text>')}</div>
+          <div><div class="muted" style="font-size:12px;margin-bottom:4px">failed probes per hour</div><div class="bars">${bars}</div><div class="kv" style="margin-top:10px"><dt>uptime 24h</dt><dd>96.4 % <span class="muted">(coverage 100 %)</span></dd><dt>latency</dt><dd>min 52 · avg 71 · max 388 ms</dd><dt>probe account</dt><dd class="mono">probe-12</dd></div></div>
+        </div>
+        <div style="margin-top:10px"><div class="muted" style="font-size:12px">events of this target</div>${feed(tEvents, false)}</div></div>
+    </div></div>`;
+  },
+  badge(ib) { return paths.map(p => { const w = worstByPath(ib, p); return `<span class="tag plain" title="${p}: ${w}"><span class="dot ${w}"></span>${p}</span>`; }).join(' '); },
+  rule: '<b>Badge = one dot per path.</b> Each dot is the worst live target on that path, so a blocked proxy front reads as “direct ● proxy ●” without opening the page. Sidebar item carries the count of inbounds with a DOWN target.',
+  expanded() { return ''; },
+  settings() {
+    return `<div class="shell">${sider('monitoring', 1)}<div class="content"><div class="hd"><h2>Monitoring</h2><span class="sp"></span>${stalePill}<span class="btn primary">⚙ Settings</span></div>
+      <div class="card" style="max-width:640px;margin:0 auto;padding:0"><div class="hd" style="padding:12px 20px;border-bottom:1px solid var(--pn-line)"><h3>Monitoring settings</h3><span class="sp"></span><span class="muted">✕</span></div>${settingsItems()}<div class="hd" style="padding:10px 16px;border-top:1px solid var(--pn-line);justify-content:flex-end"><span class="btn">Cancel</span><span class="btn primary">Save</span></div></div></div></div>`;
+  },
+  settingsLabel: 'Modal opened from the Monitoring page header (nothing added to the Settings page)',
+};
+
+/* ---------- Variant C: timeline + uptime strips ---------- */
+const VariantC = {
+  name: 'C · Uptime strips + timeline',
+  page() {
+    const all = targets.filter(t => mcById(t.monClientId)); const c = { UP: 0, DOWN: 0, FLAPPING: 0, UNKNOWN: 0, PAUSED: 0 }; all.forEach(t => c[t.state]++);
+    const tiles = `<div class="tiles"><div class="tile"><div class="k">targets UP</div><div class="v">${c.UP} <span class="muted" style="font-size:13px">/ ${all.length}</span></div></div><div class="tile down"><div class="k">DOWN · FLAPPING</div><div class="v">${c.DOWN} · ${c.FLAPPING}</div></div><div class="tile unk"><div class="k">UNKNOWN · PAUSED</div><div class="v">${c.UNKNOWN} · ${c.PAUSED}</div></div><div class="tile"><div class="k">mon-clients online</div><div class="v">${monClients.filter(m => m.state === 'ONLINE').length} <span class="muted" style="font-size:13px">/ ${monClients.length}</span></div></div><div class="tile stale"><div class="k">last contact</div><div class="v">12 s</div></div></div>`;
+    const strips = inbounds.map(ib => `<div class="card tight"><div class="hd"><h3>${ibLabel(ib)}</h3><span class="sp"></span><span class="tag plain">${counts(ib).UP}/${counts(ib).total} UP</span></div>
+      ${monClients.flatMap(mc => paths.map(p => { const t = targets.find(x => x.monClientId === mc.id && x.kind === ib.kind && x.inboundId === ib.inboundId && x.path === p); return `<div style="display:grid;grid-template-columns:150px 1fr auto;gap:10px;align-items:center;padding:5px 0;border-top:1px solid var(--pn-line)"><div style="font-size:12px">${mc.name} <span class="tag ${p === 'proxy' ? 'blue' : 'plain'}">${p}</span></div>${strip(mc.id + '-' + ib.inboundId + '-' + p, ib, mc, p)}<span class="st ${t.state}" style="min-width:92px;justify-content:center">${t.state}</span></div>`; })).join('')}</div>`).join('');
+    return `<div class="shell">${sider('monitoring')}<div class="content">
+      <div class="hd"><h2>Monitoring</h2><span class="sp"></span>${stalePill}</div>
+      ${tiles}
+      <div class="two"><div style="display:grid;gap:12px"><div class="hd"><span class="muted" style="font-size:12px">7 days, one cell per hour · left = 7d ago, right = now</span><span class="sp"></span><span class="legend"><span><i style="background:var(--st-up)"></i>100 %</span><span><i style="background:var(--st-flap)"></i>&lt; 99 %</span><span><i style="background:var(--st-down)"></i>&lt; 90 %</span><span><i style="background:var(--pn-line)"></i>no data</span><span><i style="background:var(--st-pause-soft);border:1px solid var(--pn-line)"></i>paused</span></span></div>${strips}
+        <div class="collapse"><div class="ch">⚙ Monitoring settings</div>${settingsItems()}</div></div>
+        <div class="card"><div class="hd"><h3>Timeline</h3><span class="sp"></span><span class="seg"><span class="on">all</span><span>targets</span><span>mon-clients</span><span>panel</span></span></div>${feed(events, true)}</div></div>
+    </div></div>`;
+  },
+  badge(ib) { const k = counts(ib); const cls = k.DOWN ? 'DOWN' : k.FLAPPING ? 'FLAPPING' : k.UNKNOWN ? 'UNKNOWN' : k.UP ? 'UP' : 'PAUSED'; return `<span class="st ${cls}">${k.UP}/${k.total} UP</span>`; },
+  rule: '<b>Badge = counter “UP / total”</b> over live targets, colored by the worst state present. Reads how much of the fleet still sees the inbound; the number changes before the color does.',
+  expanded() { return ''; },
+  settings() { return `<div class="shell">${sider('monitoring')}<div class="content"><div class="hd"><h2>Monitoring</h2><span class="sp"></span>${stalePill}</div><div class="muted" style="font-size:12px">… strips and timeline above …</div><div class="collapse" style="border-color:var(--ch-accent)"><div class="ch">⚙ Monitoring settings <span class="muted" style="font-weight:400">— collapse panel at the bottom of the page, saved with its own button</span></div>${settingsItems('<div class="hd" style="padding:10px 20px;justify-content:flex-end"><span class="btn primary">Save monitoring settings</span></div>')}</div></div></div>`; },
+  settingsLabel: 'Collapse panel at the bottom of the Monitoring page (no Settings tab, no restart needed)',
+};
+
+/* ---------- storyboard + switcher ---------- */
+const variants = { A: VariantA, B: VariantB, C: VariantC };
+const order = ['A', 'B', 'C'];
+function surface(label, hint, html) { return `<section class="surface"><div class="label">${label} <span>${hint}</span></div>${html}</section>`; }
+function render(key) {
+  const v = variants[key];
+  document.getElementById('root').innerHTML = [
+    surface('1 · Monitoring page', 'new sidebar item “Monitoring” between Inbounds and Settings; panel shell is the real one', v.page()),
+    surface('2 · Inbounds table', 'new column “Health” after Clients + filter chip “down”; rule below the table', inboundsTable(v.badge, v.expanded) + `<div class="rule">${v.rule}</div>`),
+    surface('3 · Settings', v.settingsLabel, v.settings()),
+  ].join('');
+  document.getElementById('vkey').textContent = key;
+  document.getElementById('vname').textContent = v.name.slice(4);
+  try { const u = new URL(location.href); u.searchParams.set('variant', key); u.hash = key; history.replaceState(null, '', u); } catch (e) { location.hash = key; }
+  try { localStorage.setItem('mon-proto-variant', key); } catch (e) {}
+}
+function current() { let k = 'A'; try { const u = new URL(location.href); k = (u.searchParams.get('variant') || u.hash.replace('#', '') || localStorage.getItem('mon-proto-variant') || 'A').toUpperCase(); } catch (e) {} return order.includes(k) ? k : 'A'; }
+function step(d) { const i = order.indexOf(current()); render(order[(i + d + order.length) % order.length]); }
+document.getElementById('prev').onclick = () => step(-1);
+document.getElementById('next').onclick = () => step(1);
+document.addEventListener('keydown', e => { const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return; if (e.key === 'ArrowLeft') step(-1); if (e.key === 'ArrowRight') step(1); });
+window.addEventListener('hashchange', () => render(current()));
+render(current());
+</script>
