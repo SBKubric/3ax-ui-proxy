@@ -73,3 +73,27 @@ _Avoid_: unknown, expired
 **Tunnel subscription**:
 Публичный маршрут подписки, отдающий по subId клиентские конфиги AmneziaWG и WireGuard той же подписки; дополняет xray-подписку, не меняя её.
 _Avoid_: AWG subscription, conf feed, tunnel feed
+
+**Registration request**:
+Заявка mon-client на вход в реестр mon-server: подаётся без секрета, живёт пять минут в состоянии pending и превращается в запись реестра только после одобрения администратором в админке mon-server.
+_Avoid_: enrollment, join request, handshake
+
+**Pairing code**:
+Короткий код, который mon-client печатает в свой лог и прикладывает к registration request; администратор сверяет его в админке, чтобы одобрить именно свою коробку.
+_Avoid_: PIN, OTP, verification token
+
+**Client token**:
+Постоянный секрет mon-client, выданный mon-server при одобрении registration request; им подписаны heartbeat, tunnel probe и запрос конфига. Отзыв токена выкидывает mon-client из реестра до новой заявки.
+_Avoid_: API key, bearer, credential
+
+**Config revision**:
+Хэш конфига, который mon-server собрал для конкретного mon-client (его targets, paths и параметры проб); возвращается в ответе на heartbeat, и его смена — единственный сигнал mon-client перечитать конфиг.
+_Avoid_: version, generation, panel revision
+
+**Unverified cycle**:
+Цикл проб mon-client, за который heartbeat так и не был подтверждён mon-server; его провалы не считаются, потому что адресат tunnel probe — сам mon-server, и его недоступность нельзя отличить от падения туннеля.
+_Avoid_: offline cycle, buffered cycle
+
+**Admin UI**:
+Веб-интерфейс mon-server за логином и паролем: одобрение registration requests, реестр mon-clients и все настройки mon-server; состояние targets он не показывает — это страница Monitoring панели.
+_Avoid_: dashboard, console, mon-server panel
