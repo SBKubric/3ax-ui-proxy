@@ -216,15 +216,30 @@ func (s *InboundService) addProbeClient(inbound *model.Inbound, client model.Cli
 	if !inbound.Enable {
 		return false, nil // a disabled inbound has no live handler to add to
 	}
-	if err := s.xrayApi.Init(xrayAPIPort()); err != nil {
-		return true, nil
-	}
-	defer s.xrayApi.Close()
 	cipher := ""
 	if inbound.Protocol == model.Shadowsocks {
 		cipher, _ = settings["method"].(string)
 	}
-	if err := s.xrayApi.AddUser(string(inbound.Protocol), inbound.Tag, map[string]any{
+	if err := monProbeCoreAdd(s, inbound, client, cipher); err != nil {
+		logger.Debug("probe account not added by api:", err)
+		return true, nil
+	}
+	return false, nil
+}
+
+// monProbeCoreAdd hands a stored probe account to the running core; a
+// variable so tests can run without a core.
+var monProbeCoreAdd = (*InboundService).addProbeUserToCore
+
+// addProbeUserToCore adds the account to the live inbound through the xray
+// API. It never dereferences a nil API client: an Init failure is an error,
+// not a panic.
+func (s *InboundService) addProbeUserToCore(inbound *model.Inbound, client model.Client, cipher string) error {
+	if err := s.xrayApi.Init(xrayAPIPort()); err != nil {
+		return err
+	}
+	defer s.xrayApi.Close()
+	return s.xrayApi.AddUser(string(inbound.Protocol), inbound.Tag, map[string]any{
 		"email":    client.Email,
 		"id":       client.ID,
 		"auth":     client.Auth,
@@ -232,11 +247,7 @@ func (s *InboundService) addProbeClient(inbound *model.Inbound, client model.Cli
 		"flow":     client.Flow,
 		"password": client.Password,
 		"cipher":   cipher,
-	}); err != nil {
-		logger.Debug("probe account not added by api:", err)
-		return true, nil
-	}
-	return false, nil
+	})
 }
 
 // removeProbeClient deletes the probe account of an xray inbound: settings,

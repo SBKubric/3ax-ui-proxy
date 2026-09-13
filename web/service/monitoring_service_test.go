@@ -21,13 +21,14 @@ func newMonitoringTestDB(t *testing.T) (*MonitoringService, *fakeLinks) {
 		t.Fatalf("InitDB: %v", err)
 	}
 	resetMonRuntime()
-	prevXray := monXrayRunning
+	prevXray, prevCoreAdd := monXrayRunning, monProbeCoreAdd
 	monXrayRunning = func() bool { return true }
+	monProbeCoreAdd = func(*InboundService, *model.Inbound, model.Client, string) error { return nil }
 	prevRender := probeLinkRenderer()
 	links := &fakeLinks{}
 	RegisterProbeLinkRenderer(links.render)
 	t.Cleanup(func() {
-		monXrayRunning = prevXray
+		monXrayRunning, monProbeCoreAdd = prevXray, prevCoreAdd
 		RegisterProbeLinkRenderer(prevRender)
 		resetMonRuntime()
 	})
@@ -247,11 +248,13 @@ func TestEnsureProbeSetIsIdempotentAndRecreates(t *testing.T) {
 
 // TestEnsureProbeSetNeedsXrayOnlyToCreate: with xray down an ensure that has
 // nothing to create succeeds, one that must add an account answers
-// xray_unavailable, and the snapshot is still refreshed.
+// xray_unavailable and leaves the snapshot alone; a failed attempt still
+// counts for the TTL; a core that refuses the account is also a 503, with
+// the account stored and a restart scheduled so the next ensure finds it.
 func TestEnsureProbeSetNeedsXrayOnlyToCreate(t *testing.T) {
 	m, _ := newMonitoringTestDB(t)
 	is := &InboundService{}
-	seedXrayInbound(t, is, "live", true)
+	live := seedXrayInbound(t, is, "live", true)
 	monXrayRunning = func() bool { return false }
 
 	_, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1", State: "ONLINE"}})
@@ -259,18 +262,35 @@ func TestEnsureProbeSetNeedsXrayOnlyToCreate(t *testing.T) {
 	if !errors.As(err, &monErr) || monErr.Code != "xray_unavailable" || monErr.Status != 503 {
 		t.Fatalf("want 503 xray_unavailable, got %v", err)
 	}
-	if snap := m.Snapshot(); len(snap) != 1 || snap[0].Id != "ams-1" {
-		t.Errorf("snapshot should be refreshed even when creation fails: %+v", snap)
+	if snap := m.Snapshot(); len(snap) != 0 {
+		t.Errorf("a failed ensure must not replace the snapshot: %+v", snap)
+	}
+	if v, _ := m.settingService.GetMonProbeLastEnsured(); v == 0 {
+		t.Errorf("a failed ensure must still count for the TTL")
 	}
 
+	// The core is up but refuses the account: stored, restart scheduled, 503.
 	monXrayRunning = func() bool { return true }
-	if _, err := m.EnsureProbeSet(nil); err != nil {
-		t.Fatalf("EnsureProbeSet with xray: %v", err)
+	monProbeCoreAdd = func(*InboundService, *model.Inbound, model.Client, string) error { return errors.New("core says no") }
+	(&XrayService{}).IsNeedRestartAndSetFalse()
+	if _, err := m.EnsureProbeSet(nil); !errors.As(err, &monErr) || monErr.Code != "xray_unavailable" {
+		t.Fatalf("refused account: want 503 xray_unavailable, got %v", err)
 	}
+	if got := probeEmails(t, is, live.Id); len(got) != 1 {
+		t.Errorf("refused account should still be stored for the restart: %v", got)
+	}
+	if !(&XrayService{}).IsNeedRestartAndSetFalse() {
+		t.Errorf("no restart scheduled for the refused account")
+	}
+
+	// Now present: no core needed at all.
 	monXrayRunning = func() bool { return false }
-	res, err := m.EnsureProbeSet(nil)
-	if err != nil || res.Present != 1 {
+	res, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1", State: "ONLINE"}})
+	if err != nil || res.Present != 1 || len(res.Created) != 0 {
 		t.Fatalf("ensure with nothing to create should not need xray: %v %+v", err, res)
+	}
+	if snap := m.Snapshot(); len(snap) != 1 {
+		t.Errorf("a successful ensure replaces the snapshot: %+v", snap)
 	}
 }
 

@@ -380,18 +380,27 @@ func (s *MonitoringService) awgProbeClient() (*model.TunnelClient, error) {
 	return nil, nil
 }
 
-// EnsureProbeSet is POST /probe/ensure (spec §4.3). Idempotent: it creates
-// the probe subId on first use, adds the probe account every monitored
-// inbound lacks (through the xray API, no restart), records the time, and
-// replaces the registry snapshot cache with the body — dropping target rows
-// of mon-clients that left the registry. When xray is down and an account is
-// missing it stops with ErrMonXrayUnavailable; whatever was created stays and
-// the next ensure finishes the set.
+// EnsureProbeSet is POST /probe/ensure (spec §4.3), in the contract's order:
+// it creates the probe subId on first use, adds the probe account every
+// monitored inbound lacks (through the xray API, no restart), records the
+// time, and replaces the registry snapshot cache with the body — dropping
+// target rows of mon-clients that left the registry. Idempotent.
+//
+// When xray is down and an account is missing, or the core refuses the
+// account, it stops with ErrMonXrayUnavailable: whatever was stored stays
+// (a refused account is picked up by the restart this schedules), the
+// snapshot is left as it was, and the next ensure finishes the set. A failed
+// attempt still counts as an ensure for the TTL: mon-server is there and
+// asking, so the hourly sweep must not take the set from under it.
 func (s *MonitoringService) EnsureProbeSet(snapshot []MonClient) (*MonEnsureResult, error) {
 	monRuntime.ensureMu.Lock()
 	defer monRuntime.ensureMu.Unlock()
 
-	if err := s.replaceSnapshot(snapshot); err != nil {
+	now := time.Now().UnixMilli()
+	fail := func(err error) (*MonEnsureResult, error) {
+		if setErr := s.settingService.SetMonProbeLastEnsured(now); setErr != nil {
+			logger.Warning("monitoring: could not record the ensure attempt:", setErr)
+		}
 		return nil, err
 	}
 
@@ -417,7 +426,7 @@ func (s *MonitoringService) EnsureProbeSet(snapshot []MonClient) (*MonEnsureResu
 			continue
 		}
 		if !monXrayRunning() {
-			return nil, ErrMonXrayUnavailable
+			return fail(ErrMonXrayUnavailable)
 		}
 		restart, err := s.inboundService.addProbeClient(ib, probeXrayClient(ib, clients, subId))
 		if err != nil {
@@ -428,7 +437,10 @@ func (s *MonitoringService) EnsureProbeSet(snapshot []MonClient) (*MonEnsureResu
 		present++
 	}
 	if needRestart {
+		// Stored but not live: the restart makes it so, and until then the
+		// contract's answer is 503, not a link the core does not know.
 		s.xrayService.SetToNeedRestart()
+		return fail(ErrMonXrayUnavailable)
 	}
 
 	if awg, err := s.awgInbound(); err != nil {
@@ -443,15 +455,17 @@ func (s *MonitoringService) EnsureProbeSet(snapshot []MonClient) (*MonEnsureResu
 			grantTunnelProbe(client)
 			if err := s.awgService.AddClient(client); err != nil {
 				logger.Warning("monitoring: AmneziaWG probe peer not created:", err)
-				return nil, ErrMonAwgUnavailable
+				return fail(ErrMonAwgUnavailable)
 			}
 			created = append(created, MonInboundRef{Kind: model.MonKindAwg, InboundId: 0})
 		}
 		present++
 	}
 
-	now := time.Now().UnixMilli()
 	if err := s.settingService.SetMonProbeLastEnsured(now); err != nil {
+		return nil, err
+	}
+	if err := s.replaceSnapshot(snapshot); err != nil {
 		return nil, err
 	}
 	revision, err := s.revision()
