@@ -305,11 +305,12 @@ function settingsA() {
   const sli = (t, d, ctl) => `<div class="sli"><div><div class="tt">${t}</div><div class="d">${d}</div></div><div>${ctl}</div></div>`;
   return `<div class="shell">${siderA('settings')}<div class="content">
     <div class="card tight hd"><span class="btn primary">Save</span><span class="sp"></span><span class="alert ok">✓ Panel reachable · revision ${settings.panel.revision} · ${settings.panel.inbounds} inbounds · override → ${settings.panel.override} · checked ${ago(settings.panel.checkedAt)}</span></div>
-    <div class="card" style="padding:8px 12px 0"><div class="tabs"><span class="on">🖥 Panel</span><span>🎯 Real server</span><span>💬 Telegram</span><span>📏 Thresholds</span><span>⏱ Probe</span><span>🔐 TLS &amp; admin</span></div>
+    <div class="card" style="padding:8px 12px 0"><div class="tabs"><span class="on">🖥 Real server</span><span>💬 Telegram</span><span>📏 Thresholds</span><span>⏱ Probe</span><span>🔐 TLS &amp; admin</span></div>
     <div style="padding:6px 0 8px">
-      ${sli('Panel URL', 'Where the panel answers <span class="mono">/mon/v1/*</span>. Polled every minute for state and probe configs.', `<div class="in mono">${settings.panel.url}</div>`)}
+      ${sli('Panel URL', 'The panel on the real server: where <span class="mono">/mon/v1/*</span> answers. Polled every minute for state and probe configs.', `<div class="in mono">${settings.panel.url}</div>`)}
       ${sli('Monitoring token', 'The <span class="mono">monToken</span> from the panel\'s Monitoring settings tab.', `<div style="display:flex;gap:6px"><div class="in mono" style="flex:1">${settings.panel.token}</div><span class="btn">Check</span></div>`)}
-      ${sli('Real server address', 'Host substituted into <b>direct</b> targets. Only mon-clients with the <b>direct</b> path ever see it.', `<div class="in mono">${settings.real.host}</div>`)}
+      ${sli('Address for path direct', 'Host substituted into <b>direct</b> targets: the real server as clients reach it without override. Defaults to the panel URL\'s host. Only mon-clients with the <b>direct</b> path ever see it.', `<div class="in mono">${settings.real.host}</div>`)}
+      ${sli('Proxy front', 'Read-only, as the panel reports it in <span class="mono">GET /state</span>. mon-server has no setting of its own: the front lives in the panel\'s host override and <span class="mono">/probe/configs</span> already carries it.', `<div class="in ro mono">override on → ${settings.panel.override} · seen ${ago(settings.panel.checkedAt)}</div>`)}
       ${sli('Telegram bot and chat', 'Used when the panel is unreachable (PANEL_DOWN) and for config errors on mon-clients.', `<div style="display:grid;gap:6px"><div class="in mono">${settings.tg.token}</div><div style="display:flex;gap:6px"><div class="in mono" style="flex:1">${settings.tg.chat}</div><span class="btn">Send test</span></div></div>`)}
       ${sli('Target DOWN after / UP after', 'Consecutive missed probes before DOWN, consecutive successes before UP.', `<div style="display:flex;gap:6px"><div class="in num">${settings.thr.down}</div><div class="in num">${settings.thr.up}</div></div>`)}
       ${sli('FLAPPING', 'Transitions within the window that mark a target FLAPPING.', `<div style="display:flex;gap:6px;align-items:center"><div class="in num">${settings.thr.flapN}</div><span class="muted">in</span><div class="in num">${settings.thr.flapMin}</div><span class="muted">min</span></div>`)}
@@ -323,7 +324,7 @@ const VariantA = { name: 'Panel twin: pages + modal', render: () => [
   surface('1 · Login', 'the panel\'s login card, password only', loginA()),
   surface('2 · Requests page', 'a table of pending requests, Approve opens a modal (shown in "New mon-client" mode; the segmented control flips it to "Replace an existing one")', requestsA(true)),
   surface('3 · mon-clients page', 'registry as the inbounds table: switch for Disable, "⋯" for Edit paths and Revoke', clientsA()),
-  surface('4 · Settings page', 'the panel\'s settings layout: tabs of setting-list rows, one Save', settingsA()),
+  surface('4 · Settings page', 'the panel\'s settings layout: tabs of setting-list rows, one Save. Real server tab holds the panel, the direct address and a read-only proxy front', settingsA()),
 ] };
 
 /* =====================================================================
