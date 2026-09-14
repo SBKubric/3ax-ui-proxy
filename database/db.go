@@ -54,6 +54,10 @@ func initModels() error {
 		&model.TunnelClient{},
 		&model.CustomGeoResource{},
 		&model.StubSite{},
+		&model.MonTarget{},
+		&model.MonEvent{},
+		&model.MonStatsCurrent{},
+		&model.MonStatsRollup{},
 	}
 	for _, model := range models {
 		if err := db.AutoMigrate(model); err != nil {
@@ -102,6 +106,14 @@ var namedIndexes = map[string]string{
 	"idx_tunnel_enable_last_online":  "tunnel_clients",
 	"idx_tunnel_client_server_email": "tunnel_clients",
 	"idx_enable_traffic_reset":       "inbounds",
+	"idx_mon_targets_key":            "mon_targets",
+	"idx_mon_targets_inbound":        "mon_targets",
+	"idx_mon_events_ts":              "mon_events",
+	"idx_mon_events_inbound_ts":      "mon_events",
+	"idx_mon_stats_current_key":      "mon_stats_current",
+	"idx_mon_stats_current_inbound":  "mon_stats_current",
+	"idx_mon_stats_rollup_key":       "mon_stats_rollup",
+	"idx_mon_stats_rollup_inbound":   "mon_stats_rollup",
 }
 
 // dropStrayNamedIndexes removes indexes that carry one of our names but hang off
