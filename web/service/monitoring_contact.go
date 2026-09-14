@@ -34,6 +34,9 @@ func (s *MonitoringService) TouchMonLastContact(now time.Time) {
 			monContact.persisted = ms
 		}
 	}
+	monContact.Unlock()
+	clearMonStale(now)
+	monContact.Lock()
 }
 
 // MonLastContact is the time of the last authorised mon-server request in
@@ -87,4 +90,92 @@ func (s *MonitoringService) links() ProbeLinkRenderer {
 	probeLinkDefault.RLock()
 	defer probeLinkDefault.RUnlock()
 	return probeLinkDefault.r
+}
+
+// --- STALE -------------------------------------------------------------------
+
+// STALE is the panel's one own state (monitoring-panel.md §5): mon-server has
+// been silent longer than monStaleMinutes, so every target is suspect. It is
+// a flag in memory — mon_targets rows are not touched — set by the minute job
+// and cleared by the next authorised request. Both edges are announced once
+// through the MonStaleNotifier the bot registers (§6). Until mon-server has
+// reached the panel at all (monLastContact = 0) STALE is never declared.
+
+// MonStaleNotifier is the Telegram side of STALE. since is the last contact
+// before the silence; silentFor how long it lasted.
+type MonStaleNotifier interface {
+	NotifyMonitoringStale(since time.Time)
+	NotifyMonitoringBack(silentFor time.Duration)
+}
+
+var monStale struct {
+	sync.Mutex
+	stale bool
+	since int64 // ms: the last contact before the silence
+	n     MonStaleNotifier
+}
+
+// SetMonStaleNotifier installs (or, with nil, removes) the Telegram hook.
+func SetMonStaleNotifier(n MonStaleNotifier) {
+	monStale.Lock()
+	monStale.n = n
+	monStale.Unlock()
+}
+
+// IsMonStale reports whether the panel currently considers monitoring
+// silent, and since when (ms) if so.
+func (s *MonitoringService) IsMonStale() (bool, int64) {
+	monStale.Lock()
+	defer monStale.Unlock()
+	return monStale.stale, monStale.since
+}
+
+// CheckMonStale is the minute job: declare STALE when the last contact is
+// older than the threshold. Returns true when this call made the transition.
+func (s *MonitoringService) CheckMonStale(now time.Time) bool {
+	last := s.MonLastContact()
+	if last == 0 {
+		return false
+	}
+	minutes, err := s.settingService.GetMonStaleMinutes()
+	if err != nil || minutes <= 0 {
+		minutes = 15
+	}
+	if now.UnixMilli()-last <= int64(minutes)*60*1000 {
+		return false
+	}
+	monStale.Lock()
+	if monStale.stale {
+		monStale.Unlock()
+		return false
+	}
+	monStale.stale, monStale.since = true, last
+	n := monStale.n
+	monStale.Unlock()
+	if n != nil {
+		n.NotifyMonitoringStale(time.UnixMilli(last))
+	}
+	return true
+}
+
+// clearMonStale is the other edge, taken by the first authorised request.
+func clearMonStale(now time.Time) {
+	monStale.Lock()
+	if !monStale.stale {
+		monStale.Unlock()
+		return
+	}
+	since := monStale.since
+	monStale.stale, monStale.since = false, 0
+	n := monStale.n
+	monStale.Unlock()
+	if n != nil {
+		n.NotifyMonitoringBack(now.Sub(time.UnixMilli(since)))
+	}
+}
+
+func resetMonStaleForTest() {
+	monStale.Lock()
+	monStale.stale, monStale.since, monStale.n = false, 0, nil
+	monStale.Unlock()
 }
