@@ -2,7 +2,28 @@ package sub
 
 import (
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
+	"github.com/coinman-dev/3ax-ui/v2/web/service"
 )
+
+// probeLinks is the renderer MonitoringService falls back to. It is built per
+// call from the subscription settings (show-info, remark model, theme), the
+// way the sub server builds its own SubService, so it works whether or not
+// the sub server is running.
+type probeLinks struct{}
+
+func (probeLinks) ProbeLink(inbound *model.Inbound, email, address string, useOverride bool) string {
+	settings := &service.SettingService{}
+	showInfo, _ := settings.GetSubShowInfo()
+	remarkModel, _ := settings.GetRemarkModel()
+	theme, _ := settings.GetSubTheme()
+	return NewSubService(showInfo, remarkModel, theme).ProbeLink(inbound, email, address, useOverride)
+}
+
+// The panel binary links this package for the sub server, which is enough
+// for the monitoring controller to render probe links without importing it.
+func init() {
+	service.SetProbeLinkRenderer(probeLinks{})
+}
 
 // ProbeLink renders one client's link for the monitoring probe set
 // (docs/spec/monitoring-panel.md §4.3) exactly as /sub would, except that the
