@@ -81,6 +81,15 @@ class AllSetting {
         this.ldapDefaultExpiryDays = 0;
         this.ldapDefaultLimitIP = 0;
 
+        // Monitoring settings
+        this.monEnable = false;
+        this.monToken = "";
+        this.monStaleMinutes = 15;
+        this.monProbeTtlHours = 24;
+        this.monRetentionDays = 7;
+        this.monRollupRetentionDays = 30;
+        this.monRollupStepMinutes = 60;
+
         if (data == null) {
             return;
         }
