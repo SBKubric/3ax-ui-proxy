@@ -812,6 +812,11 @@ func (s *InboundService) DelInbound(id int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Monitoring rows go the way client_traffics do (monitoring-panel.md §3.6).
+	monKind, monId := monitoringKey(inbound)
+	if err := model.DeleteMonitoringByInbound(db, monKind, monId); err != nil {
+		return false, err
+	}
 	clients, err := s.GetClients(inbound)
 	if err != nil {
 		return false, err
@@ -1211,9 +1216,21 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 }
 
 func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
+	return s.addInboundClient(data, false)
+}
+
+// addInboundClient is AddInboundClient with the probe guard optional: only
+// MonitoringService.EnsureProbeSet passes allowProbe.
+func (s *InboundService) addInboundClient(data *model.Inbound, allowProbe bool) (bool, error) {
 	clients, err := s.GetClients(data)
 	if err != nil {
 		return false, err
+	}
+	// Probe accounts are created by MonitoringService.EnsureProbeSet only.
+	if !allowProbe {
+		if err := rejectProbeEmails(clientEmails(clients)...); err != nil {
+			return false, err
+		}
 	}
 
 	var settings map[string]any
@@ -1711,6 +1728,10 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	// Validate new client ID
 	if newClientId == "" || clientIndex == -1 {
 		return false, common.NewError("empty client ID")
+	}
+	// A probe account is never edited, and no client is renamed into one.
+	if err := rejectProbeEmails(oldEmail, clients[0].Email); err != nil {
+		return false, err
 	}
 
 	if len(clients[0].Email) > 0 && clients[0].Email != oldEmail {
@@ -3719,7 +3740,7 @@ func (s *InboundService) GetOnlineClients() []string {
 	online = append(online, (&AwgService{}).GetOnlineClients()...)
 	online = append(online, (&WgService{}).GetOnlineClients()...)
 	online = append(online, (&MtprotoClientService{}).GetOnlineClients()...)
-	return online
+	return withoutProbeAccounts(online)
 }
 
 // GetClientsLastOnlineFor returns last_online for the given emails only.

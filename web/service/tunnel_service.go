@@ -514,10 +514,18 @@ func (s *TunnelService[K]) GetNetworkInterfaces() []NetworkInterface {
 func (s *TunnelService[K]) GetOnlineClients() []string {
 	db := database.GetDB()
 	threshold := time.Now().Add(-onlineWindow).UnixMilli()
-	var uuids []string
-	db.Model(&model.TunnelClient{}).Where(s.clientScope(db)).
+	var rows []model.TunnelClient
+	db.Model(&model.TunnelClient{}).Select("uuid, email").Where(s.clientScope(db)).
 		Where("enable = ? AND last_online > ?", true, threshold).
-		Pluck("uuid", &uuids)
+		Find(&rows)
+	uuids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		// A monitoring probe is online whenever mon-server is; it is not a user.
+		if IsProbeAccount(r.Email) {
+			continue
+		}
+		uuids = append(uuids, r.UUID)
+	}
 	return uuids
 }
 
@@ -555,6 +563,18 @@ func (s *TunnelService[K]) GetClientByUUID(clientUUID string) (*model.TunnelClie
 
 // AddClient creates a new client with auto-generated keys and allocated IPs.
 func (s *TunnelService[K]) AddClient(client *model.TunnelClient) error {
+	return s.addClient(client, false)
+}
+
+// addClient is AddClient with the probe guard optional: only
+// MonitoringService.EnsureProbeSet passes allowProbe.
+func (s *TunnelService[K]) addClient(client *model.TunnelClient, allowProbe bool) error {
+	// Probe accounts are created by MonitoringService.EnsureProbeSet only.
+	if !allowProbe {
+		if err := rejectProbeEmails(client.Email); err != nil {
+			return err
+		}
+	}
 	server, err := s.GetServer()
 	if err != nil {
 		return err
@@ -675,6 +695,10 @@ func (s *TunnelService[K]) UpdateClient(client *model.TunnelClient) error {
 	// Capture old state so we can diff iptables port-forwarding rules.
 	var old model.TunnelClient
 	hasOld := db.First(&old, client.Id).Error == nil
+	// A probe account is never edited, and no client is renamed into one.
+	if err := rejectProbeEmails(old.Email, client.Email); err != nil {
+		return err
+	}
 
 	client.UpdatedAt = time.Now().UnixMilli()
 	client.ForwardedPorts = portfwd.Normalize(client.ForwardedPorts)

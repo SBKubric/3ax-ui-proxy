@@ -2822,7 +2822,7 @@ func (t *Tgbot) prepareServerUsageInfo() string {
 		t.lastStatus = t.serverService.GetStatus(t.lastStatus)
 		t.setCachedStatus(t.lastStatus)
 	}
-	onlines := xrayOnlineClients()
+	onlines := withoutProbeAccounts(xrayOnlineClients())
 	// Include AWG online clients
 	awgOnlines := t.awgService.GetOnlineClients()
 	onlines = append(onlines, awgOnlines...)
@@ -3383,7 +3383,8 @@ func (t *Tgbot) searchClient(chatId int64, email string, messageID ...int) {
 		t.SendMsgToTgbot(chatId, msg)
 		return
 	}
-	if traffic == nil {
+	// A probe account is not a user: the card's buttons would edit it.
+	if traffic == nil || IsProbeAccount(email) {
 		msg := t.I18nBot("tgbot.noResult")
 		t.SendMsgToTgbot(chatId, msg)
 		return
@@ -3769,7 +3770,7 @@ func (t *Tgbot) onlineClients(chatId int64, messageID ...int) {
 		return
 	}
 
-	onlines := xrayOnlineClients()
+	onlines := withoutProbeAccounts(xrayOnlineClients())
 	onlinesCount := len(onlines)
 	output := t.I18nBot("tgbot.messages.onlinesCount", "Count=="+fmt.Sprint(onlinesCount))
 	keyboard := tu.InlineKeyboard(tu.InlineKeyboardRow(

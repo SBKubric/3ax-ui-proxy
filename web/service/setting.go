@@ -94,6 +94,22 @@ var defaultValueMap = map[string]string{
 	"proxyOverrideEnable": "false",
 	"proxyOverrideHost":   "",
 
+	// Monitoring (docs/spec/monitoring-panel.md §2.2). The first seven are
+	// preferences the settings form edits; the last four are state that
+	// mon-server and the panel write between saves, so they are deliberately
+	// absent from entity.AllSetting — a form save must not roll them back.
+	"monEnable":              "false",
+	"monToken":               "",
+	"monStaleMinutes":        "15",
+	"monProbeTtlHours":       "24",
+	"monRetentionDays":       "7",
+	"monRollupRetentionDays": "30",
+	"monRollupStepMinutes":   "60",
+	"monProbeSubId":          "",
+	"monProbeLastEnsured":    "0",
+	"monLastContact":         "0",
+	"monClientsSnapshot":     "[]",
+
 	// LDAP defaults
 	"ldapEnable":            "false",
 	"ldapHost":              "",
