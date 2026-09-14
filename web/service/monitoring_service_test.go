@@ -313,6 +313,7 @@ func TestProbeConfigsPaths(t *testing.T) {
 	}
 
 	m.Links = nil
+	SetProbeLinkRenderer(nil)
 	if _, err := m.ProbeConfigs("203.0.113.10"); !errors.As(err, &monErr) || monErr != ErrLinksNotWired {
 		t.Errorf("without a renderer: err = %v, want the wiring error", err)
 	}

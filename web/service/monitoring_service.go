@@ -28,9 +28,10 @@ import (
 // stores what mon-server reports. It never decides UP or DOWN itself.
 //
 // Links renders the xray probe links. It is an interface because the renderer
-// lives in package sub, which imports this package; the controller wires
-// sub.SubService in (it satisfies ProbeLinkRenderer). Without it ProbeConfigs
-// cannot serve xray items.
+// lives in package sub, which imports this package (and package web through
+// the sub server), so nothing here can import it back; sub registers its
+// renderer with SetProbeLinkRenderer at init and a nil Links falls back to
+// that. Tests set Links to a fake.
 type MonitoringService struct {
 	settingService SettingService
 	inboundService InboundService
@@ -560,7 +561,8 @@ func (s *MonitoringService) ProbeConfigs(host string) (*MonProbeConfigs, error) 
 		}
 		switch {
 		case monXrayProtocols[ib.Protocol]:
-			if s.Links == nil {
+			links := s.links()
+			if links == nil {
 				return nil, ErrLinksNotWired
 			}
 			clients, err := s.inboundService.GetClients(ib)
@@ -571,7 +573,7 @@ func (s *MonitoringService) ProbeConfigs(host string) (*MonProbeConfigs, error) 
 			if probe == nil {
 				continue
 			}
-			link := s.Links.ProbeLink(ib, probe.Email, host, useOverride)
+			link := links.ProbeLink(ib, probe.Email, host, useOverride)
 			if link == "" {
 				continue
 			}
