@@ -6,6 +6,7 @@ package xray
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -132,6 +133,9 @@ func (x *XrayAPI) DelInbound(tag string) error {
 
 // AddUser adds a user to an inbound in the Xray core using the specified protocol and user data.
 func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]any) error {
+	if err := x.requireConnection(); err != nil {
+		return err
+	}
 	userEmail, err := getRequiredUserString(user, "email")
 	if err != nil {
 		return err
@@ -256,6 +260,9 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 
 // RemoveUser removes a user from an inbound in the Xray core by email.
 func (x *XrayAPI) RemoveUser(inboundTag, email string) error {
+	if err := x.requireConnection(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -364,4 +371,15 @@ func mapToSlice[T any](m map[string]*T) []*T {
 		result = append(result, v)
 	}
 	return result
+}
+
+// requireConnection turns a call on a client whose Init failed (xray not
+// running, so there is no API port) into an error. Without it AddUser and
+// RemoveUser dereference the nil handler client and panic, taking the panel
+// down for adding an enabled client while xray is stopped.
+func (x *XrayAPI) requireConnection() error {
+	if !x.isConnected || x.HandlerServiceClient == nil {
+		return errors.New("xray API is not connected")
+	}
+	return nil
 }
