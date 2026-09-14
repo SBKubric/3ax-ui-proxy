@@ -91,6 +91,19 @@ type AllSetting struct {
 	ProxyOverrideEnable bool   `json:"proxyOverrideEnable" form:"proxyOverrideEnable"`
 	ProxyOverrideHost   string `json:"proxyOverrideHost" form:"proxyOverrideHost"`
 
+	// Monitoring preferences (docs/spec/monitoring-panel.md §2.2). The
+	// monitoring state keys (monProbeSubId, monProbeLastEnsured,
+	// monLastContact, monClientsSnapshot) are not here on purpose: they are
+	// written by mon-server traffic and jobs, and a settings save must not
+	// overwrite them with whatever the form loaded.
+	MonEnable              bool   `json:"monEnable" form:"monEnable"`
+	MonToken               string `json:"monToken" form:"monToken"`
+	MonStaleMinutes        int    `json:"monStaleMinutes" form:"monStaleMinutes"`
+	MonProbeTtlHours       int    `json:"monProbeTtlHours" form:"monProbeTtlHours"`
+	MonRetentionDays       int    `json:"monRetentionDays" form:"monRetentionDays"`
+	MonRollupRetentionDays int    `json:"monRollupRetentionDays" form:"monRollupRetentionDays"`
+	MonRollupStepMinutes   int    `json:"monRollupStepMinutes" form:"monRollupStepMinutes"`
+
 	// LDAP settings
 	LdapEnable     bool   `json:"ldapEnable" form:"ldapEnable"`
 	LdapHost       string `json:"ldapHost" form:"ldapHost"`
