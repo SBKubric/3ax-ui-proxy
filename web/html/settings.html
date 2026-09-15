@@ -79,7 +79,15 @@
                     </template>
                     {{ template "settings/panel/subscription/general" . }}
                   </a-tab-pane>
-                  <a-tab-pane key="5" v-if="allSetting.subJsonEnable || allSetting.subClashEnable"
+                  <!-- monitoring: fifth pane, §7.3 -->
+                  <a-tab-pane key="5" :style="{ paddingTop: '20px' }">
+                    <template #tab>
+                      <a-icon type="line-chart"></a-icon>
+                      <span>{{ i18n "pages.settings.monitoringSettings" }}</span>
+                    </template>
+                    {{ template "settings/panel/monitoring" . }}
+                  </a-tab-pane>
+                  <a-tab-pane key="6" v-if="allSetting.subJsonEnable || allSetting.subClashEnable"
                     :style="{ paddingTop: '20px' }">
                     <template #tab>
                       <a-icon type="code"></a-icon>
@@ -103,6 +111,8 @@
 {{template "component/aSidebar" .}}
 {{template "component/aThemeSwitch" .}}
 {{template "component/aSettingListItem" .}}
+<!-- monitoring: the two controls of the Monitoring tab that are not AllSetting fields -->
+{{template "component/aMonitoring" .}}
 {{template "modals/twoFactorModal" .}}
 {{template "modals/textModal" .}}
 <script>

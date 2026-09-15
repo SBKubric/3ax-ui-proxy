@@ -1,0 +1,145 @@
+{{define "component/monTokenField"}}
+<a-input-group compact :style="{ display: 'flex' }">
+    <a-input data-testid="mon-token" type="text" read-only :value="token"
+        :style="{ flex: '1 1 auto', minWidth: '0' }"></a-input>
+    <a-button data-testid="mon-token-copy" @click="copy" v-text="copyText"></a-button>
+    <a-popconfirm @confirm="regenerate" :ok-text="sureText" :cancel-text="cancelText">
+        <template slot="title">
+            <p :style="{ margin: 0, maxWidth: '280px' }" v-text="confirmText"></p>
+        </template>
+        <a-button data-testid="mon-token-regenerate" type="danger" :loading="busy"
+            v-text="regenerateText"></a-button>
+    </a-popconfirm>
+</a-input-group>
+{{end}}
+
+{{define "component/monProbeSet"}}
+<a-space direction="vertical" :size="8" :style="{ width: '100%' }">
+    <span data-testid="mon-probe-line">
+        <template v-if="hasSet">
+            <span class="mon-mono" v-text="info.subId"></span>
+            <span class="mon-muted" v-text="detail"></span>
+        </template>
+        <span class="mon-muted" v-else v-text="emptyText"></span>
+    </span>
+    <a-popconfirm @confirm="remove" :ok-text="sureText" :cancel-text="cancelText">
+        <template slot="title">
+            <p :style="{ margin: 0, maxWidth: '280px' }" v-text="confirmText"></p>
+        </template>
+        <a-button data-testid="mon-probe-remove" type="danger" :loading="busy" :disabled="!hasSet"
+            v-text="removeText"></a-button>
+    </a-popconfirm>
+</a-space>
+{{end}}
+
+{{define "component/aMonitoring"}}
+<script src="{{ .base_path }}assets/js/util/monitoring.js?{{ .cur_ver }}"></script>
+<script>
+    // The two controls of the Monitoring settings tab that do not ride
+    // AllSetting (monitoring-panel.md §7.3).
+    //
+    // Everything else on that tab is an ordinary allSetting field saved by the
+    // page's common Save. These two are not: a fresh monToken and the probe
+    // set's subId, ensure stamp and size live outside AllSetting, so they come
+    // from /panel/api/monitoring. They are components rather than methods on
+    // the settings page so that settings.html gains one include and one tab
+    // pane and nothing else.
+    //
+    // Translated text is passed in as props: a component template is compiled
+    // by Vue in the browser, where {{ i18n }} has long since been rendered
+    // away, so the strings have to arrive from the page that uses it.
+
+    Vue.component('mon-token-field', {
+        props: {
+            token: { type: String, default: '' },
+            copyText: { type: String, default: 'Copy' },
+            copiedText: { type: String, default: 'Copied' },
+            regenerateText: { type: String, default: 'Regenerate' },
+            confirmText: { type: String, default: '' },
+            sureText: { type: String, default: 'OK' },
+            cancelText: { type: String, default: 'Cancel' },
+        },
+        data() {
+            return { busy: false };
+        },
+        methods: {
+            copy() {
+                if (!this.token) return;
+                const done = () => this.$message.success(this.copiedText);
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(this.token).then(done);
+                    return;
+                }
+                const ta = document.createElement('textarea');
+                ta.value = this.token;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                done();
+            },
+            async regenerate() {
+                this.busy = true;
+                const msg = await MonApi.resetToken();
+                this.busy = false;
+                if (!msg.success) {
+                    this.$message.error(msg.msg || 'failed');
+                    return;
+                }
+                // The panel is already using this token: checkMonAuth reads the
+                // setting per request. Handing it to the page keeps the common
+                // Save from posting the old one back over it.
+                this.$emit('update', msg.obj.token);
+            },
+        },
+        template: `{{ template "component/monTokenField" . }}`,
+    });
+
+    Vue.component('mon-probe-set', {
+        props: {
+            ensuredText: { type: String, default: 'last ensured' },
+            clientsText: { type: String, default: 'clients' },
+            emptyText: { type: String, default: 'no probe set yet' },
+            removeText: { type: String, default: 'Remove probe set' },
+            removedText: { type: String, default: 'Probe set removed' },
+            confirmText: { type: String, default: '' },
+            sureText: { type: String, default: 'OK' },
+            cancelText: { type: String, default: 'Cancel' },
+        },
+        data() {
+            return { info: null, busy: false };
+        },
+        computed: {
+            hasSet() {
+                return !!(this.info && this.info.subId);
+            },
+            detail() {
+                if (!this.hasSet) return '';
+                return ' · ' + this.ensuredText + ' ' + MonUtil.stamp(this.info.lastEnsured) +
+                    ' · ' + this.info.clients + ' ' + this.clientsText;
+            },
+        },
+        methods: {
+            async reload() {
+                const msg = await MonApi.probe();
+                this.info = msg.success ? msg.obj : null;
+            },
+            async remove() {
+                this.busy = true;
+                const msg = await MonApi.removeProbe();
+                this.busy = false;
+                if (!msg.success) {
+                    this.$message.error(msg.msg || 'failed');
+                    return;
+                }
+                this.$message.success(this.removedText);
+                await this.reload();
+            },
+        },
+        mounted() {
+            this.reload();
+        },
+        template: `{{ template "component/monProbeSet" . }}`,
+    });
+</script>
+{{end}}
