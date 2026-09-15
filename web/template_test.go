@@ -2,6 +2,7 @@ package web
 
 import (
 	"html/template"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -43,6 +44,72 @@ func TestTemplatesParse(t *testing.T) {
 	for dir := range dirs {
 		if tpl, err = tpl.ParseFS(htmlFS, dir+"/*.html"); err != nil {
 			t.Fatalf("parse %s: %v", dir, err)
+		}
+	}
+}
+
+// TestPagesRender is the other half of that net, and the half that matters
+// more. Parsing only proves the actions are well formed; a page can parse and
+// still blow up halfway through being written, and because the panel streams
+// the response straight to the browser an execution error arrives as a page
+// that simply stops — no error, no log line, just a truncated document and a
+// Vue app that never mounts. That is how a stray {{ ... }} inside a JavaScript
+// comment took the settings page down: Go does not know JS comments exist.
+//
+// Each top-level page is executed against a plausible data map. The point is
+// not the output, which io.Discard throws away, but that execution reaches the
+// end.
+func TestPagesRender(t *testing.T) {
+	funcMap := template.FuncMap{
+		"i18n": func(key string, params ...string) string { return key },
+	}
+	dirs := map[string]bool{}
+	pages := []string{}
+	err := fs.WalkDir(htmlFS, "html", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(p, ".html") {
+			return err
+		}
+		dirs[path.Dir(p)] = true
+		// A page is a template at the root of html/; everything deeper is a
+		// fragment some page includes, and is covered through that page.
+		if path.Dir(p) == "html" {
+			pages = append(pages, path.Base(p))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the template tree: %v", err)
+	}
+	if len(pages) == 0 {
+		t.Fatal("no pages were found at all")
+	}
+
+	tpl := template.New("").Funcs(funcMap)
+	for dir := range dirs {
+		if tpl, err = tpl.ParseFS(htmlFS, dir+"/*.html"); err != nil {
+			t.Fatalf("parse %s: %v", dir, err)
+		}
+	}
+
+	// What web.html() puts in front of every page, plus the few extras
+	// individual pages read. A key a page wants and does not find renders as
+	// "<no value>" rather than failing, so this map does not have to be
+	// exhaustive to be useful.
+	data := map[string]any{
+		"base_path":   "/",
+		"cur_ver":     "test",
+		"cur_lang":    "en-US",
+		"host":        "127.0.0.1",
+		"request_uri": "/panel/",
+		"title":       "test",
+	}
+	sort.Strings(pages)
+	for _, page := range pages {
+		if err := tpl.ExecuteTemplate(io.Discard, page, data); err != nil {
+			t.Errorf("%s stopped halfway through rendering: %v", page, err)
 		}
 	}
 }

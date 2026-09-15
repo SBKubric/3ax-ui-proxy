@@ -1,0 +1,363 @@
+{{ template "page/head_start" .}}
+{{ template "page/head_end" .}}
+
+{{ template "page/body_start" .}}
+<!--
+  The Monitoring page (docs/spec/monitoring-panel.md §7.1, prototype variant A).
+
+  The panel decides nothing here: mon-server is the single source of target
+  state (ADR 0003), and everything below is drawn from /panel/api/monitoring.
+  The page polls GET targets and GET events every ten seconds and stands still
+  while the tab is hidden; each inbound card fetches its own GET stats the
+  first time it is drawn and again when its range changes.
+
+  Colours and classes (mon-state-*, mon-pill, mon-dot) live in custom.min.css so
+  the Health column of the inbounds table wears the same ones.
+-->
+<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme + ' settings-page'">
+  <a-sidebar></a-sidebar>
+  <a-layout id="content-layout">
+    <a-layout-content>
+      <a-spin :spinning="loadingStates.spinning" :delay="500" tip='{{ i18n "loading"}}' size="large">
+        <transition name="list" appear>
+          <template>
+            <a-row v-if="!loadingStates.fetched">
+              <div :style="{ minHeight: 'calc(100vh - 120px)' }"></div>
+            </a-row>
+            <a-row :gutter="[isMobile ? 8 : 16, isMobile ? 0 : 12]" v-else>
+
+              <a-col :span="24">
+                <a-card hoverable>
+                  <div class="mon-head">
+                    <h2 data-testid="mon-title" :style="{ margin: 0 }">{{ i18n "pages.monitoring.title" }}</h2>
+                    <span class="mon-head-spacer"></span>
+                    <!-- One pill says whether mon-server is talking to the panel at all. -->
+                    <span data-testid="mon-live" class="mon-pill" :class="{ 'mon-pill-stale': targets.stale }">
+                      <template v-if="!targets.lastContact">
+                        <span class="mon-dot"></span>{{ i18n "pages.monitoring.noData" }}
+                      </template>
+                      <template v-else-if="targets.stale">
+                        <span class="mon-dot mon-dot-stale"></span>{{ i18n "pages.monitoring.stale" }}
+                        <span class="mon-muted">[[ MonUtil.stamp(targets.staleSince) ]]</span>
+                      </template>
+                      <template v-else>
+                        <span class="mon-dot mon-dot-up mon-dot-pulse"></span>{{ i18n "pages.monitoring.live" }}
+                        <span class="mon-muted">· {{ i18n "pages.monitoring.lastContact" }} [[
+                          MonUtil.ago(targets.lastContact, targets.now) ]]</span>
+                      </template>
+                    </span>
+                  </div>
+                  <!-- The fleet: one pill per mon-client of the registry snapshot. -->
+                  <div class="mon-pills" :style="{ marginTop: '12px' }" v-if="targets.monClients.length">
+                    <span class="mon-pill" v-for="client in targets.monClients" :key="client.id">
+                      <span class="mon-dot"
+                        :class="client.state === 'ONLINE' ? 'mon-dot-online mon-dot-pulse' : 'mon-dot-offline'"></span>
+                      [[ client.name ]]
+                      <span class="mon-muted">[[ client.region ]] ·
+                        <template v-if="client.state === 'ONLINE'">{{ i18n "pages.monitoring.heartbeat" }} [[
+                          MonUtil.ago(client.lastHeartbeat, targets.now) ]]</template>
+                        <template v-else>{{ i18n "pages.monitoring.offline" }} [[
+                          MonUtil.dur(client.lastHeartbeat, targets.now) ]]</template>
+                      </span>
+                    </span>
+                  </div>
+                  <div class="mon-muted" :style="{ marginTop: '12px' }" v-else>
+                    {{ i18n "pages.monitoring.noData" }}
+                  </div>
+                </a-card>
+              </a-col>
+
+              <!-- Inbound cards on the left, the event feed on the right; on a
+                   narrow screen the feed stacks under the cards. -->
+              <a-col :xs="24" :xl="16">
+                <a-row :gutter="[0, isMobile ? 8 : 12]">
+                  <a-col :span="24" v-for="inbound in targets.inbounds"
+                    :key="inbound.kind + ':' + inbound.inboundId">
+                    <a-card hoverable :data-testid="'mon-inbound-' + inbound.kind + '-' + inbound.inboundId">
+                      <div class="mon-head">
+                        <h3 :style="{ margin: 0 }">[[ inbound.remark ]]</h3>
+                        <a-tag color="purple" :style="{ margin: 0 }">[[ inbound.protocol ]]</a-tag>
+                        <span class="mon-muted">:[[ inbound.port ]]</span>
+                        <span class="mon-head-spacer"></span>
+                        <span class="mon-muted mon-hide-sm" v-if="targets.override.enabled">
+                          {{ i18n "pages.monitoring.proxy" }} → [[ targets.override.host ]]
+                        </span>
+                        <span :class="stateClass(inbound.worst)" :title="stateTitle(inbound.worst)">[[ inbound.worst ||
+                          '—' ]]</span>
+                      </div>
+
+                      <a-table :columns="targetColumns" :data-source="inbound.targets"
+                        :row-key="target => target.monClientId + ':' + target.path"
+                        :row-class-name="target => target.retired ? 'mon-retired' : ''" :pagination="false"
+                        :scroll="isMobile ? {} : { x: 640 }" size="small" :style="{ marginTop: '8px' }">
+                        <template slot="monClient" slot-scope="text, target">
+                          [[ target.monClientName ]] <span class="mon-muted">[[ target.region ]]</span>
+                          <a-tag v-if="target.retired" :style="{ marginInlineStart: '4px' }">{{ i18n
+                            "pages.monitoring.retired" }}</a-tag>
+                        </template>
+                        <template slot="path" slot-scope="text, target">
+                          <a-tag :color="target.path === 'proxy' ? 'blue' : ''" :style="{ margin: 0 }">[[ target.path
+                            ]]</a-tag>
+                        </template>
+                        <template slot="state" slot-scope="text, target">
+                          <span :class="stateClass(target.state)" :title="stateTitle(target.state)">[[ target.state
+                            ]]</span>
+                        </template>
+                        <template slot="since" slot-scope="text, target">
+                          <span class="mon-muted">[[ target.state === 'PAUSED' ? '—' : MonUtil.dur(target.since,
+                            targets.now) ]]</span>
+                        </template>
+                        <template slot="uptime24" slot-scope="text, target">
+                          [[ MonUtil.uptime(target.uptime24) ]]
+                          <span class="mon-muted" v-if="target.uptime24 !== null && target.coverage24 < 1">({{ i18n
+                            "pages.monitoring.coverage" }} [[ MonUtil.coverage(target.coverage24) ]])</span>
+                        </template>
+                        <template slot="latency" slot-scope="text, target">
+                          [[ MonUtil.latency(target.latAvg24) ]]
+                        </template>
+                        <template slot="reason" slot-scope="text, target">
+                          <span class="mon-mono mon-muted">[[ target.reason ]]</span>
+                        </template>
+                      </a-table>
+
+                      <!-- Uptime of the whole inbound: every series folded to
+                           one line, a hole wherever no mon-client reported. -->
+                      <div class="mon-spark">
+                        <sparkline :data="sparkData(inbound)" :labels="sparkLabels(inbound)" :vb-width="620"
+                          :height="90" :show-axes="true" :y-tick-step="50" :tick-count-x="5" :max-points="400"
+                          :show-tooltip="true" empty-text='{{ i18n "pages.monitoring.noData" }}'></sparkline>
+                        <a-radio-group :value="rangeOf(inbound)" button-style="solid" size="small"
+                          @change="event => setRange(inbound, event.target.value)">
+                          <a-radio-button value="24h">{{ i18n "pages.monitoring.range24h" }}</a-radio-button>
+                          <a-radio-button value="7d">{{ i18n "pages.monitoring.range7d" }}</a-radio-button>
+                          <a-radio-button value="30d">{{ i18n "pages.monitoring.range30d" }}</a-radio-button>
+                        </a-radio-group>
+                      </div>
+                    </a-card>
+                  </a-col>
+                  <a-col :span="24" v-if="!targets.inbounds.length">
+                    <a-card hoverable>
+                      <span class="mon-muted">{{ i18n "pages.monitoring.noTargets" }}</span>
+                    </a-card>
+                  </a-col>
+                </a-row>
+              </a-col>
+
+              <a-col :xs="24" :xl="8">
+                <a-card hoverable data-testid="mon-events">
+                  <div class="mon-head">
+                    <h3 :style="{ margin: 0 }">{{ i18n "pages.monitoring.events" }}</h3>
+                  </div>
+                  <div v-if="events.length">
+                    <div class="mon-event" v-for="event in events" :key="event.id">
+                      <div class="mon-event-time">[[ MonUtil.time(event.ts) ]]</div>
+                      <div>
+                        <span class="mon-dot" :class="'mon-dot-' + eventTone(event)"></span>
+                        <b>[[ event.to ]]</b>
+                        <template v-if="event.inboundRemark"> · [[ event.inboundRemark ]]</template>
+                        <template v-if="event.path"> {{ i18n "pages.monitoring.path" }} [[ event.path ]]</template>
+                        <template v-if="event.monClientName"> · [[ event.monClientName ]]</template>
+                        <template v-if="event.reason"> · <span class="mon-mono">[[ event.reason ]]</span></template>
+                        <a-tag v-if="event.retired" :style="{ marginInlineStart: '4px' }">{{ i18n
+                          "pages.monitoring.retired" }}</a-tag>
+                        <span class="mon-muted" v-if="event.kind === 'panel'"> · {{ i18n
+                          "pages.monitoring.viaMonServer" }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <span class="mon-muted" v-else>{{ i18n "pages.monitoring.noEvents" }}</span>
+                </a-card>
+              </a-col>
+
+            </a-row>
+          </template>
+        </transition>
+      </a-spin>
+    </a-layout-content>
+  </a-layout>
+</a-layout>
+
+{{template "page/body_scripts" .}}
+{{template "component/aSidebar" .}}
+{{template "component/aThemeSwitch" .}}
+{{template "component/aSparkline" .}}
+<script src="{{ .base_path }}assets/js/util/monitoring.js?{{ .cur_ver }}"></script>
+
+<script>
+  // How often the page asks the panel again, and how many events the feed holds.
+  const MON_REFRESH_MS = 10000;
+  const MON_EVENT_LIMIT = 50;
+  const MON_DEFAULT_RANGE = '7d';
+
+  const app = new Vue({
+    delimiters: ['[[', ']]'],
+    el: '#app',
+    mixins: [MediaQueryMixin],
+    data: {
+      themeSwitcher,
+      loadingStates: {
+        fetched: false,
+        spinning: false,
+      },
+      // The shape GET targets answers in, empty until the first reply — the
+      // template reads these fields before any request has returned.
+      targets: {
+        now: 0,
+        lastContact: 0,
+        stale: false,
+        staleSince: 0,
+        override: { enabled: false, host: '' },
+        monClients: [],
+        inbounds: [],
+      },
+      events: [],
+      // "kind:id" → { range, stats } for each card's own chart.
+      charts: {},
+      refreshTimer: null,
+      targetColumns: [
+        { title: '{{ i18n "pages.monitoring.monClient" }}', width: 140, scopedSlots: { customRender: 'monClient' } },
+        { title: '{{ i18n "pages.monitoring.path" }}', width: 70, scopedSlots: { customRender: 'path' } },
+        { title: '{{ i18n "pages.monitoring.state" }}', width: 100, scopedSlots: { customRender: 'state' } },
+        { title: '{{ i18n "pages.monitoring.for" }}', width: 70, scopedSlots: { customRender: 'since' } },
+        { title: '{{ i18n "pages.monitoring.uptime24" }}', width: 110, align: 'right', scopedSlots: { customRender: 'uptime24' } },
+        // Latency and reason are the first to go on a narrow screen: the state
+        // and how long it has held are what the page is for.
+        { title: '{{ i18n "pages.monitoring.latency" }}', width: 80, align: 'right', className: 'mon-hide-sm', scopedSlots: { customRender: 'latency' } },
+        { title: '{{ i18n "pages.monitoring.reason" }}', width: 140, className: 'mon-hide-sm', scopedSlots: { customRender: 'reason' } },
+      ],
+    },
+    computed: {
+      // A Vue template only reaches properties of its own instance.
+      MonUtil() {
+        return MonUtil;
+      },
+    },
+    methods: {
+      loading(spinning = true) {
+        this.loadingStates.spinning = spinning;
+      },
+      key(inbound) {
+        return inbound.kind + ':' + inbound.inboundId;
+      },
+
+      // --- what the page asks for -------------------------------------------
+
+      async loadTargets() {
+        const msg = await MonApi.targets();
+        if (!msg.success || !msg.obj) return;
+        // The template counts both of these before it draws them, so neither
+        // may arrive as null.
+        msg.obj.monClients = msg.obj.monClients || [];
+        msg.obj.inbounds = msg.obj.inbounds || [];
+        this.targets = msg.obj;
+      },
+      async loadEvents() {
+        const msg = await MonApi.events(MON_EVENT_LIMIT);
+        if (msg.success && Array.isArray(msg.obj)) this.events = msg.obj;
+      },
+      async loadStats(inbound, range) {
+        const key = this.key(inbound);
+        // $set: a key added to charts by assignment is not reactive in Vue 2,
+        // and the chart would never appear.
+        this.$set(this.charts, key, { range: range, stats: (this.charts[key] || {}).stats || null });
+        const msg = await MonApi.stats(inbound.kind, inbound.inboundId, range);
+        if (!msg.success || !msg.obj) return;
+        // The operator may have switched range while this was in flight.
+        const current = this.charts[key];
+        if (!current || current.range !== range) return;
+        this.$set(this.charts, key, { range: range, stats: msg.obj });
+      },
+      async refresh() {
+        await this.loadTargets();
+        await this.loadEvents();
+        // Every card's chart follows the same clock as the rest of the page,
+        // at whatever range the operator left it on.
+        this.targets.inbounds.forEach(inbound => this.loadStats(inbound, this.rangeOf(inbound)));
+        if (!this.loadingStates.fetched) this.loadingStates.fetched = true;
+      },
+
+      // --- what the page shows ----------------------------------------------
+
+      // While the panel is stale every state tag wears the STALE style, and
+      // the state it is standing in for is the tooltip (§7.1).
+      stateClass(state) {
+        if (!state) return 'mon-state mon-state-none';
+        return 'mon-state ' + MonUtil.stateClass(state, this.targets.stale);
+      },
+      stateTitle(state) {
+        return this.targets.stale ? state : '';
+      },
+      eventTone(event) {
+        if (event.kind === 'mon_client') return event.to === 'ONLINE' ? 'up' : 'down';
+        if (event.kind === 'panel') return event.to === 'PANEL_UP' ? 'up' : 'stale';
+        return String(event.to || '').toLowerCase();
+      },
+      rangeOf(inbound) {
+        const entry = this.charts[this.key(inbound)];
+        return entry ? entry.range : MON_DEFAULT_RANGE;
+      },
+      setRange(inbound, range) {
+        this.loadStats(inbound, range);
+      },
+
+      // --- the uptime line ---------------------------------------------------
+
+      // One line per inbound, not per series: for each bucket, the successes of
+      // every mon-client over the attempts of every mon-client. A bucket no
+      // series reported is null, and the sparkline breaks the line there rather
+      // than drawing it through zero — nothing was measured, which is not the
+      // same as nothing worked.
+      sparkData(inbound) {
+        const stats = (this.charts[this.key(inbound)] || {}).stats;
+        if (!stats || !stats.series || !stats.series.length) return [];
+        const n = stats.series[0].points.length;
+        const out = [];
+        for (let i = 0; i < n; i++) {
+          let ok = 0, total = 0, seen = false;
+          stats.series.forEach(series => {
+            const point = series.points[i];
+            if (!point) return;
+            seen = true;
+            ok += point.nOk;
+            total += point.nOk + point.nFail;
+          });
+          // A bucket that arrived with no attempt in it is still a bucket, and
+          // an empty one counts as no reading rather than as 0 %.
+          out.push(seen && total > 0 ? (ok / total) * 100 : null);
+        }
+        return out;
+      },
+      sparkLabels(inbound) {
+        const stats = (this.charts[this.key(inbound)] || {}).stats;
+        if (!stats || !stats.series || !stats.series.length) return [];
+        return stats.series[0].points.map((point, i) => MonUtil.time(stats.from + i * stats.stepMs));
+      },
+
+      // --- the clock ---------------------------------------------------------
+
+      startRefresh() {
+        this.stopRefresh();
+        this.refreshTimer = setInterval(() => {
+          // A hidden tab asks for nothing: the page is a live view, and there
+          // is nobody looking at it.
+          if (document.hidden) return;
+          this.refresh();
+        }, MON_REFRESH_MS);
+      },
+      stopRefresh() {
+        if (this.refreshTimer) clearInterval(this.refreshTimer);
+        this.refreshTimer = null;
+      },
+    },
+    async mounted() {
+      this.loading(true);
+      await this.refresh();
+      this.loading(false);
+      this.startRefresh();
+    },
+    beforeDestroy() {
+      this.stopRefresh();
+    },
+  });
+</script>
+{{ template "page/body_end" .}}

@@ -381,3 +381,55 @@ func TestUIStatsSnapsAnUnalignedClockToTheStep(t *testing.T) {
 		t.Errorf("window holds %d steps, want 12", (out.To-out.From)/out.StepMs)
 	}
 }
+
+// TestProbeSetInfoCountsWhatTheSettingsTabPrints: the Monitoring settings tab
+// prints "subId · last ensured · N clients" from one call, so ProbeSetInfo
+// reports the stored subId and ensure stamp, the TTL the sweep uses, and the
+// number of probe accounts actually present — not the number that should be.
+func TestProbeSetInfoCountsWhatTheSettingsTabPrints(t *testing.T) {
+	m := newMonitoringTestService(t)
+
+	info, err := m.ProbeSetInfo()
+	if err != nil {
+		t.Fatalf("ProbeSetInfo: %v", err)
+	}
+	if info.SubId != "" || info.LastEnsured != 0 || info.Clients != 0 || info.TtlHours != 24 {
+		t.Errorf("empty panel: %+v, want no set and the default TTL", info)
+	}
+
+	monInbound(t, 1, model.VLESS, true, model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice"})
+	monInbound(t, 2, model.Trojan, false, model.Client{Password: "pw", Email: "bob"})
+	if _, err := m.EnsureProbeSet(nil); err != nil {
+		t.Fatalf("EnsureProbeSet: %v", err)
+	}
+
+	info, err = m.ProbeSetInfo()
+	if err != nil {
+		t.Fatalf("ProbeSetInfo: %v", err)
+	}
+	subId, _ := (&SettingService{}).GetMonProbeSubId()
+	if info.SubId != subId || len(info.SubId) != monProbeSubIdLength {
+		t.Errorf("subId = %q, want the stored %q", info.SubId, subId)
+	}
+	if info.LastEnsured == 0 {
+		t.Error("lastEnsured = 0 after an ensure")
+	}
+	// Both inbounds carry a probe, the disabled one included (§3.1).
+	if info.Clients != 2 {
+		t.Errorf("clients = %d, want 2", info.Clients)
+	}
+
+	// Deleting a probe by hand is allowed (§3.2); the count follows reality
+	// until the next ensure recreates it.
+	if _, err := (&InboundService{}).DelInboundClientByEmail(1, ProbeXrayEmail(1)); err != nil {
+		t.Fatalf("delete probe: %v", err)
+	}
+	if info, err = m.ProbeSetInfo(); err != nil || info.Clients != 1 {
+		t.Errorf("after deleting one probe: clients = %d err = %v, want 1", info.Clients, err)
+	}
+
+	setSetting(t, "monProbeTtlHours", "6")
+	if info, err = m.ProbeSetInfo(); err != nil || info.TtlHours != 6 {
+		t.Errorf("ttlHours = %d err = %v, want the setting's 6", info.TtlHours, err)
+	}
+}

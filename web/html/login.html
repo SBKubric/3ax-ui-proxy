@@ -63,13 +63,13 @@
                   <a-space direction="vertical" size="middle">
                     <a-form-item>
                       <a-input autocomplete="username" name="username" v-model.trim="user.username"
-                        placeholder='{{ i18n "username" }}' autofocus required>
+                        placeholder='{{ i18n "username" }}' autofocus required data-testid="login-username">
                         <a-icon slot="prefix" type="user" class="fs-1rem"></a-icon>
                       </a-input>
                     </a-form-item>
                     <a-form-item>
                       <a-input-password autocomplete="current-password" name="password" v-model.trim="user.password"
-                        placeholder='{{ i18n "password" }}' required>
+                        placeholder='{{ i18n "password" }}' required data-testid="login-password">
                         <a-icon slot="prefix" type="lock" class="fs-1rem"></a-icon>
                       </a-input-password>
                     </a-form-item>
@@ -84,7 +84,8 @@
                         <div class="wave-btn-bg wave-btn-bg-cl h-50px mt-1rem"
                           :style="loadingStates.spinning ? 'width: 52px' : 'display: inline-block'">
                           <a-button class="ant-btn-primary-login" type="primary" :loading="loadingStates.spinning"
-                            :icon="loadingStates.spinning ? 'poweroff' : undefined" html-type="submit">
+                            :icon="loadingStates.spinning ? 'poweroff' : undefined" html-type="submit"
+                            data-testid="login-submit">
                             [[ loadingStates.spinning ? '' : '{{ i18n "login" }}' ]]
                           </a-button>
                         </div>
