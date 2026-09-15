@@ -113,6 +113,10 @@ type Tgbot struct {
 	xrayService    XrayService
 	awgService     AwgService
 	lastStatus     *Status
+	// Monitoring (monitoring-panel.md §6): the service behind the alerts and
+	// the daily digest, and the test seam that stands in for Telegram.
+	monitoringService MonitoringService
+	monSend           func(string)
 }
 
 // NewTgbot creates a new Tgbot instance.
@@ -261,6 +265,10 @@ func (t *Tgbot) Start(i18nFS embed.FS) error {
 		go t.OnReceive()
 	}
 
+	// Monitoring alerts go out through this bot from now on (§6).
+	SetMonEventNotifier(t)
+	SetMonStaleNotifier(t)
+
 	return nil
 }
 
@@ -387,6 +395,8 @@ func (t *Tgbot) SetHostname() {
 // This method now calls the global StopBot function and cleans up other resources.
 func (t *Tgbot) Stop() {
 	StopBot()
+	SetMonEventNotifier(nil)
+	SetMonStaleNotifier(nil)
 	logger.Info("Stop Telegram receiver ...")
 	tgBotMutex.Lock()
 	adminIds = nil
@@ -2750,6 +2760,11 @@ func (t *Tgbot) SendReport() {
 
 	info := t.sendServerUsage()
 	t.SendMsgToTgbotAdmins(info)
+
+	// Monitoring block of the daily report (monitoring-panel.md §6).
+	if digest := t.monitoringDigest(); digest != "" {
+		t.SendMsgToTgbotAdmins(digest)
+	}
 
 	t.sendExhaustedToAdmins()
 	t.notifyExhausted()
