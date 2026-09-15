@@ -26,6 +26,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 
 	g.GET("/", a.index)
 	g.GET("/inbounds", a.inbounds)
+	g.GET("/monitoring", a.monitoring)
 	g.GET("/wg", a.wgPage)
 	g.GET("/awg", a.wgPage) // legacy redirect: /awg → same WG settings page
 	g.GET("/settings", a.settings)
@@ -44,6 +45,13 @@ func (a *XUIController) index(c *gin.Context) {
 // inbounds renders the inbounds management page.
 func (a *XUIController) inbounds(c *gin.Context) {
 	html(c, "inbounds.html", "pages.inbounds.title", nil)
+}
+
+// monitoring renders the Monitoring page (docs/spec/monitoring-panel.md §7.1).
+// The page holds no data of its own: everything it draws comes from
+// /panel/api/monitoring (web/controller/monitoring_ui.go).
+func (a *XUIController) monitoring(c *gin.Context) {
+	html(c, "monitoring.html", "pages.monitoring.title", nil)
 }
 
 // wgPage renders the combined WireGuard settings page (AWG + Native WG).
