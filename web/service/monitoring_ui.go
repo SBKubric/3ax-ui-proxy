@@ -232,20 +232,13 @@ func monUITargetAggs(now time.Time) (map[monUITargetKey]monUITargetAgg, error) {
 // WorstLiveTargetState folds the stored ones — DOWN > FLAPPING > UNKNOWN > UP
 // > PAUSED, retired mon-clients left out — without a query per inbound.
 func worstTargetState(targets []MonUITarget) string {
-	worst, worstRank := "", len(monTargetStateRank)+1
+	states := make([]string, 0, len(targets))
 	for _, t := range targets {
-		if t.Retired {
-			continue
-		}
-		rank, ok := monTargetStateRank[t.State]
-		if !ok {
-			rank = monTargetStateRank[model.MonStateUnknown]
-		}
-		if rank < worstRank {
-			worst, worstRank = t.State, rank
+		if !t.Retired {
+			states = append(states, t.State)
 		}
 	}
-	return worst
+	return worstOfStates(states)
 }
 
 // --- GET events --------------------------------------------------------------
