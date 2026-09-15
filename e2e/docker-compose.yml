@@ -1,0 +1,38 @@
+# Compose file for the Playwright e2e harness. Builds the repo's own image
+# and starts one panel instance with a fresh, throwaway database — never a
+# developer's or production /etc/x-ui. See docs/agents/testing.md ("E2E
+# tests") and `make e2e`.
+services:
+  panel:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      TZ: UTC
+      XUI_ENABLE_FAIL2BAN: "false"
+      E2E_USERNAME: ${E2E_USERNAME:-e2e}
+      E2E_PASSWORD: ${E2E_PASSWORD:-e2e-password}
+    # The image's own entrypoint (/app/DockerEntrypoint.sh) just execs
+    # /app/x-ui. Override it with a small shell that stamps the fresh
+    # database with known credentials via `x-ui setting` (see main.go's
+    # `setting` subcommand) before handing off to the real entrypoint.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        /app/x-ui setting -username "$$E2E_USERNAME" -password "$$E2E_PASSWORD"
+        exec /app/DockerEntrypoint.sh
+    ports:
+      - "2053:2053"
+    # Anonymous volume: a fresh /etc/x-ui (and fresh x-ui.db) every time this
+    # compose project is brought up, never a host bind-mount. `make e2e` runs
+    # `docker compose down -v` on teardown so the volume never survives a run.
+    volumes:
+      - /etc/x-ui
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:2053/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
