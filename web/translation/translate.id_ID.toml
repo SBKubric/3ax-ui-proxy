@@ -1158,6 +1158,24 @@
 "FinishProcess" = "🔚 Proses reset traffic selesai untuk semua klien."
 "awgConfigUpdated" = "🔄 Obfuskasi AmneziaWG server telah diperbarui. Impor konfigurasi baru di bawah — konfigurasi lama Anda tidak akan menyambung lagi.\r\n"
 
+[tgbot.messages.monitoring]
+"down" = "⛔ DOWN · {{ .Inbound }} via {{ .Path }} · {{ .Client }} · reason: {{ .Reason }} · since {{ .Since }}"
+"up" = "✅ UP · {{ .Inbound }} via {{ .Path }} · {{ .Client }} · down for {{ .Duration }} · since {{ .Since }}"
+"upNoDuration" = "✅ UP · {{ .Inbound }} via {{ .Path }} · {{ .Client }} · since {{ .Since }}"
+"flappingOn" = "〰 FLAPPING · {{ .Inbound }} via {{ .Path }} · {{ .Client }} · reason: {{ .Reason }} · since {{ .Since }}"
+"flappingOff" = "〰 FLAPPING over · {{ .Inbound }} via {{ .Path }} · {{ .Client }} → {{ .State }} · since {{ .Since }}"
+"clientOffline" = "🔌 mon-client {{ .Client }} OFFLINE · since {{ .Since }}"
+"clientOnline" = "🔌 mon-client {{ .Client }} ONLINE (was offline {{ .Duration }})"
+"clientOnlineNoDuration" = "🔌 mon-client {{ .Client }} ONLINE"
+"stale" = "🟡 monitoring silent since {{ .Since }}"
+"staleBack" = "🟢 monitoring back (was silent {{ .Minutes }} min)"
+"digestTitle" = "📡 Monitoring, last 24h\r\n"
+"digestLine" = "▫️ {{ .Remark }}: {{ .Paths }} (cov {{ .Coverage }} %) · {{ .Incidents }} incidents\r\n"
+"digestNoData" = "▫️ {{ .Remark }}: no data\r\n"
+"digestWorst" = "⚠️ Worst: {{ .Remark }} via {{ .Path }} · {{ .Client }} · {{ .Uptime }} (cov {{ .Coverage }} %)\r\n"
+"digestOffline" = "🔌 mon-clients offline: {{ .Clients }}\r\n"
+"digestStale" = "🟡 Monitoring silent: {{ .Minutes }} min\r\n"
+
 [tgbot.buttons]
 "closeKeyboard" = "❌ Tutup Papan Ketik"
 "cancel" = "❌ Batal"

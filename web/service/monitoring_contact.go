@@ -108,11 +108,28 @@ type MonStaleNotifier interface {
 	NotifyMonitoringBack(silentFor time.Duration)
 }
 
+// monStaleInterval is one closed stretch of silence, [from, to] in ms. The
+// digest and GET summary need how long monitoring was silent inside their
+// window (§6, §7.4), which the flag alone cannot answer once the silence is
+// over, so every stretch is remembered.
+type monStaleInterval struct {
+	from int64
+	to   int64
+}
+
+// monStaleHistory is how far back the intervals are kept: the longest summary
+// range is 7 days, so anything older can never be asked about.
+const monStaleHistory = 7 * 24 * time.Hour
+
 var monStale struct {
 	sync.Mutex
 	stale bool
 	since int64 // ms: the last contact before the silence
 	n     MonStaleNotifier
+	// intervals are the closed stretches of silence, oldest first. They live
+	// in memory only: a restart loses the history, so a summary taken right
+	// after one reports less STALE time than really happened (v1 limitation).
+	intervals []monStaleInterval
 }
 
 // SetMonStaleNotifier installs (or, with nil, removes) the Telegram hook.
@@ -167,6 +184,7 @@ func clearMonStale(now time.Time) {
 	}
 	since := monStale.since
 	monStale.stale, monStale.since = false, 0
+	appendMonStaleIntervalLocked(since, now.UnixMilli())
 	n := monStale.n
 	monStale.Unlock()
 	if n != nil {
@@ -174,8 +192,56 @@ func clearMonStale(now time.Time) {
 	}
 }
 
+// appendMonStaleIntervalLocked records a finished stretch of silence and
+// forgets the ones no summary can still ask about. The caller holds the lock.
+func appendMonStaleIntervalLocked(from, to int64) {
+	if to <= from {
+		return
+	}
+	monStale.intervals = append(monStale.intervals, monStaleInterval{from: from, to: to})
+	cutoff := to - monStaleHistory.Milliseconds()
+	kept := monStale.intervals[:0]
+	for _, iv := range monStale.intervals {
+		if iv.to >= cutoff {
+			kept = append(kept, iv)
+		}
+	}
+	monStale.intervals = kept
+}
+
+// StaleMsWithin is how many milliseconds of [from, to) the panel spent
+// considering monitoring silent: the closed stretches it remembers plus the
+// one still open, each clipped to the window. Only what happened since the
+// last restart is counted (see monStale.intervals).
+func (s *MonitoringService) StaleMsWithin(from, to int64, now time.Time) int64 {
+	monStale.Lock()
+	defer monStale.Unlock()
+	var total int64
+	for _, iv := range monStale.intervals {
+		total += overlapMs(iv.from, iv.to, from, to)
+	}
+	if monStale.stale {
+		total += overlapMs(monStale.since, now.UnixMilli(), from, to)
+	}
+	return total
+}
+
+// overlapMs is the length of [aFrom,aTo) ∩ [bFrom,bTo), never negative.
+func overlapMs(aFrom, aTo, bFrom, bTo int64) int64 {
+	if aFrom < bFrom {
+		aFrom = bFrom
+	}
+	if aTo > bTo {
+		aTo = bTo
+	}
+	if aTo <= aFrom {
+		return 0
+	}
+	return aTo - aFrom
+}
+
 func resetMonStaleForTest() {
 	monStale.Lock()
-	monStale.stale, monStale.since, monStale.n = false, 0, nil
+	monStale.stale, monStale.since, monStale.n, monStale.intervals = false, 0, nil, nil
 	monStale.Unlock()
 }
