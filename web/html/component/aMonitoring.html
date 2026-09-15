@@ -1,6 +1,6 @@
 {{define "component/monTokenField"}}
 <a-input-group compact :style="{ display: 'flex' }">
-    <a-input data-testid="mon-token" type="text" read-only :value="token"
+    <a-input data-testid="mon-token" type="text" readonly :value="token"
         :style="{ flex: '1 1 auto', minWidth: '0' }"></a-input>
     <a-button data-testid="mon-token-copy" @click="copy" v-text="copyText"></a-button>
     <a-popconfirm @confirm="regenerate" :ok-text="sureText" :cancel-text="cancelText">
@@ -46,7 +46,7 @@
     // pane and nothing else.
     //
     // Translated text is passed in as props: a component template is compiled
-    // by Vue in the browser, where {{ i18n }} has long since been rendered
+    // by Vue in the browser, long after the server rendered the i18n actions
     // away, so the strings have to arrive from the page that uses it.
 
     Vue.component('mon-token-field', {
