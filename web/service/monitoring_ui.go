@@ -130,6 +130,11 @@ func (s *MonitoringService) UITargets(now time.Time) (*MonUITargets, error) {
 		return nil, err
 	}
 	clients := s.RegistrySnapshot()
+	if clients == nil {
+		// An empty registry has to reach the page as [], not null: the page
+		// counts the mon-clients before it draws them, and null has no length.
+		clients = []MonClient{}
+	}
 	byId := make(map[string]MonClient, len(clients))
 	for _, c := range clients {
 		byId[c.Id] = c

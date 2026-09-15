@@ -368,7 +368,9 @@
                                     <div
                                         :style="isMobile ? {} : { display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }"
                                     >
+                                        <!-- monitoring: named so a spec can reach the chips behind it; the page is full of switches -->
                                         <a-switch
+                                            data-testid="filter-switch"
                                             v-model="enableFilter"
                                             :style="isMobile ? { marginBottom: '.5rem', display: 'flex' } : { marginRight: '.5rem' }"
                                             @change="toggleFilter"

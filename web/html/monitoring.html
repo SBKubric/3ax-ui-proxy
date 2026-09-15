@@ -245,6 +245,10 @@
       async loadTargets() {
         const msg = await MonApi.targets();
         if (!msg.success || !msg.obj) return;
+        // The template counts both of these before it draws them, so neither
+        // may arrive as null.
+        msg.obj.monClients = msg.obj.monClients || [];
+        msg.obj.inbounds = msg.obj.inbounds || [];
         this.targets = msg.obj;
       },
       async loadEvents() {
@@ -305,7 +309,7 @@
       // same as nothing worked.
       sparkData(inbound) {
         const stats = (this.charts[this.key(inbound)] || {}).stats;
-        if (!stats || !stats.series.length) return [];
+        if (!stats || !stats.series || !stats.series.length) return [];
         const n = stats.series[0].points.length;
         const out = [];
         for (let i = 0; i < n; i++) {
@@ -325,7 +329,7 @@
       },
       sparkLabels(inbound) {
         const stats = (this.charts[this.key(inbound)] || {}).stats;
-        if (!stats || !stats.series.length) return [];
+        if (!stats || !stats.series || !stats.series.length) return [];
         return stats.series[0].points.map((point, i) => MonUtil.time(stats.from + i * stats.stepMs));
       },
 
