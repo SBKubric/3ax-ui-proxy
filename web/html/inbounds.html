@@ -421,6 +421,14 @@
                                                 >{{ i18n "online"
                                                 }}</a-radio-button
                                             >
+                                            <!-- monitoring: inbounds whose worst live target is DOWN or FLAPPING (§7.2) -->
+                                            <a-radio-button
+                                                value="down"
+                                                data-testid="filter-down"
+                                                >{{ i18n
+                                                "pages.inbounds.filterDown"
+                                                }}</a-radio-button
+                                            >
                                         </a-radio-group>
                                     </div>
                                     <a-table
@@ -910,6 +918,38 @@
                                                 </a-tag>
                                             </a-popover>
                                         </template>
+                                        <!-- monitoring: Health badge — the worst live target of this inbound, with the failing ones in the tooltip (§7.2) -->
+                                        <template
+                                            slot="health"
+                                            slot-scope="text, dbInbound"
+                                        >
+                                            <a-tooltip
+                                                v-if="monHealthTooltip(dbInbound).length"
+                                                :overlay-class-name="themeSwitcher.currentTheme"
+                                            >
+                                                <template slot="title">
+                                                    <div
+                                                        v-for="line in monHealthTooltip(dbInbound)"
+                                                        :key="line"
+                                                    >
+                                                        [[ line ]]
+                                                    </div>
+                                                </template>
+                                                <span
+                                                    :data-testid="'health-' + dbInbound.id"
+                                                    :class="monHealthClass(dbInbound)"
+                                                    >[[ monHealthState(dbInbound)
+                                                    || '—' ]]</span
+                                                >
+                                            </a-tooltip>
+                                            <span
+                                                v-else
+                                                :data-testid="'health-' + dbInbound.id"
+                                                :class="monHealthClass(dbInbound)"
+                                                >[[ monHealthState(dbInbound) ||
+                                                '—' ]]</span
+                                            >
+                                        </template>
                                         <template
                                             slot="allTimeInbound"
                                             slot-scope="text, dbInbound"
@@ -1235,6 +1275,31 @@
                                                                 </a-popover>
                                                             </td>
                                                         </tr>
+                                                        <!-- monitoring: the same Health badge the desktop column shows (§7.2) -->
+                                                        <tr>
+                                                            <td>
+                                                                {{ i18n
+                                                                "pages.inbounds.health"
+                                                                }}
+                                                            </td>
+                                                            <td>
+                                                                <span
+                                                                    :data-testid="'health-' + dbInbound.id"
+                                                                    :class="monHealthClass(dbInbound)"
+                                                                    >[[
+                                                                    monHealthState(dbInbound)
+                                                                    || '—'
+                                                                    ]]</span
+                                                                >
+                                                                <div
+                                                                    class="mon-muted"
+                                                                    v-for="line in monHealthTooltip(dbInbound)"
+                                                                    :key="line"
+                                                                >
+                                                                    [[ line ]]
+                                                                </div>
+                                                            </td>
+                                                        </tr>
                                                         <tr>
                                                             <td>
                                                                 {{ i18n
@@ -1422,6 +1487,8 @@
 <script src="{{ .base_path }}assets/js/model/reality_targets.js?{{ .cur_ver }}"></script>
 <script src="{{ .base_path }}assets/js/model/inbound.js?{{ .cur_ver }}"></script>
 <script src="{{ .base_path }}assets/js/model/dbinbound.js?{{ .cur_ver }}"></script>
+<!-- monitoring: MonUtil, MonApi and MonHealthMixin behind the Health column and the "down" filter -->
+<script src="{{ .base_path }}assets/js/util/monitoring.js?{{ .cur_ver }}"></script>
 {{template "component/aSidebar" .}} {{template "component/aThemeSwitch" .}}
 {{template "component/aCustomStatistic" .}} {{template
 "component/aPersianDatepicker" .}} {{template "modals/inboundModal"}} {{template
@@ -1473,6 +1540,13 @@
             align: "left",
             width: 40,
             scopedSlots: { customRender: "clients" },
+        },
+        // monitoring: Health after Clients (docs/spec/monitoring-panel.md §7.2)
+        {
+            title: '{{ i18n "pages.inbounds.health" }}',
+            align: "center",
+            width: 50,
+            scopedSlots: { customRender: "health" },
         },
         {
             title: '{{ i18n "pages.inbounds.traffic" }}',
@@ -1691,7 +1765,8 @@
     const app = new Vue({
         delimiters: ["[[", "]]"],
         el: "#app",
-        mixins: [MediaQueryMixin],
+        // monitoring: MonHealthMixin brings the Health column's data and its own poll
+        mixins: [MediaQueryMixin, MonHealthMixin],
         data: {
             themeSwitcher,
             persianDatepicker,
@@ -2156,8 +2231,16 @@
                     online = [],
                     comments = new Map(),
                     labels = new Map();
-                clients = inbound.clients;
-                clientStats = dbInbound.clientStats;
+                // monitoring: a probe account is not a user — it must not show
+                // up in the client count, the online badge or any of the
+                // popovers beside them (§3.4). The server already keeps probes
+                // out of the online set; this keeps them out of the counts.
+                clients = (inbound.clients || []).filter(
+                    (client) => !MonUtil.isProbeAccount(client.email),
+                );
+                clientStats = (dbInbound.clientStats || []).filter(
+                    (stats) => !MonUtil.isProbeAccount(stats.email),
+                );
                 now = new Date().getTime();
                 if (clients) {
                     clientCount = clients.length;
@@ -2325,6 +2408,14 @@
             filterInbounds() {
                 if (ObjectUtil.isEmpty(this.filterBy)) {
                     this.searchedInbounds = this.dbInbounds.slice();
+                } else if (this.filterBy === "down") {
+                    // monitoring: this chip filters inbounds, not clients —
+                    // the others narrow an inbound's client list, this one
+                    // keeps whole inbounds whose worst live target is DOWN or
+                    // FLAPPING (§7.2).
+                    this.searchedInbounds = this.dbInbounds
+                        .filter((inbound) => this.monIsDown(inbound))
+                        .map((inbound) => new DBInbound(inbound));
                 } else {
                     this.searchedInbounds.splice(
                         0,
@@ -3394,6 +3485,9 @@
                 const online = [];
                 for (const client of clients) {
                     if (!client.enable) continue;
+                    // monitoring: probes are not users, so they are not part of
+                    // the online badge either (§3.4)
+                    if (MonUtil.isProbeAccount(client.email)) continue;
                     const key = this.getClientLookupKey(
                         dbInbound.protocol,
                         client,
