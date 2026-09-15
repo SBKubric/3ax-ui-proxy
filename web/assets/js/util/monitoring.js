@@ -134,3 +134,114 @@ const MonApi = {
         return MonApi._call('post', 'token/reset');
     },
 };
+
+/**
+ * The Health column of the inbounds table (monitoring-panel.md §7.2 and §3.5).
+ *
+ * A mixin rather than methods on the page so that inbounds.html gains the
+ * column, the filter chip and this one name, and nothing else. It keeps its own
+ * ten-second poll of GET targets and stops while the tab is hidden, the way the
+ * Monitoring page does — the inbounds page refreshes over a websocket, so there
+ * is no refresh timer of its own to hang this on.
+ *
+ * monLoaded stays false until a request succeeds, and the column shows an em
+ * dash until then: no monitoring data is not the same as every target UP.
+ */
+const MonHealthMixin = {
+    data() {
+        return {
+            monHealth: {},   // "kind:id" → { worst, targets }
+            monStale: false,
+            monLoaded: false,
+            monPollTimer: null,
+        };
+    },
+    computed: {
+        // A Vue template only reaches properties of its own instance, and the
+        // probe badge in the client table is compiled as part of the page's
+        // root instance, so the helper has to be exposed by name.
+        MonUtil() {
+            return MonUtil;
+        },
+    },
+    methods: {
+        /** The (inbound_kind, inbound_id) an inbound row has in the monitoring
+         *  tables: the AmneziaWG server is ("awg", 0), everything else is an
+         *  xray inbound under its own id. */
+        monKey(dbInbound) {
+            if (!dbInbound) return '';
+            return dbInbound.protocol === Protocols.AMNEZIAWG
+                ? 'awg:0'
+                : 'xray:' + dbInbound.id;
+        },
+        async loadMonHealth() {
+            const msg = await MonApi.targets();
+            if (!msg.success || !msg.obj) {
+                this.monLoaded = false;
+                return;
+            }
+            const health = {};
+            (msg.obj.inbounds || []).forEach(ib => {
+                health[ib.kind + ':' + ib.inboundId] = { worst: ib.worst, targets: ib.targets || [] };
+            });
+            this.monHealth = health;
+            this.monStale = !!msg.obj.stale;
+            this.monLoaded = true;
+            // The "down" chip filters on what was just fetched, so the list
+            // has to be rebuilt when that changes.
+            if (this.enableFilter && this.filterBy === 'down' && typeof this.filterInbounds === 'function') {
+                this.filterInbounds();
+            }
+        },
+        monEntry(dbInbound) {
+            return this.monHealth[this.monKey(dbInbound)] || null;
+        },
+        /** The state the badge shows: '' while nothing is known, which the
+         *  column renders as an em dash. */
+        monHealthState(dbInbound) {
+            if (!this.monLoaded) return '';
+            const entry = this.monEntry(dbInbound);
+            return entry ? entry.worst : '';
+        },
+        monHealthClass(dbInbound) {
+            const state = this.monHealthState(dbInbound);
+            if (!state) return 'mon-state mon-state-none';
+            return 'mon-state ' + MonUtil.stateClass(state, this.monStale);
+        },
+        /** The failing targets, one line each: "<client> via <path>: <state>".
+         *  While the panel is stale the tag wears the STALE style and this is
+         *  what says which state is underneath. */
+        monHealthTooltip(dbInbound) {
+            const entry = this.monEntry(dbInbound);
+            if (!entry) return [];
+            return entry.targets
+                .filter(t => t.state !== 'UP')
+                .map(t => t.monClientName + ' via ' + t.path + ': ' + t.state);
+        },
+        /** The "down" filter chip: an inbound whose worst live target is DOWN
+         *  or FLAPPING. */
+        monIsDown(dbInbound) {
+            const state = this.monHealthState(dbInbound);
+            return state === 'DOWN' || state === 'FLAPPING';
+        },
+        startMonHealthPoll(everyMs) {
+            this.stopMonHealthPoll();
+            const tick = () => {
+                if (document.hidden) return;
+                this.loadMonHealth();
+            };
+            tick();
+            this.monPollTimer = setInterval(tick, everyMs || 10000);
+        },
+        stopMonHealthPoll() {
+            if (this.monPollTimer) clearInterval(this.monPollTimer);
+            this.monPollTimer = null;
+        },
+    },
+    mounted() {
+        this.startMonHealthPoll();
+    },
+    beforeDestroy() {
+        this.stopMonHealthPoll();
+    },
+};
