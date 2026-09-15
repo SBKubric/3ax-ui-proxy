@@ -307,16 +307,17 @@ func TestMonitoringDigest(t *testing.T) {
 	}
 }
 
-// TestMonitoringKeysFallBackToEnglish: only en_US and ru_RU carry the
-// monitoring keys, so the other eleven locales must fall through to the
-// bundle's default language rather than render nothing.
-func TestMonitoringKeysFallBackToEnglish(t *testing.T) {
+// TestMonitoringKeysPresentInEveryLocale: go-i18n does not fall back to
+// en_US for a key missing from a locale that exists, so the other eleven
+// locales carry an English copy of the monitoring keys. This pins that a
+// bot set to any of them renders a message instead of an empty string.
+func TestMonitoringKeysPresentInEveryLocale(t *testing.T) {
 	newMonitoringTestService(t)
 	initTestBotLocale(t, "fa-IR")
 	bot, _ := newTestBot(t)
 	msg := bot.I18nBot("tgbot.messages.monitoring.stale", "Since==10:00")
 	if !strings.Contains(msg, "silent since 10:00") {
-		t.Errorf("fa-IR message = %q, want the English fallback", msg)
+		t.Errorf("fa-IR message = %q, want the English copy of the key", msg)
 	}
 
 	initTestBotLocale(t, "ru-RU")
