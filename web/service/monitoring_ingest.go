@@ -500,6 +500,14 @@ func (s *MonitoringService) WorstLiveTargetState(inboundKind string, inboundId i
 		Pluck("state", &states).Error; err != nil {
 		return "", err
 	}
+	return worstOfStates(states), nil
+}
+
+// worstOfStates folds target states by monTargetStateRank — DOWN > FLAPPING >
+// UNKNOWN > UP > PAUSED; a state the rank table does not know counts as
+// UNKNOWN. "" when there are no states. Shared by WorstLiveTargetState and
+// the Monitoring page's per-inbound fold so the two never drift.
+func worstOfStates(states []string) string {
 	worst, worstRank := "", len(monTargetStateRank)+1
 	for _, st := range states {
 		rank, ok := monTargetStateRank[st]
@@ -510,5 +518,5 @@ func (s *MonitoringService) WorstLiveTargetState(inboundKind string, inboundId i
 			worst, worstRank = st, rank
 		}
 	}
-	return worst, nil
+	return worst
 }
