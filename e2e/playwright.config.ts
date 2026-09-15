@@ -18,9 +18,23 @@ export default defineConfig({
     baseURL: process.env.E2E_BASE_URL || 'http://127.0.0.1:2053',
     trace: 'on-first-retry',
   },
+  // Two projects, not one: monitoring-settings.spec.ts talks to the mon-server
+  // contract (`GET /mon/v1/state` with a real token), and every authorised
+  // contract request stamps the panel's monLastContact. The other specs assert
+  // the "no monitoring data yet" state of a panel no mon-server has reached,
+  // so the contract-touching spec must run after them, never beside them.
+  // Project dependencies are Playwright's ordering guarantee across files;
+  // fullyParallel still applies inside each project.
   projects: [
     {
-      name: 'chromium',
+      name: 'panel',
+      testIgnore: /monitoring-settings\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'mon-server-contact',
+      testMatch: /monitoring-settings\.spec\.ts/,
+      dependencies: ['panel'],
       use: { ...devices['Desktop Chrome'] },
     },
   ],
