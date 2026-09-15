@@ -68,6 +68,9 @@ func (a *APIController) initRouter(g *gin.RouterGroup, customGeo *service.Custom
 	nginxGroup := api.Group("/nginx")
 	a.nginxController = NewNginxController(nginxGroup)
 
+	// Monitoring page API (docs/spec/monitoring-panel.md §7.4)
+	NewMonitoringUIController(api.Group("/monitoring"))
+
 	// Custom Geo API
 	NewCustomGeoController(api.Group("/custom-geo"), customGeo)
 
