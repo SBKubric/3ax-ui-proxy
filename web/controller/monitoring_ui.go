@@ -22,11 +22,19 @@ import (
 //
 // Every handler parses its query string and calls one service method; the
 // answers travel in the panel's {success,msg,obj} envelope.
+//
+// The last three routes serve the Monitoring tab of the settings page (§7.3)
+// rather than the page itself. They exist because monProbeSubId,
+// monProbeLastEnsured and a freshly minted monToken are not part of
+// AllSetting, which is what the settings form round-trips: the tab has no
+// other way to read the probe set or to regenerate the token.
 type MonitoringUIController struct {
 	monitoringService service.MonitoringService
+	settingService    service.SettingService
 }
 
-// NewMonitoringUIController registers the four read-only routes on g.
+// NewMonitoringUIController registers the page's read-only routes and the
+// three the settings tab needs on g.
 func NewMonitoringUIController(g *gin.RouterGroup) *MonitoringUIController {
 	a := &MonitoringUIController{}
 	a.initRouter(g)
@@ -38,6 +46,9 @@ func (a *MonitoringUIController) initRouter(g *gin.RouterGroup) {
 	g.GET("/events", a.events)
 	g.GET("/stats", a.stats)
 	g.GET("/summary", a.summary)
+	g.GET("/probe", a.probeInfo)
+	g.DELETE("/probe", a.probeDelete)
+	g.POST("/token/reset", a.tokenReset)
 }
 
 // monUIStatsRanges and monUISummaryRanges are the windows §7.4 allows; an
@@ -159,6 +170,35 @@ func (a *MonitoringUIController) summary(c *gin.Context) {
 	}
 	obj, err := a.monitoringService.Summary(time.Now(), window)
 	jsonObj(c, obj, err)
+}
+
+// GET probe — the probe-set line of the settings tab: subId, when it was
+// last ensured, how long it survives without an ensure, and how many probe
+// accounts are there now.
+func (a *MonitoringUIController) probeInfo(c *gin.Context) {
+	obj, err := a.monitoringService.ProbeSetInfo()
+	jsonObj(c, obj, err)
+}
+
+// DELETE probe — "Remove probe set". The same DeleteProbeSet the mon-server
+// contract and the TTL sweep call: every probe account goes and the panel
+// forgets the subId. mon-server recreates the set on its next ensure.
+func (a *MonitoringUIController) probeDelete(c *gin.Context) {
+	err := a.monitoringService.DeleteProbeSet()
+	jsonMsg(c, I18nWeb(c, "pages.settings.monProbeSetRemoved"), err)
+}
+
+// POST token/reset — "Regenerate". The new token is the panel's from this
+// moment: checkMonAuth reads monToken per request, so the old one stops
+// working before this answer reaches the browser. The page writes the token
+// into its allSetting copy so the common Save does not put the old one back.
+func (a *MonitoringUIController) tokenReset(c *gin.Context) {
+	token, err := a.settingService.ResetMonToken()
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.monTokenRegenerate"), err)
+		return
+	}
+	jsonObj(c, gin.H{"token": token}, nil)
 }
 
 // monUIInt reads an optional non-negative integer parameter; absent is 0, and

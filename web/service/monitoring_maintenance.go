@@ -15,6 +15,11 @@ import (
 // in one statement. No VACUUM.
 const monPruneBatch = 5000
 
+// monProbeTtlHoursFallback stands in when monProbeTtlHours is unreadable or
+// not a positive number, so a broken setting cannot make the set immortal or
+// sweep it at once.
+const monProbeTtlHoursFallback = 24
+
 // ExpireProbeSet removes the probe set when mon-server has not ensured it for
 // longer than monProbeTtlHours, and sweeps stray probe accounts left behind
 // without a subId. Returns true when something was removed.
@@ -35,7 +40,7 @@ func (s *MonitoringService) ExpireProbeSet(now time.Time) (bool, error) {
 	}
 	ttl, err := s.settingService.GetMonProbeTtlHours()
 	if err != nil || ttl <= 0 {
-		ttl = 24
+		ttl = monProbeTtlHoursFallback
 	}
 	if now.UnixMilli()-lastEnsured <= int64(ttl)*60*60*1000 {
 		return false, nil
@@ -45,6 +50,18 @@ func (s *MonitoringService) ExpireProbeSet(now time.Time) (bool, error) {
 
 // hasProbeAccounts reports whether any probe client exists, xray or tunnel.
 func (s *MonitoringService) hasProbeAccounts() bool {
+	return s.countProbeAccounts() > 0
+}
+
+// countProbeAccounts counts the probe clients actually present, xray and
+// tunnel together. It counts what is there rather than what ensure should
+// have made: a probe deleted by hand (§3.2) is missing until the next ensure,
+// and the settings tab says so.
+//
+// A table that cannot be read contributes nothing; this is a display and a
+// sweep guard, not a decision about state.
+func (s *MonitoringService) countProbeAccounts() int {
+	n := 0
 	inbounds, err := s.inboundService.GetAllInbounds()
 	if err == nil {
 		for _, ib := range inbounds {
@@ -57,7 +74,7 @@ func (s *MonitoringService) hasProbeAccounts() bool {
 			}
 			for _, c := range clients {
 				if IsProbeAccount(c.Email) {
-					return true
+					n++
 				}
 			}
 		}
@@ -66,11 +83,44 @@ func (s *MonitoringService) hasProbeAccounts() bool {
 	if err == nil {
 		for _, c := range tunnelClients {
 			if IsProbeAccount(c.Email) {
-				return true
+				n++
 			}
 		}
 	}
-	return false
+	return n
+}
+
+// MonProbeSetInfo is the probe-set line of the Monitoring settings tab
+// (§7.3): which subId the set shares, when mon-server last ensured it, how
+// long it survives without an ensure, and how many probe accounts are there
+// now.
+type MonProbeSetInfo struct {
+	SubId       string `json:"subId"`
+	LastEnsured int64  `json:"lastEnsured"`
+	TtlHours    int    `json:"ttlHours"`
+	Clients     int    `json:"clients"`
+}
+
+// ProbeSetInfo is GET /panel/api/monitoring/probe. The three state keys it
+// reads (monProbeSubId, monProbeLastEnsured and the TTL) are not part of
+// AllSetting, so the settings page has no other way to them.
+func (s *MonitoringService) ProbeSetInfo() (*MonProbeSetInfo, error) {
+	subId, err := s.settingService.GetMonProbeSubId()
+	if err != nil {
+		return nil, err
+	}
+	lastEnsured, err := s.settingService.GetMonProbeLastEnsured()
+	if err != nil {
+		return nil, err
+	}
+	ttl, err := s.settingService.GetMonProbeTtlHours()
+	if err != nil || ttl <= 0 {
+		ttl = monProbeTtlHoursFallback
+	}
+	return &MonProbeSetInfo{
+		SubId: subId, LastEnsured: lastEnsured, TtlHours: ttl,
+		Clients: s.countProbeAccounts(),
+	}, nil
 }
 
 // PruneRetention drops mon_stats_current and mon_events older than

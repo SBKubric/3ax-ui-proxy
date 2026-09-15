@@ -103,6 +103,7 @@ var monUIRoutes = []string{
 	"/panel/api/monitoring/events",
 	"/panel/api/monitoring/stats?inboundKind=xray&inboundId=1",
 	"/panel/api/monitoring/summary",
+	"/panel/api/monitoring/probe",
 }
 
 // TestMonUIRoutesNeedASession: without a panel session every route answers
@@ -254,5 +255,133 @@ func TestMonUISummaryIsTheStepEightCalculation(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fromHandler, fromService) {
 		t.Errorf("handler summary\n %#v\ndiffers from Summary()\n %#v", fromHandler, fromService)
+	}
+}
+
+// monUISend runs a request with a body-less method other than GET.
+func monUISend(r *gin.Engine, method, path, cookie string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestMonUIProbeInfoReportsTheSet: GET probe is the settings tab's only way
+// to the three state keys that AllSetting does not carry.
+func TestMonUIProbeInfoReportsTheSet(t *testing.T) {
+	r := newMonUIRouter(t)
+	cookie := monUILogin(t, r)
+
+	var info service.MonProbeSetInfo
+	env := monUIDecode(t, monUIGet(r, "/panel/api/monitoring/probe", cookie))
+	if !env.Success {
+		t.Fatalf("probe: %s", env.Msg)
+	}
+	if err := json.Unmarshal(env.Obj, &info); err != nil {
+		t.Fatalf("probe obj: %v (%s)", err, env.Obj)
+	}
+	if info.SubId != "" || info.LastEnsured != 0 || info.Clients != 0 || info.TtlHours != 24 {
+		t.Errorf("probe = %+v, want an empty set and the default TTL", info)
+	}
+
+	setting := service.SettingService{}
+	if err := setting.SetMonProbeSubId("k3j9d8s7f6g5h4j3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setting.SetMonProbeLastEnsured(1757764680000); err != nil {
+		t.Fatal(err)
+	}
+	env = monUIDecode(t, monUIGet(r, "/panel/api/monitoring/probe", cookie))
+	if err := json.Unmarshal(env.Obj, &info); err != nil {
+		t.Fatalf("probe obj: %v (%s)", err, env.Obj)
+	}
+	if info.SubId != "k3j9d8s7f6g5h4j3" || info.LastEnsured != 1757764680000 {
+		t.Errorf("probe = %+v, want the stored subId and ensure stamp", info)
+	}
+}
+
+// TestMonUITokenResetReturnsTheLiveToken: Regenerate hands the tab a new
+// token that is already the panel's, so the old one stops working at once —
+// checkMonAuth reads the setting on every request and holds no copy.
+func TestMonUITokenResetReturnsTheLiveToken(t *testing.T) {
+	r := newMonUIRouter(t)
+	cookie := monUILogin(t, r)
+	setting := service.SettingService{}
+	if err := setting.SetMonToken("old-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	env := monUIDecode(t, monUISend(r, http.MethodPost, "/panel/api/monitoring/token/reset", cookie))
+	if !env.Success {
+		t.Fatalf("token reset: %s", env.Msg)
+	}
+	var obj struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(env.Obj, &obj); err != nil {
+		t.Fatalf("token obj: %v (%s)", err, env.Obj)
+	}
+	if obj.Token == "" || obj.Token == "old-token" {
+		t.Fatalf("token = %q, want a fresh one", obj.Token)
+	}
+	stored, err := setting.GetMonToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != obj.Token {
+		t.Errorf("stored token %q is not the one handed to the page %q", stored, obj.Token)
+	}
+}
+
+// TestMonUIProbeDeleteClearsTheSet: the tab's "Remove probe set" button is
+// DeleteProbeSet, the same one the TTL sweep and the mon-server contract use.
+func TestMonUIProbeDeleteClearsTheSet(t *testing.T) {
+	r := newMonUIRouter(t)
+	cookie := monUILogin(t, r)
+	setting := service.SettingService{}
+	if err := setting.SetMonProbeSubId("k3j9d8s7f6g5h4j3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setting.SetMonProbeLastEnsured(1757764680000); err != nil {
+		t.Fatal(err)
+	}
+
+	env := monUIDecode(t, monUISend(r, http.MethodDelete, "/panel/api/monitoring/probe", cookie))
+	if !env.Success {
+		t.Fatalf("probe delete: %s", env.Msg)
+	}
+	subId, err := setting.GetMonProbeSubId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subId != "" {
+		t.Errorf("subId %q survived the delete", subId)
+	}
+
+	var info service.MonProbeSetInfo
+	env = monUIDecode(t, monUIGet(r, "/panel/api/monitoring/probe", cookie))
+	if err := json.Unmarshal(env.Obj, &info); err != nil {
+		t.Fatalf("probe obj: %v (%s)", err, env.Obj)
+	}
+	if info.SubId != "" || info.LastEnsured != 0 {
+		t.Errorf("probe = %+v after the delete, want an empty set", info)
+	}
+}
+
+// TestMonUIWriteRoutesNeedASession: the two routes that change something are
+// as invisible without a session as the read-only ones.
+func TestMonUIWriteRoutesNeedASession(t *testing.T) {
+	r := newMonUIRouter(t)
+	for _, call := range []struct{ method, path string }{
+		{http.MethodPost, "/panel/api/monitoring/token/reset"},
+		{http.MethodDelete, "/panel/api/monitoring/probe"},
+	} {
+		w := monUISend(r, call.method, call.path, "")
+		if w.Code != http.StatusNotFound || w.Body.Len() != 0 {
+			t.Errorf("%s %s without a session: status %d body %q, want a bare 404", call.method, call.path, w.Code, w.Body.String())
+		}
 	}
 }
