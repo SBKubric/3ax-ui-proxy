@@ -769,6 +769,46 @@ bbr_menu() {
     esac
 }
 
+monitoring_menu() {
+    echo -e "${green}\t1.${plain} Show monitoring status and token"
+    echo -e "${green}\t2.${plain} Regenerate token"
+    echo -e "${green}\t3.${plain} Enable monitoring endpoints"
+    echo -e "${green}\t4.${plain} Disable monitoring endpoints"
+    echo -e "${green}\t0.${plain} Back to Main Menu"
+    echo -e "${yellow}Hint:${plain} put the token into the mon-server config (see the README section \"Inbound monitoring\"). The same status, token and switch are also available in Panel Settings → Monitoring."
+    read -rp "Choose an option: " choice
+    case "$choice" in
+    0)
+        show_menu
+        ;;
+    1)
+        ${xui_folder}/x-ui setting -showMonToken
+        monitoring_menu
+        ;;
+    2)
+        confirm "Regenerate the monitoring token? The old token stops working immediately and the running mon-server must be given the new one" "n"
+        if [[ $? == 0 ]]; then
+            ${xui_folder}/x-ui setting -resetMonToken
+        else
+            echo -e "${yellow}Operation canceled.${plain}"
+        fi
+        monitoring_menu
+        ;;
+    3)
+        ${xui_folder}/x-ui setting -monEnable true
+        monitoring_menu
+        ;;
+    4)
+        ${xui_folder}/x-ui setting -monEnable false
+        monitoring_menu
+        ;;
+    *)
+        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
+        monitoring_menu
+        ;;
+    esac
+}
+
 disable_bbr() {
 
     if [[ $(sysctl -n net.ipv4.tcp_congestion_control) != "bbr" ]] || [[ ! $(sysctl -n net.core.default_qdisc) =~ ^(fq|cake)$ ]]; then
@@ -2447,6 +2487,7 @@ show_usage() {
 |  ${blue}x-ui restart-xray${plain}          - Restart Xray                     │
 │  ${blue}x-ui status${plain}                - Current Status                   │
 │  ${blue}x-ui settings${plain}              - Current Settings                 │
+│  ${blue}x-ui mon-token${plain}             - Show monitoring status & token   │
 │  ${blue}x-ui enable${plain}                - Enable Autostart on OS Startup   │
 │  ${blue}x-ui disable${plain}               - Disable Autostart on OS Startup  │
 │  ${blue}x-ui log${plain}                   - Check logs                       │
@@ -2496,10 +2537,12 @@ show_menu() {
 │  ${green}24.${plain} Enable BBR                                │
 │  ${green}25.${plain} Update Geo Files                          │
 │  ${green}26.${plain} Speedtest by Ookla                        │
+│────────────────────────────────────────────────│
+│  ${green}27.${plain} Monitoring (mon-server token)             │
 ╚────────────────────────────────────────────────╝
 "
     show_status
-    echo && read -rp "Please enter your selection [0-26]: " num
+    echo && read -rp "Please enter your selection [0-27]: " num
 
     case "${num}" in
     0)
@@ -2583,8 +2626,11 @@ show_menu() {
     26)
         run_speedtest
         ;;
+    27)
+        check_install && monitoring_menu
+        ;;
     *)
-        LOGE "Please enter the correct number [0-26]"
+        LOGE "Please enter the correct number [0-27]"
         ;;
     esac
 }
@@ -2608,6 +2654,9 @@ if [[ $# > 0 ]]; then
         ;;
     "settings")
         check_install 0 && check_config 0
+        ;;
+    "mon-token")
+        check_install 0 && ${xui_folder}/x-ui setting -showMonToken
         ;;
     "enable")
         check_install 0 && enable 0

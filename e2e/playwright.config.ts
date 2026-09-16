@@ -18,23 +18,40 @@ export default defineConfig({
     baseURL: process.env.E2E_BASE_URL || 'http://127.0.0.1:2053',
     trace: 'on-first-retry',
   },
-  // Two projects, not one: monitoring-settings.spec.ts talks to the mon-server
-  // contract (`GET /mon/v1/state` with a real token), and every authorised
-  // contract request stamps the panel's monLastContact. The other specs assert
-  // the "no monitoring data yet" state of a panel no mon-server has reached,
-  // so the contract-touching spec must run after them, never beside them.
-  // Project dependencies are Playwright's ordering guarantee across files;
-  // fullyParallel still applies inside each project.
+  // Three projects, not one: monitoring-settings.spec.ts and
+  // monitoring-cli.spec.ts talk to the mon-server contract (`GET /mon/v1/state`
+  // with a real token), and every authorised contract request stamps the
+  // panel's monLastContact. The other specs assert the "no monitoring data yet"
+  // state of a panel no mon-server has reached, so the contract-touching specs
+  // must run after them, never beside them. Project dependencies are
+  // Playwright's ordering guarantee across files; fullyParallel still applies
+  // inside each project.
+  //
+  // The two contract specs are also split from each other, and in this order:
+  // both drive the one panel's monEnable and monToken (one through the settings
+  // form, one through `x-ui setting`), so running them together would have each
+  // pull the token out from under the other; and monitoring-settings.spec.ts
+  // asserts the never-issued token of a fresh database, which the CLI spec
+  // issues. Within a project, file order is not a guarantee Playwright gives —
+  // a dependency is.
   projects: [
     {
       name: 'panel',
-      testIgnore: /monitoring-settings\.spec\.ts/,
+      testIgnore: /monitoring-(settings|cli)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },
     {
       name: 'mon-server-contact',
       testMatch: /monitoring-settings\.spec\.ts/,
       dependencies: ['panel'],
+      workers: 1,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'mon-server-contact-cli',
+      testMatch: /monitoring-cli\.spec\.ts/,
+      dependencies: ['mon-server-contact'],
+      workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },
   ],
