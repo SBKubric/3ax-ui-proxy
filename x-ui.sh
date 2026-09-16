@@ -769,6 +769,10 @@ bbr_menu() {
     esac
 }
 
+show_mon_token() {
+    ${xui_folder}/x-ui setting -showMonToken
+}
+
 monitoring_menu() {
     echo -e "${green}\t1.${plain} Show monitoring status and token"
     echo -e "${green}\t2.${plain} Regenerate token"
@@ -782,7 +786,7 @@ monitoring_menu() {
         show_menu
         ;;
     1)
-        ${xui_folder}/x-ui setting -showMonToken
+        show_mon_token
         monitoring_menu
         ;;
     2)
@@ -2656,7 +2660,7 @@ if [[ $# > 0 ]]; then
         check_install 0 && check_config 0
         ;;
     "mon-token")
-        check_install 0 && ${xui_folder}/x-ui setting -showMonToken
+        check_install 0 && show_mon_token
         ;;
     "enable")
         check_install 0 && enable 0
