@@ -276,6 +276,8 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	s.index = controller.NewIndexController(g)
 	s.panel = controller.NewXUIController(g)
 	s.api = controller.NewAPIController(g, s.customGeoService)
+	// mon-server contract (docs/spec/monitoring-contract.md): bearer token, no session.
+	controller.NewMonitoringController(g)
 
 	// Initialize WebSocket hub
 	s.wsHub = websocket.NewHub()
@@ -380,6 +382,10 @@ func (s *Server) startTask() {
 
 	// check client ips from log file every day
 	s.addJob("@daily", job.NewClearLogsJob())
+
+	// Monitoring (docs/spec/monitoring-panel.md §5): STALE watch, probe-set TTL, retention.
+	s.addJob("@every 1m", job.NewMonitoringJob(job.MonitoringEveryMinute))
+	s.addJob("@hourly", job.NewMonitoringJob(job.MonitoringHourly))
 
 	// Inbound traffic reset jobs
 	// Run every hour

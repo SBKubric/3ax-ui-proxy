@@ -563,9 +563,17 @@ func (s *TunnelService[K]) GetClientByUUID(clientUUID string) (*model.TunnelClie
 
 // AddClient creates a new client with auto-generated keys and allocated IPs.
 func (s *TunnelService[K]) AddClient(client *model.TunnelClient) error {
+	return s.addClient(client, false)
+}
+
+// addClient is AddClient with the probe guard optional: only
+// MonitoringService.EnsureProbeSet passes allowProbe.
+func (s *TunnelService[K]) addClient(client *model.TunnelClient, allowProbe bool) error {
 	// Probe accounts are created by MonitoringService.EnsureProbeSet only.
-	if err := rejectProbeEmails(client.Email); err != nil {
-		return err
+	if !allowProbe {
+		if err := rejectProbeEmails(client.Email); err != nil {
+			return err
+		}
 	}
 	server, err := s.GetServer()
 	if err != nil {

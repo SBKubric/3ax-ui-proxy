@@ -20,6 +20,6 @@ Done means: the tests exist, they pass locally, and `go test -race -count=1 ./..
 
 - Framework: `@playwright/test` (Node + TypeScript), in the `e2e/` directory with its own `package.json`. The Go build stays Node-free; Node is a test-time dependency only.
 - The app under test runs from **this repository's Docker image** via `e2e/docker-compose.yml`: fresh database per run, credentials from compose environment. Tests never touch a developer's or production instance.
-- Entry point: `make e2e` — builds the image, starts compose, runs `npx playwright test`, tears down. The first e2e spec in a repo lands together with this harness.
+- Entry point: `make e2e` — builds the image, starts compose (`--wait` on a login-page healthcheck), installs the `e2e/` Node toolchain (`npm ci`, `npx playwright install --with-deps chromium`, falling back to a plain `npx playwright install chromium` where `--with-deps`'s apt-get needs root the host doesn't have and the system libraries are already present), runs `npx playwright test`, and always tears compose down (`-v`, dropping the run's database) even when the tests fail. The first e2e spec in a repo lands together with this harness.
 - Every new user-facing feature adds at least one spec that walks the happy path through the UI; API-only features walk it through Playwright's request context. Select elements by role or `data-testid`, never by CSS structure.
 - When to run: locally before pushing a feature, and in the release workflow before a tag is published. Pull-request CI runs unit tests only.

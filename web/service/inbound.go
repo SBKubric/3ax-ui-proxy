@@ -1216,13 +1216,21 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 }
 
 func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
+	return s.addInboundClient(data, false)
+}
+
+// addInboundClient is AddInboundClient with the probe guard optional: only
+// MonitoringService.EnsureProbeSet passes allowProbe.
+func (s *InboundService) addInboundClient(data *model.Inbound, allowProbe bool) (bool, error) {
 	clients, err := s.GetClients(data)
 	if err != nil {
 		return false, err
 	}
 	// Probe accounts are created by MonitoringService.EnsureProbeSet only.
-	if err := rejectProbeEmails(clientEmails(clients)...); err != nil {
-		return false, err
+	if !allowProbe {
+		if err := rejectProbeEmails(clientEmails(clients)...); err != nil {
+			return false, err
+		}
 	}
 
 	var settings map[string]any

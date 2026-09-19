@@ -5,9 +5,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	_ "unsafe"
 
@@ -260,6 +262,80 @@ func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime stri
 	}
 }
 
+// showMonSetting prints the monitoring state and bearer token the mon-server
+// must present (docs/spec/monitoring-panel.md §7.3) — the CLI duplicate of the
+// Monitoring settings tab, for an operator who only has a shell. The database
+// must already be initialised; the caller does that, as it does for the tgbot
+// flags, so tests can point these helpers at a temporary database.
+func showMonSetting(w io.Writer) error {
+	settingService := service.SettingService{}
+	enable, err := settingService.GetMonEnable()
+	if err != nil {
+		return fmt.Errorf("failed to read monEnable: %w", err)
+	}
+	token, err := settingService.GetMonToken()
+	if err != nil {
+		return fmt.Errorf("failed to read monToken: %w", err)
+	}
+	fmt.Fprintf(w, "monEnable: %v\n", enable)
+	if token == "" {
+		// An empty token keeps /mon/v1 closed however monEnable is set, so say
+		// so rather than printing a blank value.
+		fmt.Fprintln(w, "monToken: (not issued)")
+	} else {
+		fmt.Fprintf(w, "monToken: %s\n", token)
+	}
+	return nil
+}
+
+// resetMonToken issues a fresh monitoring token and prints the resulting state.
+// Whatever the mon-server is using stops working the moment this returns.
+func resetMonToken(w io.Writer) error {
+	settingService := service.SettingService{}
+	if _, err := settingService.ResetMonToken(); err != nil {
+		return fmt.Errorf("failed to reset monToken: %w", err)
+	}
+	return showMonSetting(w)
+}
+
+// setMonEnable opens or closes the /mon/v1 endpoints. raw is the flag value as
+// typed; anything strconv.ParseBool refuses leaves the setting untouched.
+func setMonEnable(w io.Writer, raw string) error {
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fmt.Errorf("invalid -monEnable value %q: expected true or false", raw)
+	}
+	settingService := service.SettingService{}
+	if err := settingService.SetMonEnable(value); err != nil {
+		return fmt.Errorf("failed to set monEnable: %w", err)
+	}
+	fmt.Fprintf(w, "monEnable: %v\n", value)
+	return nil
+}
+
+// runMonSetting applies the monitoring flags of the `setting` subcommand in the
+// order enable → reset → show, printing the final state exactly once: when a
+// reset or a show follows, the enable step's own line is dropped rather than
+// printed above the same line again.
+func runMonSetting(w io.Writer, monEnableRaw string, reset bool, show bool) error {
+	if monEnableRaw != "" {
+		out := w
+		if reset || show {
+			out = io.Discard
+		}
+		if err := setMonEnable(out, monEnableRaw); err != nil {
+			return err
+		}
+	}
+	if reset {
+		return resetMonToken(w)
+	}
+	if show {
+		return showMonSetting(w)
+	}
+	return nil
+}
+
 // updateSetting updates various panel settings including port, credentials, base path, listen IP, and two-factor authentication.
 func updateSetting(port int, username string, password string, webBasePath string, listenIP string, resetTwoFactor bool) error {
 	err := database.InitDB(config.GetDBPath())
@@ -465,6 +541,9 @@ func main() {
 	var show bool
 	var getCert bool
 	var resetTwoFactor bool
+	var showMonToken bool
+	var resetMonTokenFlag bool
+	var monEnableRaw string
 	settingCmd.BoolVar(&reset, "reset", false, "Reset all settings")
 	settingCmd.BoolVar(&show, "show", false, "Display current settings")
 	settingCmd.IntVar(&port, "port", 0, "Set panel port number")
@@ -481,6 +560,9 @@ func main() {
 	settingCmd.StringVar(&tgbotRuntime, "tgbotRuntime", "", "Set cron time for Telegram bot notifications")
 	settingCmd.StringVar(&tgbotchatid, "tgbotchatid", "", "Set chat ID for Telegram bot notifications")
 	settingCmd.BoolVar(&enabletgbot, "enabletgbot", false, "Enable notifications via Telegram bot")
+	settingCmd.BoolVar(&showMonToken, "showMonToken", false, "Display the monitoring state and the mon-server bearer token")
+	settingCmd.BoolVar(&resetMonTokenFlag, "resetMonToken", false, "Issue a new mon-server bearer token (the old one stops working)")
+	settingCmd.StringVar(&monEnableRaw, "monEnable", "", "Open or close the /mon/v1 endpoints (true|false)")
 
 	oldUsage := flag.Usage
 	flag.Usage = func() {
@@ -542,6 +624,14 @@ func main() {
 		}
 		if enabletgbot {
 			updateTgbotEnableSts(enabletgbot)
+		}
+		// The database is already initialised above, by resetSetting or
+		// updateSetting, as it is for the tgbot flags.
+		if err = runMonSetting(os.Stdout, monEnableRaw, resetMonTokenFlag, showMonToken); err != nil {
+			// A refused -monEnable value must not look like success to x-ui.sh
+			// or to any other script driving the CLI.
+			fmt.Println(err)
+			os.Exit(1)
 		}
 	case "cert":
 		err := settingCmd.Parse(os.Args[2:])

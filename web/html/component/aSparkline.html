@@ -1,0 +1,238 @@
+{{define "component/aSparkline"}}
+<script>
+  // Tiny Sparkline component using an inline SVG polyline.
+  //
+  // It was written for the Overview page's CPU history and moved here
+  // unchanged apart from one addition, so the Monitoring page can draw uptime
+  // with it instead of bringing a charting library in (monitoring-panel.md
+  // §7.1).
+  //
+  // The addition is holes. A monitoring bucket that never arrived is neither
+  // 0 % nor the value beside it: nothing was measured. Such a point comes in
+  // as null, and the line breaks there instead of being drawn through — a run
+  // of consecutive readings is one polyline with one area under it, and the
+  // hover tooltip skips a hole. A series with no null in it draws exactly one
+  // segment, which is the Overview page's case and the old behaviour.
+  Vue.component('sparkline', {
+    props: {
+      data: { type: Array, required: true },
+      // viewBox width for drawing space; SVG width will be 100% of container
+      vbWidth: { type: Number, default: 320 },
+      height: { type: Number, default: 80 },
+      stroke: { type: String, default: '#008771' },
+      strokeWidth: { type: Number, default: 2 },
+      maxPoints: { type: Number, default: 120 },
+      showGrid: { type: Boolean, default: true },
+      gridColor: { type: String, default: 'rgba(0,0,0,0.1)' },
+      fillOpacity: { type: Number, default: 0.15 },
+      showMarker: { type: Boolean, default: true },
+      markerRadius: { type: Number, default: 2.8 },
+      // New opts for axes/labels/tooltip
+      labels: { type: Array, default: () => [] }, // same length as data for x labels (e.g., timestamps)
+      showAxes: { type: Boolean, default: false },
+      yTickStep: { type: Number, default: 25 }, // percent ticks
+      tickCountX: { type: Number, default: 4 },
+      paddingLeft: { type: Number, default: 32 },
+      paddingRight: { type: Number, default: 6 },
+      paddingTop: { type: Number, default: 6 },
+      paddingBottom: { type: Number, default: 20 },
+      showTooltip: { type: Boolean, default: false },
+      // Text drawn in the middle when every point is a hole.
+      emptyText: { type: String, default: '' },
+    },
+    data() {
+      return {
+        hoverIdx: -1,
+      }
+    },
+    computed: {
+      viewBoxAttr() {
+        return '0 0 ' + this.vbWidth + ' ' + this.height
+      },
+      drawWidth() {
+        return Math.max(1, this.vbWidth - this.paddingLeft - this.paddingRight)
+      },
+      drawHeight() {
+        return Math.max(1, this.height - this.paddingTop - this.paddingBottom)
+      },
+      nPoints() {
+        return Math.min(this.data.length, this.maxPoints)
+      },
+      dataSlice() {
+        const n = this.nPoints
+        if (n === 0) return []
+        return this.data.slice(this.data.length - n)
+      },
+      labelsSlice() {
+        const n = this.nPoints
+        if (!this.labels || this.labels.length === 0 || n === 0) return []
+        const start = Math.max(0, this.labels.length - n)
+        return this.labels.slice(start)
+      },
+      pointsArr() {
+        const n = this.nPoints
+        if (n === 0) return []
+        const slice = this.dataSlice
+        const max = 100
+        const w = this.drawWidth
+        const h = this.drawHeight
+        const dx = n > 1 ? w / (n - 1) : 0
+        return slice.map((v, i) => {
+          // A hole keeps its slot — the x axis must stay on the clock — but
+          // has no y, and nothing is drawn through it.
+          if (v === null || v === undefined || !Number.isFinite(Number(v))) return null
+          const x = Math.round(this.paddingLeft + i * dx)
+          const y = Math.round(this.paddingTop + (h - (Math.max(0, Math.min(100, v)) / max) * h))
+          return [x, y]
+        })
+      },
+      // Runs of consecutive readings. Each is drawn as its own polyline with
+      // its own area, so a hole shows as a gap rather than a line across it.
+      segments() {
+        const out = []
+        let run = []
+        const flush = () => {
+          if (run.length > 0) out.push(run)
+          run = []
+        }
+        this.pointsArr.forEach(p => {
+          if (p === null) flush()
+          else run.push(p)
+        })
+        flush()
+        const baseline = this.paddingTop + this.drawHeight
+        return out.map(seg => {
+          const line = seg.map(p => p[0] + ',' + p[1]).join(' ')
+          // A run of one reading has no line to draw; its dot still shows.
+          const area = seg.length > 1
+            ? 'M ' + seg[0][0] + ',' + baseline + ' L ' + line.replace(/ /g, ' L ') +
+              ' L ' + seg[seg.length - 1][0] + ',' + baseline + ' Z'
+            : ''
+          return { points: line, area: area, dot: seg.length === 1 ? seg[0] : null }
+        })
+      },
+      points() {
+        return this.segments.map(s => s.points).join(' ')
+      },
+      areaPath() {
+        const seg = this.segments[0]
+        return seg ? seg.area : ''
+      },
+      gridLines() {
+        if (!this.showGrid) return []
+        const h = this.drawHeight
+        const w = this.drawWidth
+        // draw at 25%, 50%, 75%
+        return [0, 0.25, 0.5, 0.75, 1]
+          .map(r => Math.round(this.paddingTop + h * r))
+          .map(y => ({ x1: this.paddingLeft, y1: y, x2: this.paddingLeft + w, y2: y }))
+      },
+      lastPoint() {
+        for (let i = this.pointsArr.length - 1; i >= 0; i--) {
+          if (this.pointsArr[i] !== null) return this.pointsArr[i]
+        }
+        return null
+      },
+      hasAnyPoint() {
+        return this.lastPoint !== null
+      },
+      yTicks() {
+        if (!this.showAxes) return []
+        const step = Math.max(1, this.yTickStep)
+        const ticks = []
+        for (let p = 0; p <= 100; p += step) {
+          const y = Math.round(this.paddingTop + (this.drawHeight - (p / 100) * this.drawHeight))
+          ticks.push({ y, label: p + '%' })
+        }
+        return ticks
+      },
+      xTicks() {
+        if (!this.showAxes) return []
+        const labels = this.labelsSlice
+        const n = this.nPoints
+        const m = Math.max(2, this.tickCountX)
+        const ticks = []
+        if (n === 0) return ticks
+        const w = this.drawWidth
+        const dx = n > 1 ? w / (n - 1) : 0
+        const positions = []
+        for (let i = 0; i < m; i++) {
+          const idx = Math.round((i * (n - 1)) / (m - 1))
+          positions.push(idx)
+        }
+        positions.forEach(idx => {
+          const label = labels[idx] != null ? String(labels[idx]) : String(idx)
+          const x = Math.round(this.paddingLeft + idx * dx)
+          ticks.push({ x, label })
+        })
+        return ticks
+      },
+    },
+    methods: {
+      onMouseMove(evt) {
+        if (!this.showTooltip || this.pointsArr.length === 0) return
+        const rect = evt.currentTarget.getBoundingClientRect()
+        const px = evt.clientX - rect.left
+        // translate to viewBox space
+        const x = (px / rect.width) * this.vbWidth
+        const n = this.nPoints
+        const dx = n > 1 ? this.drawWidth / (n - 1) : 0
+        const idx = Math.max(0, Math.min(n - 1, Math.round((x - this.paddingLeft) / (dx || 1))))
+        // Hovering a hole shows nothing: there is no reading to report.
+        this.hoverIdx = this.pointsArr[idx] === null ? -1 : idx
+      },
+      onMouseLeave() {
+        this.hoverIdx = -1
+      },
+      fmtHoverText() {
+        const labels = this.labelsSlice
+        const idx = this.hoverIdx
+        if (idx < 0 || idx >= this.dataSlice.length) return ''
+        const raw = Math.max(0, Math.min(100, Number(this.dataSlice[idx] || 0)))
+        const val = Number.isFinite(raw) ? raw.toFixed(2) : raw
+        const lab = labels[idx] != null ? labels[idx] : ''
+        return val + '%' + (lab ? ' • ' + lab : '')
+      },
+    },
+    template: `
+      <svg width="100%" :height="height" :viewBox="viewBoxAttr" preserveAspectRatio="none" class="idx-cpu-history-svg"
+           @mousemove="onMouseMove" @mouseleave="onMouseLeave">
+        <defs>
+          <linearGradient id="spkGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" :stop-color="stroke" :stop-opacity="fillOpacity"/>
+            <stop offset="100%" :stop-color="stroke" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <g v-if="showGrid">
+          <line v-for="(g,i) in gridLines" :key="i" :x1="g.x1" :y1="g.y1" :x2="g.x2" :y2="g.y2" :stroke="gridColor" stroke-width="1" class="cpu-grid-line" />
+        </g>
+        <g v-if="showAxes">
+          <!-- Y ticks/labels -->
+          <g v-for="(t,i) in yTicks" :key="'y'+i">
+            <text class="cpu-grid-y-text" :x="Math.max(0, paddingLeft - 4)" :y="t.y + 4" text-anchor="end" font-size="10" fill="rgba(0,0,0,0.3)" v-text="t.label"></text>
+          </g>
+          <!-- X ticks/labels -->
+          <g v-for="(t,i) in xTicks" :key="'x'+i">
+            <text class="cpu-grid-x-text" :x="t.x" :y="paddingTop + drawHeight + 22" text-anchor="middle" font-size="10" fill="rgba(0,0,0,0.3)" v-text="t.label"></text>
+          </g>
+        </g>
+        <!-- One line and one area per run of consecutive readings; a hole is the gap between two runs. -->
+        <g v-for="(s,i) in segments" :key="'seg'+i">
+          <path v-if="s.area" :d="s.area" fill="url(#spkGrad)" stroke="none" />
+          <polyline v-if="!s.dot" :points="s.points" fill="none" :stroke="stroke" :stroke-width="strokeWidth" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle v-if="s.dot" :cx="s.dot[0]" :cy="s.dot[1]" :r="markerRadius" :fill="stroke" />
+        </g>
+        <circle v-if="showMarker && lastPoint" :cx="lastPoint[0]" :cy="lastPoint[1]" :r="markerRadius" :fill="stroke" />
+        <text v-if="!hasAnyPoint && emptyText" :x="paddingLeft + drawWidth / 2" :y="paddingTop + drawHeight / 2"
+              text-anchor="middle" font-size="11" fill="rgba(128,128,128,0.7)" v-text="emptyText"></text>
+        <!-- Hover marker/tooltip -->
+        <g v-if="showTooltip && hoverIdx >= 0 && pointsArr[hoverIdx]">
+          <line class="cpu-grid-h-line" :x1="pointsArr[hoverIdx][0]" :x2="pointsArr[hoverIdx][0]" :y1="paddingTop" :y2="paddingTop + drawHeight" stroke="rgba(0,0,0,0.2)" stroke-width="1" />
+          <circle :cx="pointsArr[hoverIdx][0]" :cy="pointsArr[hoverIdx][1]" r="3.5" :fill="stroke" />
+          <text class="cpu-grid-text" :x="pointsArr[hoverIdx][0]" :y="paddingTop + 12" text-anchor="middle" font-size="11" fill="rgba(0,0,0,0.8)" v-text="fmtHoverText()"></text>
+        </g>
+      </svg>
+    `,
+  })
+</script>
+{{end}}

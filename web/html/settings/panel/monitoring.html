@@ -1,0 +1,76 @@
+{{define "settings/panel/monitoring"}}
+<!--
+  Monitoring settings (docs/spec/monitoring-panel.md §7.3).
+
+  Five of the seven monitoring preferences are AllSetting fields, so they ride
+  the page's common Save like every other setting here. monProbeTtlHours and
+  monRollupStepMinutes are deliberately left out of the tab: §7.3 does not list
+  them, and the CLI still reaches them.
+
+  The token field and the probe-set line are components (component/aMonitoring)
+  because what they show is not in AllSetting — a fresh monToken, monProbeSubId
+  and monProbeLastEnsured come from /panel/api/monitoring instead. Regenerate
+  hands the new token back so it lands in allSetting.monToken, otherwise the
+  common Save would post the old one over it.
+-->
+<a-collapse default-active-key="1">
+    <a-collapse-panel key="1" header='{{ i18n "pages.xray.generalConfigs"}}'>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monEnable" }}</template>
+            <template #description>{{ i18n "pages.settings.monEnableDesc" }}</template>
+            <template #control>
+                <a-switch data-testid="mon-enable" v-model="allSetting.monEnable"></a-switch>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monToken" }}</template>
+            <template #description>{{ i18n "pages.settings.monTokenDesc" }}</template>
+            <template #control>
+                <mon-token-field :token="allSetting.monToken" @update="allSetting.monToken = $event"
+                    copy-text='{{ i18n "pages.settings.monTokenCopy" }}'
+                    copied-text='{{ i18n "pages.settings.monTokenCopied" }}'
+                    regenerate-text='{{ i18n "pages.settings.monTokenRegenerate" }}'
+                    confirm-text='{{ i18n "pages.settings.monTokenRegenerateConfirm" }}'
+                    sure-text='{{ i18n "sure" }}' cancel-text='{{ i18n "cancel" }}'></mon-token-field>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monStaleMinutes" }}</template>
+            <template #description>{{ i18n "pages.settings.monStaleMinutesDesc" }}</template>
+            <template #control>
+                <a-input-number :min="1" v-model="allSetting.monStaleMinutes"
+                    :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monRetentionDays" }}</template>
+            <template #description>{{ i18n "pages.settings.monRetentionDaysDesc" }}</template>
+            <template #control>
+                <a-input-number :min="1" v-model="allSetting.monRetentionDays"
+                    :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monRollupRetentionDays" }}</template>
+            <template #description>{{ i18n "pages.settings.monRollupRetentionDaysDesc" }}</template>
+            <template #control>
+                <a-input-number :min="1" v-model="allSetting.monRollupRetentionDays"
+                    :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monProbeSet" }}</template>
+            <template #description>{{ i18n "pages.settings.monProbeSetDesc" }}</template>
+            <template #control>
+                <mon-probe-set ensured-text='{{ i18n "pages.settings.monProbeSetEnsured" }}'
+                    clients-text='{{ i18n "pages.settings.monProbeSetClients" }}'
+                    empty-text='{{ i18n "pages.settings.monProbeSetEmpty" }}'
+                    remove-text='{{ i18n "pages.settings.monProbeSetRemove" }}'
+                    removed-text='{{ i18n "pages.settings.monProbeSetRemoved" }}'
+                    confirm-text='{{ i18n "pages.settings.monProbeSetRemoveConfirm" }}'
+                    sure-text='{{ i18n "sure" }}' cancel-text='{{ i18n "cancel" }}'></mon-probe-set>
+            </template>
+        </a-setting-list-item>
+    </a-collapse-panel>
+</a-collapse>
+{{end}}

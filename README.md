@@ -293,6 +293,26 @@ Scripted installs can skip the page: put the manifest on the box first and pass 
 
 > **Note:** the real server sees all proxied connections coming from the proxy's IP, so per-client IP-limit and the IP log won't reflect real client IPs for proxied traffic.
 
+### 12. Inbound health monitoring (mon-server)
+
+**3AX-UI** can report each inbound's health to an external **mon-server** — a separate project, [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring) — whose own mon-clients probe the inbounds from outside through generated **probe accounts**. Results come back over a small bearer-token API under `/mon/v1/*`; the panel is passive and stores nothing until a mon-server talks to it.
+
+This gives the panel a **Monitoring** page (per-inbound state, event feed, latency/availability sparklines), a **Health** column and a `down` filter in the Inbounds table, Telegram alerts on DOWN/UP plus a block in the daily digest, and a **STALE** flag once the mon-server goes silent past the configured threshold (15 minutes by default). Probe accounts carry a `probe-` prefix, show a `probe` badge, and are excluded from online counts, Telegram stats and LDAP sync.
+
+Get the token in **Panel Settings → Monitoring** (enable switch, token with Copy / Regenerate, stale threshold, retention, probe-set line with Remove), or from the CLI:
+
+```
+x-ui setting -showMonToken
+x-ui setting -resetMonToken
+x-ui setting -monEnable true
+```
+
+— also menu item **27** in `x-ui`, or the `x-ui mon-token` shortcut. Regenerating invalidates the old token at once, so update the mon-server config right away.
+
+See the repo above, the [monitoring panel spec](https://github.com/SBKubric/3ax-ui-proxy/blob/29-monitoring-spec/docs/spec/monitoring-panel.md) and the [wire contract](https://github.com/SBKubric/3ax-ui-proxy/blob/29-monitoring-spec/docs/spec/monitoring-contract.md).
+
+> **Note:** monitoring is off by default — until enabled with a token issued, `/mon/v1` answers a bare 404.
+
 ---
 
 ## Server requirements
