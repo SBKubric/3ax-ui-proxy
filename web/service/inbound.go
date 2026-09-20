@@ -380,6 +380,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		s.xrayApi.Close()
 	}
 
+	chainPortsChanged(nil) // the chain relays this port list (proxy-chain.md §3.4)
 	return inbound, needRestart, err
 }
 
@@ -673,6 +674,7 @@ func (s *InboundService) addMtprotoInbound(inbound *model.Inbound) (*model.Inbou
 	}
 	// The reconcile job (every 10s) starts the proxy; AddClient already reconciled
 	// it immediately. A restart is only needed to add the egress SOCKS bridge.
+	chainPortsChanged(nil) // the chain relays this port list (proxy-chain.md §3.4)
 	return inbound, mtprotoRoutesThroughXray(inbound), nil
 }
 
@@ -775,6 +777,7 @@ func (s *InboundService) updateMtprotoInbound(inbound *model.Inbound) (*model.In
 		svc.RehealInbound(inbound.Id, newDomain)
 	}
 	svc.Reconcile(inbound.Id)
+	chainPortsChanged(nil) // the chain relays this port list (proxy-chain.md §3.4)
 	// A Xray restart is needed only when the egress SOCKS bridge must be added,
 	// moved, or dropped — i.e. the inbound is (or was) routed.
 	return inbound, mtprotoRoutesThroughXray(inbound) || wasRouted, nil
@@ -871,7 +874,9 @@ func (s *InboundService) DelInbound(id int) (bool, error) {
 		}
 	}
 
-	return needRestart, db.Delete(model.Inbound{}, id).Error
+	err = db.Delete(model.Inbound{}, id).Error
+	chainPortsChanged(nil) // the chain relays this port list (proxy-chain.md §3.4)
+	return needRestart, err
 }
 
 func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
@@ -1091,6 +1096,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	}
 	s.xrayApi.Close()
 
+	chainPortsChanged(tx) // the chain relays this port list (proxy-chain.md §3.4)
 	return inbound, needRestart, tx.Save(oldInbound).Error
 }
 

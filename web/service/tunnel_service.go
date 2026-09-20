@@ -242,6 +242,7 @@ func (s *TunnelService[K]) SaveServer(server *model.TunnelServer) error {
 
 	// Sync listen port to the tunnel inbound record so the inbounds page shows the real port
 	s.syncInboundPort(db, server.ListenPort)
+	chainPortsChanged(nil) // the chain relays this port list (proxy-chain.md §3.4)
 
 	if xrayDirty {
 		(&XrayService{}).SetToNeedRestart()
