@@ -89,37 +89,45 @@ func formatMilli(milli int64) string {
 
 // Rejoin points the box at a next hop and joins it there and then, with a
 // fresh token from the registry — how a runbook repairs a chain whose inner
-// hop died (§4.6, §5.8). The old hop secret is dropped before the attempt:
-// after a reissued token it is dead anyway.
+// hop died (§4.6, §5.8).
+//
+// The new next hop and the empty hop secret live in a copy of the config
+// until the chain has answered. A rejoin is typed by hand under pressure, and
+// a typo in --next-hop, a network blip or a stale token would otherwise
+// strand a box that is still relaying perfectly well in bootstrap mode: it
+// would have lost the secret it was using and gained an address that does not
+// answer. Nothing is written until there is something to write.
 func Rejoin(ctx context.Context, cfg *Config, host string, subPort int, scheme, token string) (*JoinResult, error) {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return nil, fmt.Errorf("chain rejoin: --next-hop is required")
 	}
-	if strings.TrimSpace(token) == "" {
+	token = strings.TrimSpace(token)
+	if token == "" {
 		return nil, fmt.Errorf("chain rejoin: --token is required (reissue it in the panel first)")
 	}
-	cfg.NextHop.Host = host
+
+	candidate := *cfg
+	candidate.NextHop.Host = host
 	if subPort > 0 {
-		cfg.NextHop.SubPort = subPort
+		candidate.NextHop.SubPort = subPort
 	}
 	if scheme == "http" || scheme == "https" {
-		cfg.NextHop.SubScheme = scheme
+		candidate.NextHop.SubScheme = scheme
 	}
-	cfg.HopSecret = ""
+	candidate.HopSecret = ""
 
-	state := NewState()
-	store := NewDocumentStore(cfg.DocumentPath())
-	result, err := Join(ctx, cfg, strings.TrimSpace(token))
+	result, err := Join(ctx, &candidate, token)
 	if err != nil {
-		// The next hop is worth keeping even when the join failed: the
-		// operator fixes the token, not the address, in nearly every case.
-		if saveErr := cfg.Save(); saveErr != nil {
-			return nil, fmt.Errorf("%w (and the new next hop could not be saved: %v)", err, saveErr)
-		}
+		// Untouched: proxy.json still holds the secret and the next hop the
+		// box is running with, so the operator can fix the argument and try
+		// again — or simply leave the box alone.
 		return nil, err
 	}
-	if err := Accept(cfg, state, store, result); err != nil {
+
+	cfg.NextHop = candidate.NextHop
+	cfg.HopSecret = ""
+	if err := Accept(cfg, NewState(), NewDocumentStore(cfg.DocumentPath()), result); err != nil {
 		return nil, err
 	}
 	return result, nil

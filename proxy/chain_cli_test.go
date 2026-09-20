@@ -65,6 +65,61 @@ func TestRejoinPointsTheBoxAtANewNextHop(t *testing.T) {
 	}
 }
 
+// TestRejoinLeavesTheBoxAloneWhenTheChainRefuses: a rejoin is typed by hand
+// while something is already broken. A stale token, a typo in --next-hop or a
+// network blip must cost nothing — the box keeps the secret and the next hop
+// it is relaying with, instead of landing in bootstrap mode with an address
+// that does not answer.
+func TestRejoinLeavesTheBoxAloneWhenTheChainRefuses(t *testing.T) {
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer refusing.Close()
+	host, port := hostPort(t, refusing.URL)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "proxy.json")
+	original := `{"version":2,"nextHop":{"host":"the-working-inner","subPort":2096,"subScheme":"https"},"hopSecret":"the-running-secret"}`
+	if err := os.WriteFile(cfgPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.StateDir = filepath.Join(dir, "chain")
+
+	if _, err := Rejoin(context.Background(), cfg, host, port, "http", "0123456789012345678901234567890a"); err == nil {
+		t.Fatal("a refused rejoin reported success")
+	}
+
+	onDisk, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != original {
+		t.Errorf("proxy.json was rewritten by a failed rejoin:\n%s", onDisk)
+	}
+	saved, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.HopSecret != "the-running-secret" || saved.NextHop.Host != "the-working-inner" {
+		t.Errorf("the running box lost its place in the chain: %+v", saved.NextHop)
+	}
+	if saved.Bootstrap() {
+		t.Error("a failed rejoin pushed a joined box into bootstrap mode")
+	}
+	if _, err := os.Stat(cfg.StateDir); !os.IsNotExist(err) {
+		t.Errorf("a failed rejoin touched the state dir (%v)", err)
+	}
+	// The in-memory config the caller holds is equally untouched, so a
+	// caller that goes on running is still the hop it was.
+	if cfg.HopSecret != "the-running-secret" || cfg.NextHop.Host != "the-working-inner" {
+		t.Errorf("the in-memory config was mutated: %+v", cfg.NextHop)
+	}
+}
+
 // TestRejoinNeedsATokenAndANextHop: rejoin exists precisely because the old
 // secret is dead, so guessing either argument would only produce a confusing
 // 404 from deep inside the chain (§5.8 — there is no --yes either).
