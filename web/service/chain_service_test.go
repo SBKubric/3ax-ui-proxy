@@ -439,8 +439,8 @@ func TestChainInvariants(t *testing.T) {
 // a spurious one restarts relays for nothing.
 func TestChainRevisionBumpMatrix(t *testing.T) {
 	tests := []struct {
-		name string
-		do   func(t *testing.T, s *ChainService)
+		name  string
+		do    func(t *testing.T, s *ChainService)
 		bumps int
 	}{
 		{"add pending hop", func(t *testing.T, s *ChainService) {
