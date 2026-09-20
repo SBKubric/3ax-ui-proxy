@@ -71,6 +71,9 @@ func (a *APIController) initRouter(g *gin.RouterGroup, customGeo *service.Custom
 	// Monitoring page API (docs/spec/monitoring-panel.md §7.4)
 	NewMonitoringUIController(api.Group("/monitoring"))
 
+	// Chain registry API (docs/spec/proxy-chain.md §2.4)
+	NewChainController(api.Group("/chain"))
+
 	// Custom Geo API
 	NewCustomGeoController(api.Group("/custom-geo"), customGeo)
 
