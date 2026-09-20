@@ -250,48 +250,88 @@ Protocol stacks (AmneziaWG, native WireGuard, MTProto, xray) install normally in
 - **Configurable QR code size:** 300 / 450 (default) / 600 px.
 - **Secure subscription URL by default:** on install the subscription path is generated with a random 12-character suffix (e.g. `/sub-Xk92mPqLvzRt/`) instead of `/sub/`.
 
-### 11. Proxy front (anti-blocking)
+### 11. Proxy chain (anti-blocking)
 
-When a server's IP or domain gets blocked you normally have to migrate the whole panel. **3AX-UI** can instead hide the real server behind a cheap, disposable **proxy front**: clients only ever see the proxy, so when it gets blocked you throw it away and spin up a new one — the real server (with all your inbounds, clients and traffic history) keeps running untouched and its address is never exposed.
+When a server's IP or domain gets blocked you normally have to migrate the whole panel. **3AX-UI** can instead hide the real server behind a **chain** of cheap, disposable **proxy fronts**: clients only ever see the outermost one, so when it gets blocked you throw it away and spin up a new one — the real server (with all your inbounds, clients and traffic history) keeps running untouched and its address is never exposed.
 
-It has two halves:
-
-**a) Host override (on the real panel).** A global toggle that substitutes a proxy host into every generated client config and subscription link, so configs point at the proxy instead of the real server. SNI / TLS / Reality identity is left untouched. Set it in **Panel Settings → Subscription** (the *Proxy front* section), or from the Telegram bot:
+A **chain** is a list of hops between the clients and the real server. Each **hop** relays to the next one and pulls subscriptions down the same path:
 
 ```
-/proxy                 show current state + host
-/proxy <ip|domain>     set the proxy host and enable the override
-/proxy off             disable
+clients ──▶ edge front ──▶ inner front ──▶ … ──▶ real server
 ```
 
-With the override on, the Telegram bot also hands out the **proxy** subscription URL automatically.
+The hop clients see is the **edge front**; the ones only their neighbours know are **inner fronts**. A hop knows **only its own next hop** — never what lies beyond it. One panel has one chain; a chain of one hop is the ordinary case, and that hop's next hop is the panel itself.
 
-**b) Proxy run mode (`x-ui proxy`).** A separate, disposable box runs the same binary in proxy mode and does two things:
+**a) The chain registry (on the real panel).** The chain lives in **Panel Settings → Subscription → Chain**: each hop's name, role (`inner` / `edge`), host and order, plus which edge is the **active** one. The active edge is what the panel substitutes into every generated client config and subscription link; SNI / TLS / Reality identity is left untouched. From the Telegram bot:
 
-- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every public inbound port to the real server (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on the proxy**. The relay learns the ports from a **relay manifest** — a sanitised excerpt of the real panel's xray config (listen address, port, protocol and tag of each inbound, nothing else) that the real panel exports; the panel's raw `config.json` is refused. Ports the real server serves *outside* xray (AmneziaWG / WireGuard listeners, the MTProto sidecar) are not in that manifest, so list them as **extra ports** (`"extraPorts": ["51820/udp"]` in `proxy.json`, or `PROXY_EXTRA_PORTS=51820/udp,51821/udp` at install time); the protocol suffix is mandatory and an extra port may not double an xray inbound port.
-- **Serves subscriptions** — it fetches `/sub` and `/json` from the real panel and re-serves them: apps get the raw subscription, browsers get a custom page (traffic stats, QR, a **Copy VLESS JSON** button, and a curated app list).
+```
+/proxy                 list the hops, their roles and states
+/proxy <name>          make that edge the active one
+/proxy off             stop substituting; links point at the real server
+```
 
-**Deploying a proxy front:**
+The registry also holds `chainExtraPorts` — the ports the real server serves *outside* xray (AmneziaWG / WireGuard listeners, the MTProto sidecar), which the panel cannot read out of its xray config. Everything else the hops relay, the panel works out itself.
 
-1. On the proxy box, run the installer in proxy mode:
+**Prerequisite: the panel's subscription server must be on** (`subEnable`). The chain's own routes (`/chain/v1/*`) live on it, so with it off no hop can join or receive updates; the panel logs a WARN at start if the registry has hops and the subscription server is off. If the panel has a `subDomain` set, its domain check runs before the chain routes — hops must then point at that domain (`PROXY_NEXT_HOP=<subDomain>`), not at a bare IP.
+
+**b) Proxy run mode (`x-ui proxy`).** A disposable box runs the same binary as one hop and does two things:
+
+- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every relayed port to its next hop (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on a hop**. Which ports to relay arrives in the **chain document** the hop polls from its next hop — a truncated excerpt of the registry that shows the hop itself, everything outward of it and the port list, and nothing deeper.
+- **Serves subscriptions** — it fetches `/sub` and `/json` from its next hop and re-serves them: apps get the raw subscription, browsers get a custom page (traffic stats, QR, a **Copy VLESS JSON** button, and a curated app list).
+
+**Joining a hop to the chain.** Always work inwards-out: the panel first, then the innermost hop, then outwards, edge last.
+
+1. On the panel, **Settings → Subscription → Chain** → add the hop (name, role, host). The panel shows a one-time **join token** (32 characters, valid 24 hours) — once, and never again; if it expires or is lost, press *reissue token*.
+2. On the box, run the installer in proxy mode with that token:
 
 ```bash
-PROXY_UPSTREAM_HOST=<real-server-ip> \
-PROXY_UPSTREAM_BASE=https://<real-server-ip>:2096 \
-PROXY_DOMAIN=proxy.example.com \
-PROXY_EXTRA_PORTS=51820/udp \
-XUI_PROXY_MODE=1 bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/install.sh)
+XUI_PROXY_MODE=1 \
+PROXY_NEXT_HOP=<next-hop-ip-or-domain> \
+PROXY_NEXT_HOP_SUB_PORT=2096 \
+PROXY_JOIN_TOKEN=<token from step 1> \
+PROXY_DOMAIN=edge.example.com \
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/install.sh)
 ```
 
-(or run `install.sh` on a terminal and answer the **"Install as PROXY FRONT?"** prompt). The installer ends with a one-time **setup link** like `http://<proxy-ip>:2096/setup/<token>` — the box is now in *bootstrap mode*: it serves only that page and waits for a relay manifest.
+The installer writes `/etc/x-ui/proxy.json`, issues TLS, **joins the chain before it starts the service**, and the footer prints `x-ui chain status`. Without `PROXY_JOIN_TOKEN` the box comes up in *bootstrap mode* instead: it serves only a one-time **join page**, whose link the footer prints and `x-ui chain join-url` prints again; the token goes into that page, and the relay starts the moment the join is accepted.
 
-2. On the real panel, get the **relay manifest**: run `x-ui relay-manifest` on the server, or open **Panel Settings → Subscription → Show manifest** and press **Copy**. It lists ports only — no keys leave the real server.
-3. Open the setup link and paste the manifest. The page checks it (a raw `config.json` is rejected on the spot), stores it as `/etc/x-ui/relay-manifest.json` and the relay plus subscription server start immediately; the link stops working. Lost the link? `x-ui proxy-setup-url` prints it again while the box is still waiting.
-4. On the real panel, point the host override at the proxy's domain/IP (step **a**).
+3. When the hop is an edge and should face clients, make it the active one (step **a**).
 
-Scripted installs can skip the page: put the manifest on the box first and pass `PROXY_RELAY_MANIFEST=/root/relay-manifest.json` — a file without the `relayManifest` marker is refused, not copied. Settings live in `/etc/x-ui/proxy.json`; the box runs `x-ui proxy` as the `x-ui` service, and `update.sh` auto-detects a proxy box and updates it in proxy mode. To *reinstall* over an existing box non-interactively, answer the "already installed" prompt with `2` (`printf '2\n' | XUI_PROXY_MODE=1 … bash <(curl …)`); the default switches to the update script instead.
+**Install variables** (proxy mode):
 
-> **Note:** the real server sees all proxied connections coming from the proxy's IP, so per-client IP-limit and the IP log won't reflect real client IPs for proxied traffic.
+| Variable | Default | Meaning |
+|---|---|---|
+| `XUI_PROXY_MODE` | — | `1` installs this host as a chain hop |
+| `PROXY_NEXT_HOP` | — | **required** — the next hop's address: an inner front, or the real server for the innermost hop |
+| `PROXY_NEXT_HOP_SUB_PORT` | `2096` | the next hop's subscription port (subscriptions, `/chain/v1/*`) |
+| `PROXY_NEXT_HOP_SCHEME` | `https` | `http` or `https` for that port |
+| `PROXY_JOIN_TOKEN` | — | the one-time token from the registry; without it the box serves a join page |
+| `PROXY_TLS` | `letsencrypt-ip` | how this hop gets TLS for its own subscription port: `letsencrypt-ip`, `none` or `manual` |
+| `PROXY_DOMAIN` | request host | this box's public host, used in subscription links and the join-page URL |
+| `PROXY_SUB_PORT` | `2096` | this hop's own subscription port |
+| `PROXY_SUB_LISTEN` | all interfaces | bind address for it |
+| `PROXY_RELAY_LISTEN` | `::` | bind address of the relay (`0.0.0.0` on hosts without IPv6) |
+| `PROXY_CERT` / `PROXY_KEY` | — | TLS paths, only meaningful with `PROXY_TLS=manual` |
+
+With the default `PROXY_TLS=letsencrypt-ip` the installer issues a Let's Encrypt certificate **for the box's own IP address** — a fresh disposable front has no domain, and Let's Encrypt only issues IP certificates under the `shortlived` profile, so it is valid for about six days and renewed automatically. That needs port 80 free, both at issue time and at every renewal; if it is not, the installer warns and the box runs without TLS, serving its join page over plain HTTP with a warning banner. A box that relays port 80 through the chain cannot hold such a certificate — install it with `PROXY_TLS=manual` or `none`.
+
+**CLI** (the same binary in both roles):
+
+```
+x-ui chain ports      # panel: the relayed ports the chain document will carry
+x-ui chain join-url   # box:   the pending join-page link
+x-ui chain status     # box:   name, role, next hop, revision, relayed ports, last wave
+x-ui chain rejoin --next-hop <host> [--sub-port 2096] [--scheme https] --token <t>
+                      # box:   point this hop at a new next hop with a fresh token
+```
+
+Settings live in `/etc/x-ui/proxy.json` (0600) and the last accepted chain document in `/etc/x-ui/chain/`; the box runs `x-ui proxy` as the `x-ui` service, and `update.sh` auto-detects a hop and updates it in proxy mode, leaving the config, the chain state and the certificate alone. A box still carrying a pre-chain `proxy.json` stops the update **before** the binary is replaced and keeps relaying on its current version until it is reinstalled as a hop. To *reinstall* over an existing box non-interactively, answer the "already installed" prompt with `2` (`printf '2\n' | XUI_PROXY_MODE=1 … bash <(curl …)`); the default switches to the update script instead.
+
+Removing a hop, repairing the chain after an inner front dies and the full stand walkthrough are in [docs/runbooks/proxy-front.md](docs/runbooks/proxy-front.md).
+
+**Monitoring.** A mon-server probes each hop separately, so a chain shows up as `direct` plus one line per hop — which is how you tell "the edge is blocked" from "the inner one died". See section 12.
+
+> **Note:** the real server sees every relayed connection coming from the neighbouring hop's IP, so per-client IP-limit and the IP log won't reflect real client IPs for relayed traffic.
 
 ### 12. Inbound health monitoring (mon-server)
 

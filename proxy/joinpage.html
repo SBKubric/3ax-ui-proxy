@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Join the proxy chain</title>
+<style>
+body{font:15px/1.5 system-ui,sans-serif;max-width:680px;margin:40px auto;padding:0 16px;color:#222;background:#fafafa}
+label{display:block;margin-top:14px;font-weight:600}
+input{width:100%;font:14px/1.4 ui-monospace,monospace;padding:8px;box-sizing:border-box;margin-top:4px}
+button{font:inherit;padding:8px 18px;margin-top:16px}
+.err{background:#fde8e8;border:1px solid #f5b5b5;padding:10px 12px;border-radius:6px;white-space:pre-wrap}
+.warn{background:#fff6e0;border:1px solid #e8c56a;padding:10px 12px;border-radius:6px}
+.ok{background:#e6f6e6;border:1px solid #a9d9a9;padding:10px 12px;border-radius:6px}
+.fact{background:#eee;padding:1px 4px;border-radius:3px;font-family:ui-monospace,monospace}
+.hint{color:#666;font-weight:400;font-size:13px}
+</style></head><body>
+<h1>Join the proxy chain</h1>
+{{if .Insecure}}<p class="warn" data-testid="chain-join-insecure">&#9888; {{.Warning}}</p>{{end}}
+{{if .Done}}
+<p class="ok" data-testid="chain-join-done">This box joined the chain as <b>{{.Name}}</b> ({{.Role}}) at revision {{.Revision}}.
+The relay is starting now for ports <span class="fact">{{.Ports}}</span>.
+This page is gone: the same link answers 404 from here on.</p>
+{{else}}
+<p>This box is not part of a chain yet. Enter the join token the panel showed once when its hop was created.</p>
+{{if .Error}}<p class="err" data-testid="chain-join-error">{{.Error}}</p>{{end}}
+<form method="post">
+{{if .HostFixed}}
+<p>Next hop: <span class="fact" data-testid="chain-join-nexthop">{{.SubScheme}}://{{.NextHopHost}}:{{.SubPort}}</span></p>
+{{else}}
+<label for="nextHopHost">Next hop address
+<span class="hint">the hop towards the real server — for the first hop, the panel itself</span>
+<input id="nextHopHost" name="nextHopHost" value="{{.NextHopHost}}" placeholder="10.0.0.7" required></label>
+<label for="nextHopSubPort">Next hop sub port
+<input id="nextHopSubPort" name="nextHopSubPort" value="{{.SubPort}}" placeholder="2096"></label>
+{{end}}
+<label for="token">Join token
+<span class="hint">32 characters, valid for 24 hours, usable once</span>
+<input id="token" name="token" autocomplete="off" required></label>
+<button type="submit" data-testid="chain-join-submit">Join</button>
+</form>
+{{end}}
+</body></html>

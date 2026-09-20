@@ -2296,7 +2296,9 @@ install_x-ui_finalize() {
     # Proxy-front install: write proxy.json + a `x-ui proxy` service unit and skip
     # all panel / AmneziaWG / WireGuard configuration.
     if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+        proxy_setup_tls
         config_proxy_mode
+        proxy_join_now
         install_x-ui_proxy_service_unit
         print_proxy_footer
         return
@@ -2622,28 +2624,33 @@ check_existing_install() {
 }
 
 # --- Proxy-front install mode -------------------------------------------------
-# Installs this host as a sacrificial "proxy front": it runs `x-ui proxy` — a
-# dokodemo-door relay to the real (hidden) server plus a subscription server that
-# proxies the real panel — instead of the web panel. No DB, no AmneziaWG/WireGuard,
-# no panel web UI. Activated by XUI_PROXY_MODE=1 (or the interactive prompt below);
-# parameters come from PROXY_* env vars, with prompts for missing required ones on
-# a TTY. The relay learns its ports from a relay manifest exported on the real
-# panel (`x-ui relay-manifest`): pass its path in PROXY_RELAY_MANIFEST for a
-# scripted install, or leave it unset and paste the manifest into the one-time
-# setup page the proxy front serves after start (link printed at the end). A raw
-# panel config.json is refused either way.
+# Installs this host as one hop of the proxy chain (docs/spec/proxy-chain.md §5):
+# it runs `x-ui proxy` — a dokodemo-door relay towards its next hop plus a
+# subscription server that proxies that same next hop — instead of the web panel.
+# No DB, no AmneziaWG/WireGuard, no panel web UI. Activated by XUI_PROXY_MODE=1
+# (or the interactive prompt below); parameters come from PROXY_* env vars, with
+# prompts for the missing required ones on a TTY.
+#
+# A hop knows exactly two things before it joins: the address of its next hop
+# (PROXY_NEXT_HOP — an inner front, or the real server for the innermost hop) and
+# a one-time join token issued by the panel's chain registry. With
+# PROXY_JOIN_TOKEN the installer joins the chain before the service starts;
+# without it the box comes up in bootstrap mode and serves a one-time join page
+# whose link the footer prints (`x-ui chain join-url`). The hop's name, its role
+# and the ports it relays all arrive later in the chain document — none of them
+# is configured here.
 prompt_proxy_mode() {
     if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
         if [[ -t 0 && "${XUI_DEBUG_MODE:-}" != "1" ]]; then
             echo ""
-            echo -e "${yellow}Install this host as a PROXY FRONT (traffic relay + subscription proxy, no web panel)? [y/N]${plain}"
+            echo -e "${yellow}Install this host as a CHAIN HOP / proxy front (traffic relay + subscription proxy, no web panel)? [y/N]${plain}"
             read -rp "Proxy mode? [y/N]: " __proxy_choice
             case "${__proxy_choice,,}" in
-                y | yes) export XUI_PROXY_MODE=1 ;;
-                *)
-                    export XUI_PROXY_MODE=0
-                    return
-                    ;;
+            y | yes) export XUI_PROXY_MODE=1 ;;
+            *)
+                export XUI_PROXY_MODE=0
+                return
+                ;;
             esac
         else
             export XUI_PROXY_MODE=0
@@ -2651,103 +2658,295 @@ prompt_proxy_mode() {
         fi
     fi
 
-    echo -e "${green}Proxy-front mode enabled.${plain}"
+    echo -e "${green}Proxy-front mode enabled — this host becomes a chain hop.${plain}"
 
-    if [[ -z "${PROXY_UPSTREAM_HOST:-}" && -t 0 ]]; then
-        echo -en "${yellow}Real (hidden) server address to relay traffic to: ${plain}"
-        read -r PROXY_UPSTREAM_HOST
+    # Variables that died with the relay manifest (ADR 0003, spec §5.6). This is
+    # a fresh box: a silently ignored PROXY_EXTRA_PORTS would give a front with
+    # half its ports, and that only shows up on a client. So: error, not warning.
+    local __retired
+    local __retired_vars=(
+        PROXY_UPSTREAM_HOST PROXY_UPSTREAM_BASE PROXY_EXTRA_PORTS
+        PROXY_RELAY_MANIFEST PROXY_SUB_PATH PROXY_JSON_PATH PROXY_XRAY_CONFIG
+    )
+    for __retired in "${__retired_vars[@]}"; do
+        if [[ -n "${!__retired:-}" ]]; then
+            echo -e "${red}${__retired} is gone: a proxy front is now a chain hop. Pass PROXY_NEXT_HOP (and PROXY_JOIN_TOKEN, or use the join page). See docs/runbooks/proxy-front.md.${plain}"
+            exit 1
+        fi
+    done
+
+    if [[ -z "${PROXY_NEXT_HOP:-}" && -t 0 ]]; then
+        echo -en "${yellow}Next hop address (inner front or the real server): ${plain}"
+        read -r PROXY_NEXT_HOP
     fi
-    if [[ -z "${PROXY_UPSTREAM_BASE:-}" && -t 0 ]]; then
-        echo -en "${yellow}Real panel subscription base URL (e.g. https://1.2.3.4:2096), blank = no sub server: ${plain}"
-        read -r PROXY_UPSTREAM_BASE
+    if [[ -z "${PROXY_JOIN_TOKEN:-}" && -t 0 ]]; then
+        echo -en "${yellow}Join token from the panel's chain registry (blank = leave the join page up): ${plain}"
+        read -r PROXY_JOIN_TOKEN
     fi
     if [[ -z "${PROXY_DOMAIN:-}" && -t 0 ]]; then
-        echo -en "${yellow}Proxy public domain advertised in sub URLs (optional): ${plain}"
+        echo -en "${yellow}Public host of this box, used in subscription links and the join-page URL (optional): ${plain}"
         read -r PROXY_DOMAIN
     fi
-    if [[ -z "${PROXY_EXTRA_PORTS:-}" && -t 0 ]]; then
-        echo -en "${yellow}Extra ports served outside xray on the real server (AmneziaWG/WireGuard/MTProto), e.g. 51820/udp,51821/udp — blank = none: ${plain}"
-        read -r PROXY_EXTRA_PORTS
-    fi
 
+    : "${PROXY_NEXT_HOP_SUB_PORT:=2096}"
+    : "${PROXY_NEXT_HOP_SCHEME:=https}"
     : "${PROXY_SUB_PORT:=2096}"
-    : "${PROXY_SUB_PATH:=/sub/}"
-    : "${PROXY_JSON_PATH:=/json/}"
-    export PROXY_UPSTREAM_HOST PROXY_RELAY_MANIFEST PROXY_UPSTREAM_BASE PROXY_DOMAIN PROXY_EXTRA_PORTS
-    export PROXY_SUB_PORT PROXY_SUB_PATH PROXY_JSON_PATH PROXY_CERT PROXY_KEY
+    : "${PROXY_SUB_LISTEN:=}"
+    : "${PROXY_RELAY_LISTEN:=::}"
+    : "${PROXY_TLS:=letsencrypt-ip}"
 
-    if [[ -z "${PROXY_UPSTREAM_HOST}" ]]; then
-        echo -e "${red}Proxy mode requires PROXY_UPSTREAM_HOST (env var or prompt).${plain}"
+    if [[ -z "${PROXY_NEXT_HOP}" ]]; then
+        echo -e "${red}Proxy mode requires PROXY_NEXT_HOP (env var or prompt): the address this hop relays to and polls the chain document from.${plain}"
         exit 1
     fi
-    if [[ -n "${PROXY_XRAY_CONFIG:-}" ]]; then
-        echo -e "${red}PROXY_XRAY_CONFIG is gone: the proxy front no longer takes the panel's config.json. Export a relay manifest on the real panel (x-ui relay-manifest) and pass it as PROXY_RELAY_MANIFEST, or leave it unset and paste it into the setup page.${plain}"
+    # Ports are checked by proxy_validate_config_values below, and a bad one is
+    # an error rather than a silent fallback to 2096: the old fallback quietly
+    # moved the sub port of a box whose owner had asked for another one, and it
+    # would have swallowed a value crafted to end up inside proxy.json unquoted.
+    case "${PROXY_NEXT_HOP_SCHEME}" in
+    http | https) ;;
+    *)
+        echo -e "${yellow}PROXY_NEXT_HOP_SCHEME '${PROXY_NEXT_HOP_SCHEME}' is neither http nor https — defaulting to https.${plain}"
+        PROXY_NEXT_HOP_SCHEME=https
+        ;;
+    esac
+    case "${PROXY_TLS}" in
+    letsencrypt-ip | none | manual) ;;
+    *)
+        echo -e "${red}PROXY_TLS '${PROXY_TLS}' is not one of letsencrypt-ip|none|manual.${plain}"
+        exit 1
+        ;;
+    esac
+    if [[ "${PROXY_TLS}" == "manual" && (-z "${PROXY_CERT:-}" || -z "${PROXY_KEY:-}") ]]; then
+        echo -e "${yellow}PROXY_TLS=manual without PROXY_CERT/PROXY_KEY — the sub port and the join page will answer over plain HTTP.${plain}"
+    fi
+    if [[ "${PROXY_TLS}" != "manual" && (-n "${PROXY_CERT:-}" || -n "${PROXY_KEY:-}") ]]; then
+        echo -e "${yellow}PROXY_CERT/PROXY_KEY only mean something with PROXY_TLS=manual — ignoring them.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+    fi
+
+    proxy_validate_config_values
+
+    export PROXY_NEXT_HOP PROXY_NEXT_HOP_SUB_PORT PROXY_NEXT_HOP_SCHEME PROXY_JOIN_TOKEN
+    export PROXY_DOMAIN PROXY_SUB_PORT PROXY_SUB_LISTEN PROXY_RELAY_LISTEN PROXY_TLS
+    export PROXY_CERT PROXY_KEY
+}
+
+# proxy_json_value_ok <name> <value> <alphabet-regex> — refuses a value that has
+# no business inside proxy.json.
+#
+# config_proxy_mode interpolates these straight into a JSON heredoc, so a value
+# carrying a double quote does not merely break the file: it appends keys of the
+# supplier's choosing to the config a hop proves itself with — a `hopSecret`, a
+# `nextHop`, a `stateDir`. The alphabets below are deliberately narrower than
+# what a shell would swallow: a next hop is a host, an IP or a bracketed IPv6, a
+# cert is a path, and none of them has any business carrying a quote, a
+# backslash, a space or a control character.
+proxy_json_value_ok() {
+    local name="$1" value="$2" pattern="$3"
+    [[ -z "${value}" ]] && return 0
+    if [[ ! "${value}" =~ ${pattern} ]]; then
+        echo -e "${red}${name}='${value}' contains characters that must not reach /etc/x-ui/proxy.json. Allowed: ${pattern}${plain}"
         exit 1
     fi
-    if [[ -n "${PROXY_RELAY_MANIFEST:-}" ]]; then
-        if [[ ! -f "${PROXY_RELAY_MANIFEST}" ]]; then
-            echo -e "${red}PROXY_RELAY_MANIFEST '${PROXY_RELAY_MANIFEST}' not found.${plain}"
-            exit 1
-        fi
-        if ! grep -q '"relayManifest"' "${PROXY_RELAY_MANIFEST}"; then
-            echo -e "${red}'${PROXY_RELAY_MANIFEST}' is not a relay manifest (no \"relayManifest\" marker) — it looks like a raw xray config, which must not be copied to this box. Generate the manifest on the real panel: x-ui relay-manifest${plain}"
-            exit 1
-        fi
-    fi
-    if ! [[ "${PROXY_SUB_PORT}" =~ ^[0-9]+$ ]]; then
-        echo -e "${yellow}PROXY_SUB_PORT '${PROXY_SUB_PORT}' is not numeric — defaulting to 2096.${plain}"
-        PROXY_SUB_PORT=2096
-    fi
-    local __ep
-    for __ep in ${PROXY_EXTRA_PORTS//,/ }; do
-        if ! [[ "${__ep}" =~ ^[0-9]+/(tcp|udp|tcp\+udp)$ ]]; then
-            echo -e "${red}PROXY_EXTRA_PORTS entry '${__ep}' is invalid — use <port>/tcp, <port>/udp or <port>/tcp+udp.${plain}"
-            exit 1
-        fi
-    done
 }
 
-# Renders PROXY_EXTRA_PORTS ("51820/udp,8443/tcp") as a JSON string array.
-proxy_extra_ports_json() {
-    local out="" __ep
-    for __ep in ${PROXY_EXTRA_PORTS//,/ }; do
-        out+="${out:+, }\"${__ep}\""
-    done
-    echo "[${out}]"
+# proxy_json_port_ok <name> <value> — a port is a number, and it goes into the
+# JSON unquoted, so anything else is both a broken file and an injection point.
+proxy_json_port_ok() {
+    local name="$1" value="$2"
+    if ! [[ "${value}" =~ ^[0-9]+$ ]] || ((value < 1 || value > 65535)); then
+        echo -e "${red}${name}='${value}' must be an integer between 1 and 65535.${plain}"
+        exit 1
+    fi
 }
 
-# Writes /etc/x-ui/proxy.json (and stages the relay manifest when one was
-# given) from the PROXY_* values gathered by prompt_proxy_mode.
+# Checks every PROXY_* value that ends up in proxy.json. Called once on the
+# values the owner supplied and again just before the file is written, because
+# proxy_setup_tls fills in cert and key in between.
+proxy_validate_config_values() {
+    # `]` leads the bracket expression and `-` closes it, so both are literal.
+    local host_re='^[]A-Za-z0-9.:[-]+$'
+    local path_re='^[A-Za-z0-9._/@-]+$'
+
+    proxy_json_value_ok PROXY_NEXT_HOP "${PROXY_NEXT_HOP:-}" "${host_re}"
+    proxy_json_value_ok PROXY_DOMAIN "${PROXY_DOMAIN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_SUB_LISTEN "${PROXY_SUB_LISTEN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_RELAY_LISTEN "${PROXY_RELAY_LISTEN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_CERT "${PROXY_CERT:-}" "${path_re}"
+    proxy_json_value_ok PROXY_KEY "${PROXY_KEY:-}" "${path_re}"
+    proxy_json_port_ok PROXY_SUB_PORT "${PROXY_SUB_PORT:-}"
+    proxy_json_port_ok PROXY_NEXT_HOP_SUB_PORT "${PROXY_NEXT_HOP_SUB_PORT:-}"
+}
+
+# Public IPv4 of this box — the subject of the Let's Encrypt IP certificate and
+# the address the footer shows. Same probe list as the panel install path.
+proxy_public_ipv4() {
+    local __url __response __code __ip
+    for __url in "https://api4.ipify.org" "https://ipv4.icanhazip.com" "https://4.ident.me" "https://ipv4.myexternalip.com/raw"; do
+        __response=$(curl -4 -s -w "\n%{http_code}" --max-time 3 "${__url}" 2>/dev/null)
+        __code=$(echo "${__response}" | tail -n1)
+        __ip=$(echo "${__response}" | head -n-1 | tr -d '[:space:]')
+        if [[ "${__code}" == "200" ]] && is_ipv4 "${__ip}"; then
+            echo "${__ip}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Gives the box the TLS it serves its sub port — and therefore its join page —
+# with, and leaves the paths in PROXY_CERT/PROXY_KEY for config_proxy_mode.
+#
+# Never fatal. A hop without a certificate still relays and still shows its join
+# page, only over plain HTTP and with the warning banner of §5.4; during the
+# install of a disposable front that page is often the one channel its owner has.
+proxy_setup_tls() {
+    proxy_tls_ip=""
+    case "${PROXY_TLS}" in
+    none)
+        PROXY_CERT=""
+        PROXY_KEY=""
+        echo -e "${yellow}PROXY_TLS=none — the sub port and the join page answer over plain HTTP.${plain}"
+        return 0
+        ;;
+    manual)
+        if [[ -n "${PROXY_CERT:-}" && -n "${PROXY_KEY:-}" ]]; then
+            echo -e "${green}PROXY_TLS=manual — using ${PROXY_CERT} / ${PROXY_KEY}; this box will not renew them.${plain}"
+        fi
+        return 0
+        ;;
+    esac
+
+    # letsencrypt-ip: a certificate for the box's own IP address. A fresh
+    # disposable front has no domain, and Let's Encrypt issues IP certificates
+    # only under the `shortlived` profile (~6 days) — which suits a box meant to
+    # be thrown away, as long as it renews itself.
+    local __ip
+    __ip=$(proxy_public_ipv4) || __ip=""
+    if [[ -z "${__ip}" ]]; then
+        echo -e "${yellow}WARN: could not detect this box's public IPv4 — skipping the Let's Encrypt IP certificate; the join page will be served over plain HTTP.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+        return 0
+    fi
+    if is_port_in_use 80; then
+        echo -e "${yellow}WARN: port 80 is busy — the ACME standalone challenge cannot bind it. Skipping the IP certificate; free port 80 and re-issue later, or install with PROXY_TLS=manual.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+        return 0
+    fi
+    if ! command -v ~/.acme.sh/acme.sh &>/dev/null; then
+        if ! install_acme; then
+            echo -e "${yellow}WARN: acme.sh is unavailable — skipping the Let's Encrypt IP certificate.${plain}"
+            PROXY_CERT=""
+            PROXY_KEY=""
+            return 0
+        fi
+    fi
+
+    local __certDir="/root/cert/ip"
+    mkdir -p "${__certDir}"
+    echo -e "${green}Issuing a Let's Encrypt IP certificate for ${__ip} (shortlived profile, ~6 days, auto-renewed)...${plain}"
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
+    # --days 3 and not the acme.sh default of 60: a six-day certificate has to be
+    # replaced around its half-life, or the daily cron wakes up past its expiry.
+    if ! ~/.acme.sh/acme.sh --issue -d "${__ip}" --standalone --server letsencrypt \
+        --certificate-profile shortlived --days 3 --httpport 80 --force; then
+        echo -e "${yellow}WARN: could not issue an IP certificate for ${__ip} (port 80 unreachable from outside, CA down, or the box is behind NAT).${plain}"
+        echo -e "${yellow}      The box starts without TLS and the join page answers over plain HTTP; re-issue later and put the paths into /etc/x-ui/proxy.json.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+        return 0
+    fi
+    # acme.sh exits non-zero when reloadcmd fails, so check the files, not $?.
+    ~/.acme.sh/acme.sh --installcert -d "${__ip}" \
+        --key-file "${__certDir}/privkey.pem" \
+        --fullchain-file "${__certDir}/fullchain.pem" \
+        --reloadcmd "systemctl restart x-ui 2>/dev/null || rc-service x-ui restart 2>/dev/null || true" >/dev/null 2>&1 || true
+    if [[ ! -s "${__certDir}/fullchain.pem" || ! -s "${__certDir}/privkey.pem" ]]; then
+        echo -e "${yellow}WARN: the IP certificate was issued but not installed — continuing without TLS.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+        return 0
+    fi
+    chmod 600 "${__certDir}/privkey.pem" 2>/dev/null
+    chmod 644 "${__certDir}/fullchain.pem" 2>/dev/null
+    ~/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
+    PROXY_CERT="${__certDir}/fullchain.pem"
+    PROXY_KEY="${__certDir}/privkey.pem"
+    proxy_tls_ip="${__ip}"
+    echo -e "${green}IP certificate installed → ${PROXY_CERT}${plain}"
+    echo -e "${yellow}acme.sh renews it from cron and restarts x-ui. Renewal needs port 80 free, so do not let the chain relay port 80 through this box.${plain}"
+    return 0
+}
+
+# Writes /etc/x-ui/proxy.json v2 (§5.1, 0600) and the chain state directory from
+# the PROXY_* values gathered by prompt_proxy_mode.
+#
+# No `hopSecret`: the panel issues it at join and the box writes it itself. No
+# manifest is copied anywhere — the ports this hop relays arrive in the chain
+# document from its next hop.
 config_proxy_mode() {
+    # Before anything is created or removed: a bad value here means no file.
+    proxy_validate_config_values
+
     mkdir -p /etc/x-ui
-    local manifest="/etc/x-ui/relay-manifest.json"
-    if [[ -n "${PROXY_RELAY_MANIFEST:-}" ]]; then
-        cp -f "${PROXY_RELAY_MANIFEST}" "${manifest}"
-        chmod 600 "${manifest}"
-        echo -e "${green}Installed relay manifest → ${manifest}${plain}"
-    else
-        rm -f "${manifest}"
-        echo -e "${yellow}No relay manifest given — the proxy front will start in bootstrap mode and wait for one on its setup page.${plain}"
-    fi
+    # Leftovers of a v1 box being reinstalled as a hop: a stale manifest would be
+    # ignored, a stale setup-page URL would send its owner to a dead link.
+    rm -f /etc/x-ui/relay-manifest.json /etc/x-ui/proxy-setup.url
 
     cat >/etc/x-ui/proxy.json <<EOF
 {
-  "upstreamHost": "${PROXY_UPSTREAM_HOST}",
-  "relayManifestPath": "${manifest}",
-  "relayListen": "${PROXY_RELAY_LISTEN:-::}",
-  "extraPorts": $(proxy_extra_ports_json),
-  "upstreamBase": "${PROXY_UPSTREAM_BASE}",
-  "domain": "${PROXY_DOMAIN}",
-  "subListen": "",
+  "version": 2,
+  "nextHop": {
+    "host": "${PROXY_NEXT_HOP}",
+    "subPort": ${PROXY_NEXT_HOP_SUB_PORT},
+    "subScheme": "${PROXY_NEXT_HOP_SCHEME}"
+  },
+  "subListen": "${PROXY_SUB_LISTEN:-}",
   "subPort": ${PROXY_SUB_PORT},
-  "subPath": "${PROXY_SUB_PATH}",
-  "jsonPath": "${PROXY_JSON_PATH}",
+  "relayListen": "${PROXY_RELAY_LISTEN:-::}",
+  "domain": "${PROXY_DOMAIN:-}",
   "cert": "${PROXY_CERT:-}",
-  "key": "${PROXY_KEY:-}"
+  "key": "${PROXY_KEY:-}",
+  "stateDir": "/etc/x-ui/chain"
 }
 EOF
     chmod 600 /etc/x-ui/proxy.json
-    echo -e "${green}Wrote /etc/x-ui/proxy.json${plain}"
+    mkdir -p /etc/x-ui/chain
+    chmod 700 /etc/x-ui/chain
+    echo -e "${green}Wrote /etc/x-ui/proxy.json (v2) and the chain state dir /etc/x-ui/chain/${plain}"
+}
+
+# Joins the chain before the service starts, when the owner passed a token.
+#
+# `x-ui chain rejoin` writes the hop secret and the first chain document to disk
+# itself, so the service that comes up next is already a full hop and no join
+# page is ever served. A failed join is not fatal: the box then starts in
+# bootstrap mode and its owner fixes the host or the token on the join page.
+proxy_join_now() {
+    proxy_joined=0
+    proxy_join_output=""
+    [[ -z "${PROXY_JOIN_TOKEN:-}" ]] && return 0
+
+    echo -e "${green}Joining the chain with the supplied join token...${plain}"
+    if proxy_join_output=$("${xui_folder}/x-ui" chain rejoin \
+        -c /etc/x-ui/proxy.json \
+        --next-hop "${PROXY_NEXT_HOP}" \
+        --sub-port "${PROXY_NEXT_HOP_SUB_PORT}" \
+        --scheme "${PROXY_NEXT_HOP_SCHEME}" \
+        --token "${PROXY_JOIN_TOKEN}" 2>&1); then
+        proxy_joined=1
+        echo -e "${green}${proxy_join_output}${plain}"
+    else
+        echo -e "${yellow}WARN: the join did not go through:${plain}"
+        echo -e "${yellow}  ${proxy_join_output}${plain}"
+        echo -e "${yellow}  A bare 404 from the next hop means the token is unknown, expired or already spent — reissue it in the panel's chain registry.${plain}"
+        echo -e "${yellow}  The box starts in bootstrap mode and serves its join page instead.${plain}"
+    fi
+    return 0
 }
 
 # Installs a service unit whose ExecStart runs `x-ui proxy` instead of the panel.
@@ -2794,40 +2993,60 @@ EOF
     chown root:root ${xui_service}/x-ui.service >/dev/null 2>&1
     chmod 644 ${xui_service}/x-ui.service >/dev/null 2>&1
     systemctl daemon-reload
-    systemctl enable x-ui
-    systemctl start x-ui
+    systemctl enable --now x-ui
 }
 
 print_proxy_footer() {
-    echo -e "${green}x-ui ${tag_version}${plain} installed as a PROXY FRONT — running now."
+    echo -e "${green}x-ui ${tag_version}${plain} installed as a CHAIN HOP (proxy front) — running now."
     echo -e ""
-    echo -e "  Relay target (real server): ${blue}${PROXY_UPSTREAM_HOST}${plain}"
-    echo -e "  Subscription upstream:      ${blue}${PROXY_UPSTREAM_BASE:-<disabled>}${plain}"
-    echo -e "  Proxy config:               ${blue}/etc/x-ui/proxy.json${plain}"
-    echo -e "  Relay manifest:             ${blue}/etc/x-ui/relay-manifest.json${plain}"
-    if [[ -z "${PROXY_RELAY_MANIFEST:-}" ]]; then
-        local __setup_url="" __i
+    echo -e "  Next hop:      ${blue}${PROXY_NEXT_HOP_SCHEME}://${PROXY_NEXT_HOP}:${PROXY_NEXT_HOP_SUB_PORT}${plain}"
+    echo -e "  Proxy config:  ${blue}/etc/x-ui/proxy.json${plain}"
+    echo -e "  Chain state:   ${blue}/etc/x-ui/chain/${plain}"
+    if [[ -n "${proxy_tls_ip:-}" ]]; then
+        echo -e "  Sub port TLS:  ${blue}Let's Encrypt certificate for ${proxy_tls_ip} (~6 days, renewed by acme.sh)${plain}"
+    elif [[ -n "${PROXY_CERT:-}" ]]; then
+        echo -e "  Sub port TLS:  ${blue}${PROXY_CERT}${plain}"
+    else
+        echo -e "  Sub port TLS:  ${yellow}none — the sub port and the join page answer over plain HTTP${plain}"
+    fi
+    echo -e ""
+    if [[ "${proxy_joined:-0}" == "1" ]]; then
+        local __status=""
+        if __status=$("${xui_folder}/x-ui" chain status -c /etc/x-ui/proxy.json 2>&1); then
+            echo -e "  ${green}Joined the chain:${plain}"
+            # shellcheck disable=SC2001 # a per-line prefix is not a ${v//a/b} job
+            echo "${__status}" | sed 's/^/    /'
+        else
+            echo -e "  ${green}Joined the chain. Check it with: x-ui chain status${plain}"
+        fi
+    else
+        local __join_url="" __i
         for __i in 1 2 3 4 5 6 7 8 9 10; do
-            [[ -s /etc/x-ui/proxy-setup.url ]] && { __setup_url=$(cat /etc/x-ui/proxy-setup.url); break; }
+            [[ -s /etc/x-ui/chain-join.url ]] && { __join_url=$(cat /etc/x-ui/chain-join.url); break; }
             sleep 1
         done
-        echo -e ""
-        if [[ -n "${__setup_url}" ]]; then
-            echo -e "  ${yellow}No relay manifest yet. On the REAL panel run 'x-ui relay-manifest' (or Settings →${plain}"
-            echo -e "  ${yellow}Subscription → Show manifest) and paste the result at this one-time link:${plain}"
+        if [[ -n "${__join_url}" ]]; then
+            echo -e "  ${yellow}This box has not joined the chain yet. Create the hop on the REAL panel${plain}"
+            echo -e "  ${yellow}(Settings → Subscription → Chain), take its one-time join token and enter${plain}"
+            echo -e "  ${yellow}it at this one-time link:${plain}"
             echo -e ""
-            echo -e "      ${green}${__setup_url}${plain}"
+            echo -e "      ${green}${__join_url}${plain}"
             echo -e ""
-            echo -e "  ${yellow}The relay starts as soon as it is accepted. Show the link again: x-ui proxy-setup-url${plain}"
+            if [[ -z "${PROXY_CERT:-}" ]]; then
+                echo -e "  ${yellow}The link is plain HTTP: the join token would travel in clear text. Prefer${plain}"
+                echo -e "  ${yellow}re-running the installer with PROXY_JOIN_TOKEN over ssh.${plain}"
+                echo -e ""
+            fi
+            echo -e "  ${yellow}The relay starts as soon as the join is accepted. Show the link again: x-ui chain join-url${plain}"
         else
-            echo -e "  ${red}The setup page did not come up — check: x-ui log${plain}"
+            echo -e "  ${red}The join page did not come up — check: x-ui log${plain}"
         fi
     fi
     echo -e ""
-    echo -e "  ${yellow}On the REAL panel, enable the host override (GUI → subscription settings, or${plain}"
-    echo -e "  ${yellow}'/proxy <this-host>' in the Telegram bot) so client configs point here.${plain}"
+    echo -e "  ${yellow}On the REAL panel, mark this hop the active edge when it should face clients:${plain}"
+    echo -e "  ${yellow}Settings → Subscription → Chain, or '/proxy <hop-name>' in the Telegram bot.${plain}"
     echo -e ""
-    echo -e "  ${blue}x-ui status${plain}   ${blue}x-ui log${plain}   ${blue}systemctl restart x-ui${plain}"
+    echo -e "  ${blue}x-ui chain status${plain}   ${blue}x-ui status${plain}   ${blue}x-ui log${plain}   ${blue}systemctl restart x-ui${plain}"
 }
 
 echo -e "${green}Running...${plain}"
