@@ -154,3 +154,41 @@ func (s *SettingService) GetChainJoinTokenHours() (int, error) {
 func (s *SettingService) SetChainJoinTokenHours(value int) error {
 	return s.setInt(chainJoinTokenHoursKey, value)
 }
+
+// chainActiveEdgeHost is the registry half of GetProxyOverride: the host of
+// the active edge, if the chain has one.
+func chainActiveEdgeHost() (string, bool) {
+	return (&ChainService{}).ActiveEdgeHost()
+}
+
+// legacyProxyOverride is the pre-chain behaviour of GetProxyOverride, kept for
+// a panel that has no registry yet: the proxyOverrideEnable/proxyOverrideHost
+// pair, enabled and non-empty. MigrateLegacyOverride imports it into the
+// registry on the first start after the upgrade, after which this is dead
+// weight for that panel — but it stays, because the keys are still the only
+// override on a panel where the migration found nothing to import.
+func (s *SettingService) legacyProxyOverride() (string, bool) {
+	enabled, err := s.GetProxyOverrideEnable()
+	if err != nil || !enabled {
+		return "", false
+	}
+	host, err := s.GetProxyOverrideHost()
+	if err != nil {
+		return "", false
+	}
+	if host = strings.TrimSpace(host); host == "" {
+		return "", false
+	}
+	return host, true
+}
+
+// DisableProxyOverride is what "/proxy off" means once the chain registry
+// exists: no edge is active any more, and the legacy pair goes off with it.
+// Clearing only the legacy keys would leave the registry's active edge
+// publishing its host and the command looking broken.
+func (s *SettingService) DisableProxyOverride() error {
+	if err := (&ChainService{}).ClearActive(); err != nil {
+		return err
+	}
+	return s.SetProxyOverrideEnable(false)
+}

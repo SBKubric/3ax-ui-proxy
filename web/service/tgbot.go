@@ -748,7 +748,7 @@ func (t *Tgbot) answerCommand(message *telego.Message, chatId int64, isAdmin boo
 			msg += t.I18nBot("tgbot.commands.proxyStatus", "State=="+state, "Host=="+html.EscapeString(host))
 			msg += t.I18nBot("tgbot.commands.proxyUsage")
 		case strings.EqualFold(commandArgs[0], "off"):
-			if err := t.settingService.SetProxyOverrideEnable(false); err != nil {
+			if err := t.settingService.DisableProxyOverride(); err != nil {
 				msg += t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error())
 			} else {
 				msg += t.I18nBot("tgbot.commands.proxyDisabled")

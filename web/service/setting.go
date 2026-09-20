@@ -396,19 +396,17 @@ func (s *SettingService) SetProxyOverrideHost(value string) error {
 // GetProxyOverride returns the proxy-front override host and whether the override is
 // active (enabled with a non-empty host). It centralizes the enable+trim check shared
 // by the subscription service and the Telegram bot.
+//
+// The host override is derived from the chain registry (docs/spec/proxy-chain.md
+// §2.3): it is the host of the active edge. The legacy proxyOverrideEnable /
+// proxyOverrideHost pair remains the fallback for a panel whose registry is
+// empty — the signature does not change, so no consumer is touched. The old
+// body lives on in setting_chain.go as legacyProxyOverride().
 func (s *SettingService) GetProxyOverride() (string, bool) {
-	enabled, err := s.GetProxyOverrideEnable()
-	if err != nil || !enabled {
-		return "", false
+	if host, ok := chainActiveEdgeHost(); ok {
+		return host, true
 	}
-	host, err := s.GetProxyOverrideHost()
-	if err != nil {
-		return "", false
-	}
-	if host = strings.TrimSpace(host); host == "" {
-		return "", false
-	}
-	return host, true
+	return s.legacyProxyOverride()
 }
 
 func (s *SettingService) GetTgBotToken() (string, error) {
