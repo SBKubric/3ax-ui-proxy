@@ -78,6 +78,8 @@
                       <span>{{ i18n "pages.settings.subSettings" }}</span>
                     </template>
                     {{ template "settings/panel/subscription/general" . }}
+                    <!-- prototype #74: chain editor stub, next to Proxy front -->
+                    {{ template "settings/panel/subscription/chain" . }}
                   </a-tab-pane>
                   <!-- monitoring: fifth pane, §7.3 -->
                   <a-tab-pane key="5" :style="{ paddingTop: '20px' }">
@@ -150,6 +152,24 @@
         value: 'jalalian'
       }],
       remarkSample: '',
+      // prototype #74: chain editor stub, static mock data only (no backend
+      // calls yet; docs/spec/proxy-chain.md §7 has the real API shape).
+      chain: {
+        revision: 42,
+        realServer: { name: 'real-server', host: '10.20.0.1 (internal)' },
+        hops: [
+          { id: 1, name: 'core-1', host: '203.0.113.10', role: 'inner', position: 0, nextHopId: null, state: 'joined', health: 'UP', active: false },
+          { id: 2, name: 'edge-a', host: '198.51.100.20', role: 'edge', nextHopId: 1, state: 'joined', health: 'UP', active: true },
+          { id: 3, name: 'edge-b', host: '198.51.100.44', role: 'edge', nextHopId: 1, state: 'joined', health: 'DOWN', active: false },
+          { id: 4, name: 'edge-c', host: '—', role: 'edge', nextHopId: 1, state: 'pending', health: 'UNKNOWN', active: false,
+            joinTokenMasked: 'jt_8f2c••••••••3a91', joinTokenExpires: '2026-09-21 12:00 UTC' },
+          { id: 5, name: 'edge-legacy', host: '198.51.100.9', role: 'edge', nextHopId: 1, state: 'legacy', health: 'UNKNOWN', active: false },
+        ],
+      },
+      chainAddModal: {
+        visible: false,
+        form: { name: '', host: '', role: 'edge', nextHopId: null },
+      },
       defaultFragment: {
         packets: "tlshello",
         length: "100-200",
@@ -254,6 +274,18 @@
           value: 'geosite:google'
         },
       ],
+      // prototype #74: derived chain views (mock data has no backend, so
+      // these are plain getters instead of the real /panel/api/chain calls).
+      get innerHops() {
+        return this.chain.hops.filter(h => h.role === 'inner').sort((a, b) => a.position - b.position);
+      },
+      get edgeHops() {
+        return this.chain.hops.filter(h => h.role === 'edge');
+      },
+      get chainActiveEdgeName() {
+        const active = this.chain.hops.find(h => h.role === 'edge' && h.active);
+        return active ? active.name : '—';
+      },
       get remarkModel() {
         rm = this.allSetting.remarkModel;
         return rm.length > 1 ? rm.substring(1).split('') : [];
@@ -342,6 +374,77 @@
         this.loading(false);
         if (!msg.success) return;
         txtModal.show('{{ i18n "pages.settings.relayManifest" }}', msg.obj, 'relay-manifest.json');
+      },
+      // prototype #74: chain editor mock actions. Mutate `this.chain` in
+      // place; nothing is persisted. Real wiring hits
+      // /panel/api/chain/hops, /active, /token (docs/spec/proxy-chain.md §7).
+      stateColor(state) {
+        return { pending: 'orange', joined: 'green', legacy: 'default' }[state] || 'default';
+      },
+      stateLabel(state) {
+        return this.I18nRaw('pages.settings.chain.state.' + state) || state;
+      },
+      healthClass(health) {
+        return 'mon-state mon-state-' + String(health || 'unknown').toLowerCase();
+      },
+      I18nRaw(key) {
+        // thin wrapper so the mock can look up localized state labels by key
+        // at runtime; the real page renders these server-side via {{ i18n }}.
+        const map = {
+          'pages.settings.chain.state.pending': '{{ i18n "pages.settings.chain.state.pending" }}',
+          'pages.settings.chain.state.joined': '{{ i18n "pages.settings.chain.state.joined" }}',
+          'pages.settings.chain.state.legacy': '{{ i18n "pages.settings.chain.state.legacy" }}',
+        };
+        return map[key] || '';
+      },
+      makeActive(hop) {
+        this.chain.hops.forEach(h => { if (h.role === 'edge') h.active = false; });
+        hop.active = true;
+      },
+      confirmDeleteHop(hop) {
+        if (hop.active) {
+          antd.Modal.warning({
+            title: '{{ i18n "pages.settings.chain.deleteActiveRefusedTitle" }}',
+            content: '{{ i18n "pages.settings.chain.deleteActiveRefused" }}',
+          });
+          return;
+        }
+        const self = this;
+        antd.Modal.confirm({
+          title: '{{ i18n "pages.settings.chain.deleteConfirmTitle" }}',
+          content: hop.name,
+          onOk() {
+            self.chain.hops = self.chain.hops.filter(h => h.id !== hop.id);
+          },
+        });
+      },
+      reissueToken(hop) {
+        hop.joinTokenMasked = 'jt_' + Math.random().toString(16).slice(2, 6) + '••••••••' + Math.random().toString(16).slice(2, 6);
+        hop.joinTokenExpires = new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+      },
+      copyToken(hop) {
+        ClipboardManager.copyText(hop.joinTokenMasked);
+      },
+      openAddHopModal() {
+        this.chainAddModal.form = { name: '', host: '', role: 'edge', nextHopId: this.innerHops.length ? this.innerHops[this.innerHops.length - 1].id : null };
+        this.chainAddModal.visible = true;
+      },
+      submitAddHop() {
+        const form = this.chainAddModal.form;
+        this.chain.hops.push({
+          id: Math.max(0, ...this.chain.hops.map(h => h.id)) + 1,
+          name: form.name,
+          host: form.host,
+          role: form.role,
+          position: form.role === 'inner' ? this.innerHops.length : undefined,
+          nextHopId: form.nextHopId,
+          state: 'pending',
+          health: 'UNKNOWN',
+          active: false,
+          joinTokenMasked: 'jt_' + Math.random().toString(16).slice(2, 6) + '••••••••' + Math.random().toString(16).slice(2, 6),
+          joinTokenExpires: new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+        });
+        this.chainAddModal.visible = false;
       },
       async updateAllSetting() {
         this.loading(true);
