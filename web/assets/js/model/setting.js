@@ -92,6 +92,7 @@ class AllSetting {
 
         // Chain registry preferences (docs/spec/proxy-chain.md §2.2).
         // chainRevision is registry state and never travels through this form.
+        this.chainPanelHost = "";
         this.chainExtraPorts = "[]";
         this.chainPollSeconds = 30;
         this.chainStaleMinutes = 60;

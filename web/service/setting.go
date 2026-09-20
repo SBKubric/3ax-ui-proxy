@@ -100,6 +100,7 @@ var defaultValueMap = map[string]string{
 	// it is absent from entity.AllSetting so a settings save cannot roll the
 	// registry's revision back; the other four travel through the form.
 	"chainRevision":       "0",
+	"chainPanelHost":      "",
 	"chainExtraPorts":     "[]",
 	"chainPollSeconds":    "30",
 	"chainStaleMinutes":   "60",

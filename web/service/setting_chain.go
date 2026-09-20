@@ -26,6 +26,7 @@ import (
 
 const (
 	chainRevisionKey       = "chainRevision"
+	chainPanelHostKey      = "chainPanelHost"
 	chainExtraPortsKey     = "chainExtraPorts"
 	chainPollSecondsKey    = "chainPollSeconds"
 	chainStaleMinutesKey   = "chainStaleMinutes"
@@ -64,6 +65,20 @@ func (s *SettingService) GetChainRevision() (int64, error) {
 
 func (s *SettingService) SetChainRevision(value int64) error {
 	return s.setInt64(chainRevisionKey, value)
+}
+
+// GetChainPanelHost is the address the innermost hop dials to reach the panel
+// itself (§3.2). The panel cannot work it out: what it knows about itself is a
+// listen address, and behind NAT, a tunnel or a reverse proxy that is not what
+// a front can dial. So the owner states it, and a chain with hops in it and no
+// panel host is a refusal rather than a document with an empty nextHop.
+func (s *SettingService) GetChainPanelHost() (string, error) {
+	host, err := s.getString(chainPanelHostKey)
+	return strings.TrimSpace(host), err
+}
+
+func (s *SettingService) SetChainPanelHost(value string) error {
+	return s.setString(chainPanelHostKey, strings.TrimSpace(value))
 }
 
 // GetChainExtraPortsRaw returns the stored JSON as it is, for the settings

@@ -95,6 +95,7 @@ type AllSetting struct {
 	// chainRevision is not here on purpose: it is registry state written in
 	// the same transaction as the registry itself, and a form save must not
 	// take it backwards.
+	ChainPanelHost      string `json:"chainPanelHost" form:"chainPanelHost"`
 	ChainExtraPorts     string `json:"chainExtraPorts" form:"chainExtraPorts"`
 	ChainPollSeconds    int    `json:"chainPollSeconds" form:"chainPollSeconds"`
 	ChainStaleMinutes   int    `json:"chainStaleMinutes" form:"chainStaleMinutes"`
