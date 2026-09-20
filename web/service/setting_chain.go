@@ -5,7 +5,11 @@ import (
 	"strings"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
+	"github.com/coinman-dev/3ax-ui/v2/database"
+	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/util/common"
+
+	"gorm.io/gorm"
 )
 
 // Chain registry settings (docs/spec/proxy-chain.md §2.2). Keys live in
@@ -94,7 +98,12 @@ func (s *SettingService) GetChainExtraPorts() ([]ChainExtraPort, error) {
 
 // SetChainExtraPorts validates and stores the list. The port composition is
 // part of every document, so a change here moves the chain to a new revision
-// (§3.4) — and a change that only reorders nothing at all does not.
+// (§3.4) — and storing the same list again does not.
+//
+// The value and the revision are written in one transaction, like every other
+// registry write: a reader must never catch the new port list under the old
+// revision and conclude it is up to date. The previous value is read before
+// the transaction opens, because this SQLite runs on a single connection.
 func (s *SettingService) SetChainExtraPorts(ports []ChainExtraPort) error {
 	if ports == nil {
 		ports = []ChainExtraPort{}
@@ -112,17 +121,31 @@ func (s *SettingService) SetChainExtraPorts(ports []ChainExtraPort) error {
 	if err != nil {
 		return err
 	}
-	if err := s.setString(chainExtraPortsKey, string(encoded)); err != nil {
-		return err
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := saveSettingTx(tx, chainExtraPortsKey, string(encoded)); err != nil {
+			return err
+		}
+		if previous == string(encoded) {
+			return nil
+		}
+		return bumpRevisionTx(tx)
+	})
+}
+
+// saveSettingTx is saveSetting inside a transaction: the settings accessors go
+// through the global handle, which would wait for the connection the
+// transaction is holding.
+func saveSettingTx(tx *gorm.DB, key, value string) error {
+	var setting model.Setting
+	err := tx.Where("key = ?", key).First(&setting).Error
+	if database.IsNotFound(err) {
+		return tx.Create(&model.Setting{Key: key, Value: value}).Error
 	}
-	if previous == string(encoded) {
-		return nil
-	}
-	revision, err := s.GetChainRevision()
 	if err != nil {
 		return err
 	}
-	return s.SetChainRevision(revision + 1)
+	setting.Value = value
+	return tx.Save(&setting).Error
 }
 
 // GetChainPollSeconds is how often a hop polls its next hop for a new
