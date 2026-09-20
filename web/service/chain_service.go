@@ -480,17 +480,26 @@ func (s *ChainService) RecordSeen(id int, revision int64) error {
 		Updates(map[string]any{"last_seen_at": time.Now().UnixMilli(), "last_revision": revision}).Error
 }
 
-// ActiveEdgeHost is the address the panel publishes: the host of the active
-// edge, if there is one. A pending edge never counts — no box is answering on
-// it yet.
+// ActiveEdgeHost is the address the panel publishes: the host of whichever hop
+// carries is_active, whatever state it is in. Only when no hop is active does
+// the override fall back to the legacy keys.
+//
+// This departs deliberately from the wording of §2.3 ("state IN (joined,
+// legacy)"). Reissuing the token of the active edge puts it back to pending
+// while keeping it active (§4.4), and a state filter here would drop the
+// override for the whole re-join window — which does not publish nothing, it
+// publishes the real server's address, the one thing the chain exists to hide.
+// The host is the one the owner typed and is still the address clients reach,
+// so an active pending hop is the right answer, not a reason to fall back.
+// Making a pending hop active is still refused (SetActive, invariant 1); this
+// is only about a hop that was already active.
 func (s *ChainService) ActiveEdgeHost() (string, bool) {
 	db := database.GetDB()
 	if db == nil {
 		return "", false
 	}
 	var hop model.ChainHop
-	err := db.Where("is_active = ? AND role = ? AND state IN ?", true, chain.RoleEdge,
-		[]string{chain.StateJoined, chain.StateLegacy}).First(&hop).Error
+	err := db.Where("is_active = ?", true).First(&hop).Error
 	if err != nil {
 		return "", false
 	}

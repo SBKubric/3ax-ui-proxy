@@ -574,6 +574,39 @@ func TestChainReissueToken(t *testing.T) {
 	}
 }
 
+// Reissuing the token of the *active* edge puts it back to pending (§4.2)
+// while it stays active (§4.4). The published host must not move for that
+// window: falling back to the legacy keys would publish the real server's
+// address — the one thing the chain hides — for as long as the box takes to
+// come back.
+func TestChainReissueOnTheActiveEdgeKeepsTheOverride(t *testing.T) {
+	s := newChainService(t)
+	settings := &SettingService{}
+	setSetting(t, "proxyOverrideEnable", "true")
+	setSetting(t, "proxyOverrideHost", "front.example.net")
+
+	edge := addJoined(t, s, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	if err := s.SetActive(edge.Id); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := s.ReissueToken(edge.Id); err != nil {
+		t.Fatalf("ReissueToken: %v", err)
+	}
+
+	after := hopByName(t, s, edge.Name)
+	if after.State != chain.StatePending || !after.IsActive {
+		t.Fatalf("after the reissue the hop is %q, active=%v; want pending and still active", after.State, after.IsActive)
+	}
+	host, ok := s.ActiveEdgeHost()
+	if !ok || host != "a.example.net" {
+		t.Fatalf("ActiveEdgeHost = %q, %v; want a.example.net, true", host, ok)
+	}
+	if host, ok := settings.GetProxyOverride(); !ok || host != "a.example.net" {
+		t.Fatalf("GetProxyOverride = %q, %v; want the edge host, not the legacy one", host, ok)
+	}
+}
+
 // §2.3 — the legacy proxyOverrideHost becomes one hop named legacy, and the
 // migration may run on every start.
 func TestChainMigrateLegacyOverride(t *testing.T) {
