@@ -91,6 +91,15 @@ type AllSetting struct {
 	ProxyOverrideEnable bool   `json:"proxyOverrideEnable" form:"proxyOverrideEnable"`
 	ProxyOverrideHost   string `json:"proxyOverrideHost" form:"proxyOverrideHost"`
 
+	// Chain registry preferences (docs/spec/proxy-chain.md §2.2).
+	// chainRevision is not here on purpose: it is registry state written in
+	// the same transaction as the registry itself, and a form save must not
+	// take it backwards.
+	ChainExtraPorts     string `json:"chainExtraPorts" form:"chainExtraPorts"`
+	ChainPollSeconds    int    `json:"chainPollSeconds" form:"chainPollSeconds"`
+	ChainStaleMinutes   int    `json:"chainStaleMinutes" form:"chainStaleMinutes"`
+	ChainJoinTokenHours int    `json:"chainJoinTokenHours" form:"chainJoinTokenHours"`
+
 	// Monitoring preferences (docs/spec/monitoring-panel.md §2.2). The
 	// monitoring state keys (monProbeSubId, monProbeLastEnsured,
 	// monLastContact, monClientsSnapshot) are not here on purpose: they are

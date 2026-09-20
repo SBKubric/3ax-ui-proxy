@@ -94,6 +94,17 @@ var defaultValueMap = map[string]string{
 	"proxyOverrideEnable": "false",
 	"proxyOverrideHost":   "",
 
+	// Chain registry (docs/spec/proxy-chain.md §2.2). The host override above
+	// becomes derived from this registry: the address the panel publishes is
+	// the host of the active edge. chainRevision is state, not a preference —
+	// it is absent from entity.AllSetting so a settings save cannot roll the
+	// registry's revision back; the other four travel through the form.
+	"chainRevision":       "0",
+	"chainExtraPorts":     "[]",
+	"chainPollSeconds":    "30",
+	"chainStaleMinutes":   "60",
+	"chainJoinTokenHours": "24",
+
 	// Monitoring (docs/spec/monitoring-panel.md §2.2). The first seven are
 	// preferences the settings form edits; the last four are state that
 	// mon-server and the panel write between saves, so they are deliberately

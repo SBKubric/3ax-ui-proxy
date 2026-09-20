@@ -90,6 +90,13 @@ class AllSetting {
         this.monRollupRetentionDays = 30;
         this.monRollupStepMinutes = 60;
 
+        // Chain registry preferences (docs/spec/proxy-chain.md §2.2).
+        // chainRevision is registry state and never travels through this form.
+        this.chainExtraPorts = "[]";
+        this.chainPollSeconds = 30;
+        this.chainStaleMinutes = 60;
+        this.chainJoinTokenHours = 24;
+
         if (data == null) {
             return;
         }
