@@ -18,7 +18,6 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/logger"
 	"github.com/coinman-dev/3ax-ui/v2/proxy"
-	"github.com/coinman-dev/3ax-ui/v2/relaymanifest"
 	"github.com/coinman-dev/3ax-ui/v2/sub"
 	"github.com/coinman-dev/3ax-ui/v2/tunnel"
 	"github.com/coinman-dev/3ax-ui/v2/util/crypto"
@@ -26,7 +25,6 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/web"
 	"github.com/coinman-dev/3ax-ui/v2/web/global"
 	"github.com/coinman-dev/3ax-ui/v2/web/service"
-	"github.com/coinman-dev/3ax-ui/v2/xray"
 
 	"github.com/joho/godotenv"
 	"github.com/op/go-logging"
@@ -573,7 +571,6 @@ func main() {
 		fmt.Println("    migrate        migrate form other/old x-ui")
 		fmt.Println("    setting        set settings")
 		fmt.Println("    proxy          run sacrificial proxy front (dokodemo relay + sub)")
-		fmt.Println("    relay-manifest print the relay manifest for a proxy front (ports only, no keys)")
 		fmt.Println("    proxy-setup-url show the pending setup-page link of a proxy front")
 	}
 
@@ -644,26 +641,6 @@ func main() {
 		} else {
 			updateCert(webCertFile, webKeyFile)
 		}
-	case "relay-manifest":
-		manifestCmd := flag.NewFlagSet("relay-manifest", flag.ExitOnError)
-		var manifestOut string
-		manifestCmd.StringVar(&manifestOut, "o", "", "write the manifest to this file instead of stdout")
-		if err := manifestCmd.Parse(os.Args[2:]); err != nil {
-			fmt.Println(err)
-			return
-		}
-		data, err := relaymanifest.FromFile(xray.GetConfigPath(), config.GetVersion())
-		if err != nil {
-			log.Fatalf("relay-manifest: %v", err)
-		}
-		if manifestOut == "" {
-			os.Stdout.Write(data)
-			return
-		}
-		if err := os.WriteFile(manifestOut, data, 0o600); err != nil {
-			log.Fatalf("relay-manifest: %v", err)
-		}
-		fmt.Printf("relay manifest written to %s\n", manifestOut)
 	case "proxy-setup-url":
 		urlCmd := flag.NewFlagSet("proxy-setup-url", flag.ExitOnError)
 		var urlCfgPath string
