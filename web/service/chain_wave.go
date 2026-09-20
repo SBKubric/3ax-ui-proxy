@@ -19,7 +19,9 @@ import (
 // It never moves the revision. Freshness is the one thing that changes
 // constantly, and a chain whose revision moved on every poll would spend its
 // life chasing its own tail (§3.4).
-type ChainWaveService struct{}
+type ChainWaveService struct {
+	settingService SettingService
+}
 
 // AuthenticateHop matches a bearer token against the hop secrets of the hops
 // that poll the panel directly — the ones whose next hop is the panel itself,
@@ -61,35 +63,89 @@ func (s *ChainWaveService) AuthenticateHop(bearer string) (*model.ChainHop, bool
 // seenRevision, and each entry of outer is a neighbour further out that the
 // caller has heard from since its own last poll (§3.3).
 //
-// Neither field is ever wound back. Acknowledgements travel inward hop by hop,
-// so a stale one can arrive behind a fresher one, and a hop that appeared to
-// go backwards would read as an outage that never happened. A timestamp from
-// a box with a running-fast clock is clamped to now for the same reason.
+// A hop may only speak for the hops outward of it — the ones in its own
+// truncated document. Everything else is dropped: the acknowledgements are
+// the one thing a box can put in the registry, and a seized front must not be
+// able to report a hop it cannot even see as fresh, nor pull an inward
+// neighbour's freshness about.
+//
+// Nothing is ever wound back and nothing may run ahead. Acknowledgements
+// travel inward hop by hop, so a stale one can arrive behind a fresher one,
+// and a hop that appeared to go backwards would read as an outage that never
+// happened; a revision beyond the registry's own or a timestamp from a box
+// with a fast clock is clamped, so a box cannot claim to be ahead of the
+// panel.
 func (s *ChainWaveService) RecordSeen(hopName string, seenRevision int64, outer []chain.OuterAck) error {
 	db := database.GetDB()
 	if db == nil {
 		return nil
 	}
+	// The settings read comes first, outside the transaction: this SQLite runs
+	// on a single connection.
+	revision, err := s.settingService.GetChainRevision()
+	if err != nil {
+		return err
+	}
+	outward, err := outwardOf(db, hopName)
+	if err != nil {
+		return err
+	}
+
 	now := time.Now().UnixMilli()
+	clamp := func(value, ceiling int64) int64 {
+		if value > ceiling {
+			return ceiling
+		}
+		return value
+	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		if err := recordSeenTx(tx, hopName, seenRevision, now); err != nil {
+		if err := recordSeenTx(tx, hopName, clamp(seenRevision, revision), now); err != nil {
 			return err
 		}
 		for _, ack := range outer {
 			name := strings.TrimSpace(ack.Name)
-			if name == "" || name == hopName {
+			if _, allowed := outward[name]; !allowed {
 				continue
 			}
-			seen := ack.LastSeen
-			if seen > now {
-				seen = now
-			}
-			if err := recordSeenTx(tx, name, ack.LastRevision, seen); err != nil {
+			if err := recordSeenTx(tx, name, clamp(ack.LastRevision, revision), clamp(ack.LastSeen, now)); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+// outwardOf names the hops a caller may speak for: exactly the ones in its own
+// document besides itself (§3.2). The truncation is the document's — the inner
+// path outward of the caller plus the edges for an inner, nothing at all for
+// an edge, whose neighbour is beside it rather than outward — and it is worked
+// out from the registry here rather than by building a document, which would
+// need the panel host the caller does not have to have given us.
+func outwardOf(db *gorm.DB, hopName string) (map[string]struct{}, error) {
+	outward := map[string]struct{}{}
+	hops, err := orderedHops(db)
+	if err != nil {
+		return nil, err
+	}
+	entered := make([]model.ChainHop, 0, len(hops))
+	for _, hop := range hops {
+		if hop.State != chain.StatePending {
+			entered = append(entered, hop)
+		}
+	}
+	for index, hop := range entered {
+		if hop.Name != hopName {
+			continue
+		}
+		if hop.Role == chain.RoleEdge {
+			return outward, nil
+		}
+		for _, further := range entered[index+1:] {
+			outward[further.Name] = struct{}{}
+		}
+		return outward, nil
+	}
+	return outward, nil
 }
 
 // recordSeenTx moves one hop's freshness forward, and only forward. A name

@@ -70,12 +70,12 @@ func TestChainWaveRecordsTheCallersPoll(t *testing.T) {
 	joinedWithSecret(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
 	before := revisionOf(t, registry)
 
-	if err := wave.RecordSeen("inner-1", 7, nil); err != nil {
+	if err := wave.RecordSeen("inner-1", before, nil); err != nil {
 		t.Fatalf("RecordSeen: %v", err)
 	}
 	stored := hopByName(t, registry, "inner-1")
-	if stored.LastRevision != 7 {
-		t.Fatalf("lastRevision is %d, want 7", stored.LastRevision)
+	if stored.LastRevision != before {
+		t.Fatalf("lastRevision is %d, want %d", stored.LastRevision, before)
 	}
 	if stored.LastSeenAt == 0 || stored.LastSeenAt > time.Now().UnixMilli() {
 		t.Fatalf("lastSeenAt is %d", stored.LastSeenAt)
@@ -91,17 +91,18 @@ func TestChainWaveRecordsOuterAcknowledgements(t *testing.T) {
 	joinedWithSecret(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
 	joinedWithSecret(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
 	future := time.Now().Add(time.Hour).UnixMilli()
+	revision := revisionOf(t, registry)
 
-	err := wave.RecordSeen("inner-1", 7, []chain.OuterAck{
-		{Name: "edge-a", LastRevision: 6, LastSeen: future},
-		{Name: "ghost", LastRevision: 99, LastSeen: future},
+	err := wave.RecordSeen("inner-1", revision, []chain.OuterAck{
+		{Name: "edge-a", LastRevision: revision, LastSeen: future},
+		{Name: "ghost", LastRevision: revision, LastSeen: future},
 	})
 	if err != nil {
 		t.Fatalf("RecordSeen: %v", err)
 	}
 	edge := hopByName(t, registry, "edge-a")
-	if edge.LastRevision != 6 {
-		t.Fatalf("edge-a lastRevision is %d, want 6", edge.LastRevision)
+	if edge.LastRevision != revision {
+		t.Fatalf("edge-a lastRevision is %d, want %d", edge.LastRevision, revision)
 	}
 	if edge.LastSeenAt > time.Now().UnixMilli() {
 		t.Fatalf("edge-a lastSeenAt %d is in the future", edge.LastSeenAt)
@@ -116,20 +117,87 @@ func TestChainWaveNeverWindsAHopBack(t *testing.T) {
 	wave := &ChainWaveService{}
 	joinedWithSecret(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
 	joinedWithSecret(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
-	if err := wave.RecordSeen("inner-1", 9, []chain.OuterAck{{Name: "edge-a", LastRevision: 9, LastSeen: time.Now().UnixMilli()}}); err != nil {
+	revision := revisionOf(t, registry)
+	if err := wave.RecordSeen("inner-1", revision, []chain.OuterAck{{Name: "edge-a", LastRevision: revision, LastSeen: time.Now().UnixMilli()}}); err != nil {
 		t.Fatalf("RecordSeen: %v", err)
 	}
 	seenAt := hopByName(t, registry, "edge-a").LastSeenAt
 
 	// A stale acknowledgement travelling behind a fresher one must not undo it.
-	if err := wave.RecordSeen("inner-1", 9, []chain.OuterAck{{Name: "edge-a", LastRevision: 4, LastSeen: seenAt - 10_000}}); err != nil {
+	if err := wave.RecordSeen("inner-1", revision, []chain.OuterAck{{Name: "edge-a", LastRevision: revision - 1, LastSeen: seenAt - 10_000}}); err != nil {
 		t.Fatalf("RecordSeen: %v", err)
 	}
 	edge := hopByName(t, registry, "edge-a")
-	if edge.LastRevision != 9 {
-		t.Fatalf("edge-a lastRevision fell back to %d", edge.LastRevision)
+	if edge.LastRevision != revision {
+		t.Fatalf("edge-a lastRevision fell back to %d, want %d", edge.LastRevision, revision)
 	}
 	if edge.LastSeenAt < seenAt {
 		t.Fatalf("edge-a lastSeenAt fell back from %d to %d", seenAt, edge.LastSeenAt)
+	}
+}
+
+func TestChainWaveIgnoresAnAcknowledgementFromInward(t *testing.T) {
+	registry := newChainService(t)
+	wave := &ChainWaveService{}
+	joinedWithSecret(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
+	joinedWithSecret(t, registry, AddHopInput{Name: "inner-2", Host: "203.0.113.9", Role: chain.RoleInner})
+	joinedWithSecret(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	state, err := registry.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// inner-2 may speak for the edge outward of it and for nobody inward: a
+	// seized box must not be able to report freshness it cannot have seen.
+	err = wave.RecordSeen("inner-2", state.Revision, []chain.OuterAck{
+		{Name: "inner-1", LastRevision: state.Revision, LastSeen: time.Now().UnixMilli()},
+		{Name: "edge-a", LastRevision: state.Revision, LastSeen: time.Now().UnixMilli()},
+	})
+	if err != nil {
+		t.Fatalf("RecordSeen: %v", err)
+	}
+	if inner := hopByName(t, registry, "inner-1"); inner.LastRevision != 0 {
+		t.Fatalf("an acknowledgement from inward was recorded: %+v", inner)
+	}
+	if edge := hopByName(t, registry, "edge-a"); edge.LastRevision != state.Revision {
+		t.Fatalf("the acknowledgement for the hop outward was not recorded: %+v", edge)
+	}
+}
+
+func TestChainWaveIgnoresAnEdgesAcknowledgementOfItsNeighbour(t *testing.T) {
+	registry := newChainService(t)
+	wave := &ChainWaveService{}
+	joinedWithSecret(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	joinedWithSecret(t, registry, AddHopInput{Name: "edge-b", Host: "b.example.net", Role: chain.RoleEdge})
+	state, _ := registry.List()
+
+	if err := wave.RecordSeen("edge-a", state.Revision, []chain.OuterAck{
+		{Name: "edge-b", LastRevision: state.Revision, LastSeen: time.Now().UnixMilli()},
+	}); err != nil {
+		t.Fatalf("RecordSeen: %v", err)
+	}
+	if edge := hopByName(t, registry, "edge-b"); edge.LastRevision != 0 {
+		t.Fatalf("an edge spoke for the edge beside it: %+v", edge)
+	}
+}
+
+func TestChainWaveClampsARevisionToTheRegistrys(t *testing.T) {
+	registry := newChainService(t)
+	wave := &ChainWaveService{}
+	joinedWithSecret(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
+	joinedWithSecret(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	state, _ := registry.List()
+
+	err := wave.RecordSeen("inner-1", state.Revision+50, []chain.OuterAck{
+		{Name: "edge-a", LastRevision: state.Revision + 100, LastSeen: time.Now().UnixMilli()},
+	})
+	if err != nil {
+		t.Fatalf("RecordSeen: %v", err)
+	}
+	if inner := hopByName(t, registry, "inner-1"); inner.LastRevision != state.Revision {
+		t.Fatalf("the caller's revision %d was not clamped to %d", inner.LastRevision, state.Revision)
+	}
+	if edge := hopByName(t, registry, "edge-a"); edge.LastRevision != state.Revision {
+		t.Fatalf("the acknowledged revision %d was not clamped to %d", edge.LastRevision, state.Revision)
 	}
 }
