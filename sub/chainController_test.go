@@ -486,3 +486,36 @@ func TestChainJoinDocumentTakesTheAddressTheBoxDialled(t *testing.T) {
 		t.Fatalf("the join document points at %+v", response.Document)
 	}
 }
+
+func TestChainJoinDistrustsTheObservedHeader(t *testing.T) {
+	cases := map[string]struct {
+		header     string
+		remoteAddr string
+		want       string
+	}{
+		"an oversized header":         {strings.Repeat("9", 100), "203.0.113.9:50000", "203.0.113.9"},
+		"a header with control bytes": {"198.51.100.44\r\nX-Evil: 1", "203.0.113.9:50000", "203.0.113.9"},
+		"a header with spaces":        {"198.51.100.44 or so", "203.0.113.9:50000", "203.0.113.9"},
+		"a good header":               {"198.51.100.44", "203.0.113.9:50000", "198.51.100.44"},
+		"nothing anyone can trust":    {strings.Repeat("9", 100), "not an address", ""},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			engine, registry := newChainRouter(t)
+			_, token, _, err := registry.Add(service.AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+			if err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			request := joinRequest(t, map[string]any{"token": token})
+			request.Header[chain.ObservedHeader] = []string{testCase.header}
+			request.RemoteAddr = testCase.remoteAddr
+
+			if recorder := do(engine, request); recorder.Code != http.StatusOK {
+				t.Fatalf("POST /chain/v1/join: %d %q", recorder.Code, recorder.Body.String())
+			}
+			if stored := hopFromRegistry(t, registry, "edge-a"); stored.ObservedAddr != testCase.want {
+				t.Fatalf("observedAddr is %q, want %q", stored.ObservedAddr, testCase.want)
+			}
+		})
+	}
+}

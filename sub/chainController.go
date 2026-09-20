@@ -156,10 +156,16 @@ func (a *ChainController) join(c *gin.Context) {
 	}
 
 	// The direct neighbour stamps where the join really came from; when the
-	// panel is the direct neighbour, that is the peer we are talking to.
+	// panel is the direct neighbour, that is the peer we are talking to. The
+	// header comes from another box, so it is checked before it is believed —
+	// and a header that is not an address is worth less than the peer we can
+	// see for ourselves.
 	observed := strings.TrimSpace(c.GetHeader(chain.ObservedHeader))
-	if observed == "" {
-		observed = c.ClientIP()
+	if !chain.ObservedAddrValid(observed) {
+		observed = strings.TrimSpace(c.ClientIP())
+	}
+	if !chain.ObservedAddrValid(observed) {
+		observed = ""
 	}
 
 	response, err := a.joinService.Join(service.JoinRequest{

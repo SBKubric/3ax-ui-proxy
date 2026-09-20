@@ -106,7 +106,13 @@ func (s *ChainJoinService) Join(in JoinRequest) (*JoinResponse, error) {
 		if err := applyReportedAddress(&hop, in); err != nil {
 			return err
 		}
-		if err := markJoinedTx(tx, &hop, chain.HashSecret(secret), strings.TrimSpace(in.ObservedAddr)); err != nil {
+		observed := strings.TrimSpace(in.ObservedAddr)
+		if !chain.ObservedAddrValid(observed) {
+			// A hint that is not an address is no hint: the hop keeps
+			// whatever it had rather than showing the owner nonsense (§4.4).
+			observed = ""
+		}
+		if err := markJoinedTx(tx, &hop, chain.HashSecret(secret), observed); err != nil {
 			return err
 		}
 		joined = hop
