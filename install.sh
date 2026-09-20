@@ -2699,14 +2699,10 @@ prompt_proxy_mode() {
         echo -e "${red}Proxy mode requires PROXY_NEXT_HOP (env var or prompt): the address this hop relays to and polls the chain document from.${plain}"
         exit 1
     fi
-    if ! [[ "${PROXY_SUB_PORT}" =~ ^[0-9]+$ ]]; then
-        echo -e "${yellow}PROXY_SUB_PORT '${PROXY_SUB_PORT}' is not numeric — defaulting to 2096.${plain}"
-        PROXY_SUB_PORT=2096
-    fi
-    if ! [[ "${PROXY_NEXT_HOP_SUB_PORT}" =~ ^[0-9]+$ ]]; then
-        echo -e "${yellow}PROXY_NEXT_HOP_SUB_PORT '${PROXY_NEXT_HOP_SUB_PORT}' is not numeric — defaulting to 2096.${plain}"
-        PROXY_NEXT_HOP_SUB_PORT=2096
-    fi
+    # Ports are checked by proxy_validate_config_values below, and a bad one is
+    # an error rather than a silent fallback to 2096: the old fallback quietly
+    # moved the sub port of a box whose owner had asked for another one, and it
+    # would have swallowed a value crafted to end up inside proxy.json unquoted.
     case "${PROXY_NEXT_HOP_SCHEME}" in
     http | https) ;;
     *)
@@ -2730,9 +2726,58 @@ prompt_proxy_mode() {
         PROXY_KEY=""
     fi
 
+    proxy_validate_config_values
+
     export PROXY_NEXT_HOP PROXY_NEXT_HOP_SUB_PORT PROXY_NEXT_HOP_SCHEME PROXY_JOIN_TOKEN
     export PROXY_DOMAIN PROXY_SUB_PORT PROXY_SUB_LISTEN PROXY_RELAY_LISTEN PROXY_TLS
     export PROXY_CERT PROXY_KEY
+}
+
+# proxy_json_value_ok <name> <value> <alphabet-regex> — refuses a value that has
+# no business inside proxy.json.
+#
+# config_proxy_mode interpolates these straight into a JSON heredoc, so a value
+# carrying a double quote does not merely break the file: it appends keys of the
+# supplier's choosing to the config a hop proves itself with — a `hopSecret`, a
+# `nextHop`, a `stateDir`. The alphabets below are deliberately narrower than
+# what a shell would swallow: a next hop is a host, an IP or a bracketed IPv6, a
+# cert is a path, and none of them has any business carrying a quote, a
+# backslash, a space or a control character.
+proxy_json_value_ok() {
+    local name="$1" value="$2" pattern="$3"
+    [[ -z "${value}" ]] && return 0
+    if [[ ! "${value}" =~ ${pattern} ]]; then
+        echo -e "${red}${name}='${value}' contains characters that must not reach /etc/x-ui/proxy.json. Allowed: ${pattern}${plain}"
+        exit 1
+    fi
+}
+
+# proxy_json_port_ok <name> <value> — a port is a number, and it goes into the
+# JSON unquoted, so anything else is both a broken file and an injection point.
+proxy_json_port_ok() {
+    local name="$1" value="$2"
+    if ! [[ "${value}" =~ ^[0-9]+$ ]] || ((value < 1 || value > 65535)); then
+        echo -e "${red}${name}='${value}' must be an integer between 1 and 65535.${plain}"
+        exit 1
+    fi
+}
+
+# Checks every PROXY_* value that ends up in proxy.json. Called once on the
+# values the owner supplied and again just before the file is written, because
+# proxy_setup_tls fills in cert and key in between.
+proxy_validate_config_values() {
+    # `]` leads the bracket expression and `-` closes it, so both are literal.
+    local host_re='^[]A-Za-z0-9.:[-]+$'
+    local path_re='^[A-Za-z0-9._/@-]+$'
+
+    proxy_json_value_ok PROXY_NEXT_HOP "${PROXY_NEXT_HOP:-}" "${host_re}"
+    proxy_json_value_ok PROXY_DOMAIN "${PROXY_DOMAIN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_SUB_LISTEN "${PROXY_SUB_LISTEN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_RELAY_LISTEN "${PROXY_RELAY_LISTEN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_CERT "${PROXY_CERT:-}" "${path_re}"
+    proxy_json_value_ok PROXY_KEY "${PROXY_KEY:-}" "${path_re}"
+    proxy_json_port_ok PROXY_SUB_PORT "${PROXY_SUB_PORT:-}"
+    proxy_json_port_ok PROXY_NEXT_HOP_SUB_PORT "${PROXY_NEXT_HOP_SUB_PORT:-}"
 }
 
 # Public IPv4 of this box — the subject of the Let's Encrypt IP certificate and
@@ -2844,6 +2889,9 @@ proxy_setup_tls() {
 # manifest is copied anywhere — the ports this hop relays arrive in the chain
 # document from its next hop.
 config_proxy_mode() {
+    # Before anything is created or removed: a bad value here means no file.
+    proxy_validate_config_values
+
     mkdir -p /etc/x-ui
     # Leftovers of a v1 box being reinstalled as a hop: a stale manifest would be
     # ignored, a stale setup-page URL would send its owner to a dead link.
