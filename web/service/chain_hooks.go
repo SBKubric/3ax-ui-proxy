@@ -14,9 +14,11 @@ import (
 // keep relaying yesterday's ports until some unrelated registry edit happened
 // to bump the revision.
 //
-// It takes the caller's transaction when there is one. SQLite here runs on a
+// It takes the caller's transaction when there is one, and every call site
+// must pass one if it still has a transaction open: SQLite here runs on a
 // single connection, so a hook that opened a query of its own from inside an
-// open transaction would wait for the connection that transaction is holding.
+// open transaction would wait forever for the connection that transaction is
+// holding. A nil tx is only correct after the caller's write has committed.
 //
 // A panel with no chain does nothing at all: the registry is empty, no box is
 // polling, and a revision counter climbing on a panel that has no fronts is

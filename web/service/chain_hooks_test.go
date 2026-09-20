@@ -3,6 +3,7 @@ package service
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/database"
@@ -52,6 +53,55 @@ func TestAddingAnInboundMovesTheChainRevision(t *testing.T) {
 
 	if after := chainRevision(t); after <= before {
 		t.Errorf("chainRevision = %d after an inbound was added, want more than %d", after, before)
+	}
+}
+
+// joinedRegistry gives the panel one hop that has entered the chain, which is
+// what makes the port hooks do anything at all.
+func joinedRegistry(t *testing.T) *ChainService {
+	t.Helper()
+	registry := &ChainService{}
+	hop, _, _, err := registry.Add(AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := registry.MarkJoined(hop.Id, chain.HashSecret("secret"), ""); err != nil {
+		t.Fatalf("MarkJoined: %v", err)
+	}
+	return registry
+}
+
+// TestAddingAnXrayInboundDoesNotDeadlock: AddInbound holds a transaction open
+// until it returns, and this SQLite has a single connection — a hook that
+// asked for one of its own there would wait for the connection its own caller
+// is holding, and the panel would hang on adding an inbound. The timeout is
+// the point of the test: a deadlock must fail here, not hang the suite.
+func TestAddingAnXrayInboundDoesNotDeadlock(t *testing.T) {
+	newPanel(t)
+	joinedRegistry(t)
+	before := chainRevision(t)
+
+	done := make(chan error, 1)
+	go func() {
+		// Disabled, so the xray runtime is never called: what is under test is
+		// the transaction, not the sync.
+		_, _, err := (&InboundService{}).AddInbound(&model.Inbound{
+			UserId: 1, Enable: false, Port: 34567, Protocol: model.VLESS, Tag: "inbound-34567",
+			Remark: "vless", Settings: `{"clients":[],"decryption":"none"}`,
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("AddInbound: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("AddInbound never returned: the ports hook is waiting for the connection its own transaction holds")
+	}
+
+	if after := chainRevision(t); after <= before {
+		t.Errorf("chainRevision = %d after an xray inbound was added, want more than %d", after, before)
 	}
 }
 

@@ -380,7 +380,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		s.xrayApi.Close()
 	}
 
-	chainPortsChanged(nil) // the chain relays this port list (proxy-chain.md §3.4)
+	chainPortsChanged(tx) // the chain relays this port list (proxy-chain.md §3.4)
 	return inbound, needRestart, err
 }
 
