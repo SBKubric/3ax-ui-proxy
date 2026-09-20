@@ -913,6 +913,7 @@ func (s *InboundService) SetInboundEnable(id int, enable bool) (bool, error) {
 		return false, err
 	}
 	inbound.Enable = enable
+	chainPortsChanged(nil) // the chain relays this port list (proxy-chain.md §3.4)
 
 	// Sync xray runtime: drop the live inbound, add it back if we're enabling.
 	// "User not found"-style errors from DelInbound mean the inbound was
@@ -920,6 +921,11 @@ func (s *InboundService) SetInboundEnable(id int, enable bool) (bool, error) {
 	// means the live config and DB diverged, so we ask the caller to
 	// schedule a restart.
 	needRestart := false
+	if currentProcess() == nil {
+		// Xray is not running, so there is no live config to sync against —
+		// and the API client is nil, which the calls below would dereference.
+		return false, nil
+	}
 	s.xrayApi.Init(xrayAPIPort())
 	defer s.xrayApi.Close()
 
@@ -2217,6 +2223,9 @@ func (s *InboundService) disableInvalidInbounds(tx *gorm.DB) (bool, int64, error
 		Update("enable", false)
 	err := result.Error
 	count := result.RowsAffected
+	if err == nil && count > 0 {
+		chainPortsChanged(tx) // the chain relays this port list (proxy-chain.md §3.4)
+	}
 	return needRestart, count, err
 }
 
