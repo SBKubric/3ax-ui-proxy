@@ -1,9 +1,8 @@
 package proxy
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,66 +11,84 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/xray"
 )
 
-// Run starts the proxy front — the dokodemo-door relay to the real server and,
-// when configured, the subscription server that proxies the real panel's /sub
-// and /json — then blocks until a termination signal is received.
+// Run starts this hop of the proxy chain: the sub port (subscriptions, the
+// wave endpoints and — until the box has joined — the join page), the
+// dokodemo-door relay to the next hop, and the wave client that keeps both in
+// step with the chain document. It blocks until a termination signal.
+//
+// There is no mode switch after startup: the sub port comes up once and stays
+// up, and joining only fills in what the hop did not know yet.
 func Run(cfg *Config) error {
+	for _, warning := range cfg.LegacyWarnings() {
+		logger.Warning(warning)
+	}
+
 	binPath := xray.GetBinaryPath()
 	if _, err := os.Stat(binPath); err != nil {
 		return fmt.Errorf("xray binary not found at %s (set XUI_BIN_FOLDER): %w", binPath, err)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	state := NewState()
+	store := NewDocumentStore(cfg.DocumentPath())
+	// The cached document is what lets a rebooted box relay before the first
+	// poll comes back (§3.6).
+	if doc, err := store.Load(); err != nil {
+		logger.Warning("proxy-front:", err)
+	} else if doc != nil {
+		state.SetDocument(doc)
+		logger.Infof("proxy-front: resuming from the cached chain document, revision %d", doc.Revision)
+	}
 
-	// Bootstrap mode: no relay manifest yet. Serve the one-time setup page on
-	// the subscription port until a manifest is pasted, then carry on as usual
-	// in this same process.
-	if _, err := os.Stat(cfg.RelayManifestPath); errors.Is(err, fs.ErrNotExist) {
-		if err := bootstrap(cfg, sigCh); err != nil {
+	relay := NewRelay(cfg.RelayListen)
+	defer relay.Stop()
+	poller := NewPoller(cfg, state, store, relay)
+
+	var join *JoinPage
+	if cfg.Bootstrap() {
+		var err error
+		if join, err = NewJoinPage(cfg, state, store); err != nil {
 			return err
-		}
-		if _, err := os.Stat(cfg.RelayManifestPath); err != nil {
-			return nil // interrupted before a manifest arrived
 		}
 	}
 
-	relay, err := NewRelay(cfg)
+	sub, err := NewSubServer(cfg, state, NewChainHandler(cfg, state, relay), join)
 	if err != nil {
 		return err
 	}
-	// Backstop: remove the generated relay config on exit. relay.Stop() only
-	// deletes it while xray is still running, so if xray dies first it would
-	// otherwise linger in the bin folder.
-	defer os.Remove(relayConfigPath())
-
-	if err := relay.Start(); err != nil {
-		return fmt.Errorf("start relay xray: %w", err)
+	if err := sub.Start(); err != nil {
+		return fmt.Errorf("start sub server: %w", err)
 	}
-	logger.Infof("proxy-front: relaying ports %v -> %s via dokodemo-door (L4 passthrough)", relay.Ports(), cfg.UpstreamHost)
+	defer sub.Stop()
 
-	var sub *SubServer
-	if cfg.SubEnabled() {
-		sub, err = NewSubServer(cfg)
-		if err != nil {
-			relay.Stop()
-			return err
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	if join != nil {
+		if !awaitJoin(cfg, join, sigCh) {
+			logger.Info("proxy-front: shutting down before this box joined the chain")
+			return nil
 		}
-		if err := sub.Start(); err != nil {
-			relay.Stop()
-			return fmt.Errorf("start sub server: %w", err)
-		}
-	} else {
-		logger.Info("proxy-front: subscription server disabled (no upstreamBase configured); relay only")
+		poller.SetPollSeconds(join.Result().PollSeconds)
+		poller.MarkJoined()
 	}
+
+	if doc := state.Document(); doc != nil {
+		if err := relay.Apply(doc.Ports, doc.NextHop.Host); err != nil {
+			// A relay that cannot start is not a reason to stop the wave:
+			// the next revision may be the one that fixes it.
+			logger.Error("proxy-front: starting the relay failed:", err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go poller.Run(ctx)
 
 	<-sigCh
-
 	logger.Info("proxy-front: shutting down")
-	if sub != nil {
-		if err := sub.Stop(); err != nil {
-			logger.Warning("proxy-front: error stopping sub server:", err)
-		}
+	cancel()
+	if err := sub.Stop(); err != nil {
+		logger.Warning("proxy-front: error stopping sub server:", err)
 	}
 	if err := relay.Stop(); err != nil {
 		logger.Warning("proxy-front: error stopping relay:", err)
@@ -79,38 +96,31 @@ func Run(cfg *Config) error {
 	return nil
 }
 
-// bootstrap runs the setup page until a manifest is accepted or a signal
-// arrives. The setup URL is logged and kept in SetupURLPath(cfg.Path()) for
-// the installer and `x-ui proxy-setup-url`; it is removed once spent.
-func bootstrap(cfg *Config, sigCh <-chan os.Signal) error {
-	setup, err := NewSetupServer(cfg)
-	if err != nil {
-		return err
-	}
-	if err := setup.Start(); err != nil {
-		return fmt.Errorf("start setup page: %w", err)
-	}
-	url := setup.URL()
+// awaitJoin serves the join page until this box joins or a signal arrives. The
+// URL is logged and kept in JoinURLPath(cfg.Path()) for the installer and
+// `x-ui chain join-url`; it is removed once the page is spent.
+func awaitJoin(cfg *Config, join *JoinPage, sigCh <-chan os.Signal) bool {
+	url := join.URL()
 	urlFile := ""
 	if cfg.Path() != "" {
-		urlFile = SetupURLPath(cfg.Path())
+		urlFile = JoinURLPath(cfg.Path())
 		if err := os.WriteFile(urlFile, []byte(url+"\n"), 0o600); err != nil {
-			logger.Warning("proxy-front: cannot record the setup URL:", err)
+			logger.Warning("proxy-front: cannot record the join URL:", err)
 			urlFile = ""
 		}
 	}
-	logger.Infof("proxy-front: no relay manifest at %s — bootstrap mode. Paste the manifest from the real panel at: %s", cfg.RelayManifestPath, url)
-	if urlFile != "" {
-		defer os.Remove(urlFile)
+	logger.Infof("proxy-front: no hopSecret in %s — bootstrap mode. Join this box at: %s", cfg.Path(), url)
+	if !cfg.TLS() {
+		logger.Warning("proxy-front: " + insecureJoinWarning)
 	}
 
 	select {
-	case <-setup.Accepted():
+	case <-join.Accepted():
+		if urlFile != "" {
+			os.Remove(urlFile)
+		}
+		return true
 	case <-sigCh:
-		logger.Info("proxy-front: shutting down before any manifest arrived")
+		return false
 	}
-	if err := setup.Stop(); err != nil {
-		logger.Warning("proxy-front: error stopping setup page:", err)
-	}
-	return nil
 }
