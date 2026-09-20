@@ -9,6 +9,7 @@ import (
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
+	"github.com/coinman-dev/3ax-ui/v2/logger"
 	"github.com/coinman-dev/3ax-ui/v2/web/service"
 
 	"github.com/gin-gonic/gin"
@@ -320,10 +321,16 @@ func (a *ChainController) ports(c *gin.Context) {
 // chainHopId reads the :id of a per-hop route. A non-numeric id is the same
 // answer as an id that is not in the registry: the editor never builds one by
 // hand, so this is a malformed request rather than something to explain.
+//
+// It is a real ChainError rather than a plain one so that fail() can key the
+// wording off its code, like every other refusal.
 func chainHopId(c *gin.Context) (int, error) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
-		return 0, errors.New(service.CodeUnknownHop + ": hop id " + strconv.Quote(c.Param("id")) + " is not a hop id")
+		return 0, &service.ChainError{
+			Code:    service.CodeUnknownHop,
+			Message: "hop id " + strconv.Quote(c.Param("id")) + " is not a hop id",
+		}
 	}
 	return id, nil
 }
@@ -333,16 +340,23 @@ func chainHopId(c *gin.Context) (int, error) {
 //
 // A registry refusal carries a stable code (§2.4), and the code is what the
 // wording hangs off: pages.settings.chain.errors.<code> in every language, with
-// the service's own English detail appended by jsonMsgObj. An error without a
-// code — a database fault, a malformed body — has no wording of its own and
-// travels as it is.
+// the service's own English detail appended by jsonMsgObj — that detail is
+// written for the operator and names the hop or the rule that was broken.
+//
+// An error without a code is not a refusal but a fault: a database that will
+// not open, a file the panel cannot read. Its text describes the panel's
+// insides and belongs in the log, not in a page anyone with a session can read,
+// so the browser gets one generic sentence and the log gets the error.
 func (a *ChainController) fail(c *gin.Context, err error) {
 	code := service.ChainErrorCode(err)
 	if code == "" {
-		// chainHopId's error is not a ChainError (the controller does not reach
-		// into the service's error type to build one), but it names the same
-		// code so the page can key off it.
-		jsonMsg(c, "", err)
+		logger.Warning("chain:", c.Request.Method, c.Request.URL.Path, err)
+		message := I18nWeb(c, "pages.settings.chain.errors.internal")
+		if message == "" {
+			// A panel whose bundle failed to load still has to say something.
+			message = "chain: the panel could not complete this request"
+		}
+		pureJsonMsg(c, http.StatusOK, false, message)
 		return
 	}
 	jsonMsg(c, I18nWeb(c, "pages.settings.chain.errors."+code), err)

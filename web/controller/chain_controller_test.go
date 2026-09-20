@@ -396,3 +396,27 @@ func TestChainDelTakesAnEmptyBody(t *testing.T) {
 		t.Fatalf("del with an empty body: %s", env.Msg)
 	}
 }
+
+// TestChainInternalFailureSaysNothingAboutTheInsides: a fault is not a refusal.
+// A registry refusal explains itself — it names the hop and the rule — but an
+// error with no code describes the panel's own machinery, and that text belongs
+// in the log rather than in an answer.
+func TestChainInternalFailureSaysNothingAboutTheInsides(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+	// The one fault a test can stage without a fake: the database is gone.
+	database.CloseDB()
+
+	env := monUIDecode(t, monUIGet(r, "/panel/api/chain/list", cookie))
+	if env.Success {
+		t.Fatalf("list on a closed database: success=true")
+	}
+	if env.Msg == "" {
+		t.Errorf("an internal failure answered with no message at all")
+	}
+	for _, leak := range []string{"sql:", "database is closed", "gorm", "goroutine"} {
+		if strings.Contains(strings.ToLower(env.Msg), strings.ToLower(leak)) {
+			t.Errorf("msg %q leaks %q from the panel's insides", env.Msg, leak)
+		}
+	}
+}

@@ -814,6 +814,7 @@
 "chain.errors.hop_not_joined" = "Only a hop whose box has entered the chain can be made active."
 "chain.errors.active_edge_in_use" = "Choose another edge with \"Make active\" first, then delete this one."
 "chain.errors.duplicate_port" = "Two services claim the same port, so the relayed port list cannot be built."
+"chain.errors.internal" = "The panel could not complete this request. The details are in the panel log."
 
 [pages.xray]
 "title" = "Xray Yapılandırmaları"
