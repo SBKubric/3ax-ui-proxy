@@ -78,6 +78,9 @@
                       <span>{{ i18n "pages.settings.subSettings" }}</span>
                     </template>
                     {{ template "settings/panel/subscription/general" . }}
+                    <!-- chain: the editor of the registry the Proxy front row above
+                         is now derived from (docs/spec/proxy-chain.md §7.1) -->
+                    {{ template "settings/panel/subscription/chain" . }}
                   </a-tab-pane>
                   <!-- monitoring: fifth pane, §7.3 -->
                   <a-tab-pane key="5" :style="{ paddingTop: '20px' }">
@@ -113,6 +116,10 @@
 {{template "component/aSettingListItem" .}}
 <!-- monitoring: the two controls of the Monitoring tab that are not AllSetting fields -->
 {{template "component/aMonitoring" .}}
+<!-- chain: the editor component and the read-only Proxy front row, registered
+     here because a component has to exist before the page's Vue instance is
+     created below (§7.1) -->
+{{template "settings/panel/subscription/chainEditor" .}}
 {{template "modals/twoFactorModal" .}}
 {{template "modals/textModal" .}}
 <script>
