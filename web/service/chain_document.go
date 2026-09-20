@@ -2,6 +2,7 @@ package service
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
@@ -33,9 +34,24 @@ func ETag(revision int64) string {
 	return `"` + strconv.FormatInt(revision, 10) + `"`
 }
 
-// Build returns the document for the hop named forHopName.
+// Build returns the document for the hop named forHopName, with no fallback
+// for the panel's own address: only chainPanelHost can answer it.
 func (s *ChainDocumentService) Build(forHopName string) (*chain.Document, error) {
-	documents, err := s.BuildAll()
+	return s.BuildWithPanelHost(forHopName, "")
+}
+
+// BuildWithPanelHost is Build with the address the caller was reached at.
+//
+// The panel cannot work out its own reachable address: what it knows is a
+// listen address, and behind NAT, a tunnel or a reverse proxy that is not what
+// a front dials. Usually it does not have to — the first-tier hop just polled
+// it, so the Host of that request is an address that demonstrably works, and
+// #81 passes it here. chainPanelHost overrides it for the cases where the
+// request cannot be trusted to carry it: a front reaching the panel through
+// something that rewrites Host, or a document built by the UI with no request
+// in hand at all.
+func (s *ChainDocumentService) BuildWithPanelHost(forHopName, fallbackHost string) (*chain.Document, error) {
+	documents, err := s.BuildAllWithPanelHost(fallbackHost)
 	if err != nil {
 		return nil, err
 	}
@@ -58,13 +74,20 @@ func (s *ChainDocumentService) Build(forHopName string) (*chain.Document, error)
 // here is found by walking inward past every pending hop — until one that has
 // entered, or the panel itself.
 func (s *ChainDocumentService) BuildAll() (map[string]*chain.Document, error) {
+	return s.BuildAllWithPanelHost("")
+}
+
+// BuildAllWithPanelHost is BuildAll with the address the caller was reached
+// at, used for the panel's own host when chainPanelHost is unset
+// (BuildWithPanelHost explains why).
+func (s *ChainDocumentService) BuildAllWithPanelHost(fallbackHost string) (map[string]*chain.Document, error) {
 	// Settings before anything else: SQLite runs on one connection here, so
 	// reading them later, from inside a query, would wait on itself.
 	revision, err := s.settingService.GetChainRevision()
 	if err != nil {
 		return nil, err
 	}
-	panelHop, err := s.panelAsNextHop()
+	panelHop, err := s.panelAsNextHop(fallbackHost)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +109,7 @@ func (s *ChainDocumentService) BuildAll() (map[string]*chain.Document, error) {
 	}
 	if panelHop.Host == "" {
 		return nil, chainErrorf(CodePanelHostUnset,
-			"the chain has hops but chainPanelHost is empty: the innermost hop has no address to poll")
+			"the chain has hops but the panel has no address: set chainPanelHost, or let the hop's own request supply one")
 	}
 
 	ports, err := s.portsService.Ports()
@@ -168,14 +191,16 @@ func (s *ChainDocumentService) nextHopOf(hop model.ChainHop, byId map[int]model.
 }
 
 // panelAsNextHop is what the innermost hop dials: the panel itself. The host
-// is the one the owner stated (chainPanelHost) — the panel's own listen
-// address says nothing about how a front reaches it — and the paths are the
-// panel's real subscription paths, which travel in the document so no box has
-// to store them.
-func (s *ChainDocumentService) panelAsNextHop() (chain.NextHop, error) {
+// is chainPanelHost when the owner stated one and the caller's own view of the
+// panel otherwise; the paths are the panel's real subscription paths, which
+// travel in the document so no box has to store them.
+func (s *ChainDocumentService) panelAsNextHop(fallbackHost string) (chain.NextHop, error) {
 	host, err := s.settingService.GetChainPanelHost()
 	if err != nil {
 		return chain.NextHop{}, err
+	}
+	if host == "" {
+		host = strings.TrimSpace(fallbackHost)
 	}
 	subPort, err := s.settingService.GetSubPort()
 	if err != nil {

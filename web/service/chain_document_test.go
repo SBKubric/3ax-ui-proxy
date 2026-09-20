@@ -266,8 +266,45 @@ func TestBuildRefusesAnUnknownHop(t *testing.T) {
 	}
 }
 
-// TestBuildRefusesWithoutThePanelHost: an empty nextHop.host would send the
-// innermost hop nowhere, and it would look like a working document.
+// TestThePanelHostSettingOverridesTheCallersView: the owner's answer wins.
+// A front reaching the panel through something that rewrites Host would
+// otherwise hand the chain an address no other hop can dial.
+func TestThePanelHostSettingOverridesTheCallersView(t *testing.T) {
+	documents, registry := newChainDocuments(t)
+	enteredHop(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+
+	document, err := documents.BuildWithPanelHost("edge-a", "10.0.0.250")
+	if err != nil {
+		t.Fatalf("BuildWithPanelHost: %v", err)
+	}
+	if document.NextHop.Host != "198.51.100.1" {
+		t.Errorf("the hop polls %q, want the stated chainPanelHost", document.NextHop.Host)
+	}
+}
+
+// TestTheCallersViewStandsInForAnUnsetPanelHost: with no setting, the address
+// the first-tier hop just reached the panel at is one that demonstrably works,
+// so the owner does not have to type anything for an ordinary chain (#81
+// passes the request's Host).
+func TestTheCallersViewStandsInForAnUnsetPanelHost(t *testing.T) {
+	documents, registry := newChainDocuments(t)
+	if err := documents.settingService.SetChainPanelHost(""); err != nil {
+		t.Fatalf("SetChainPanelHost: %v", err)
+	}
+	enteredHop(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+
+	document, err := documents.BuildWithPanelHost("edge-a", "panel.example.net")
+	if err != nil {
+		t.Fatalf("BuildWithPanelHost: %v", err)
+	}
+	if document.NextHop.Host != "panel.example.net" {
+		t.Errorf("the hop polls %q, want the address it reached the panel at", document.NextHop.Host)
+	}
+}
+
+// TestBuildRefusesWithoutThePanelHost: with neither a setting nor a caller to
+// ask, an empty nextHop.host would send the innermost hop nowhere, and it
+// would look like a working document.
 func TestBuildRefusesWithoutThePanelHost(t *testing.T) {
 	documents, registry := newChainDocuments(t)
 	if err := documents.settingService.SetChainPanelHost(""); err != nil {
