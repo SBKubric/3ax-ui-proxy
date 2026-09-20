@@ -1,0 +1,769 @@
+package service
+
+import (
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/coinman-dev/3ax-ui/v2/chain"
+	"github.com/coinman-dev/3ax-ui/v2/database"
+	"github.com/coinman-dev/3ax-ui/v2/database/model"
+	"github.com/coinman-dev/3ax-ui/v2/logger"
+
+	"gorm.io/gorm"
+)
+
+// ChainService is the only way into the chain registry (docs/spec/proxy-chain.md
+// §2). Everything that writes — the panel API, the bot, the join flow, the
+// migration — goes through here, because the invariants of §2.7 and the
+// revision of §3.4 only hold if one place owns them.
+//
+// The panel never calls a box: a write is a new revision, and the boxes come
+// and fetch it themselves (§2.1). So there is nothing asynchronous here — each
+// method is one transaction and returns.
+type ChainService struct {
+	settingService SettingService
+}
+
+// Error codes. They are part of the API: the controller puts them in the
+// message, and the UI and the bot key their wording off them, so they are
+// stable snake_case strings rather than prose.
+const (
+	CodeUnknownHop       = "unknown_hop"
+	CodeNameTaken        = "name_taken"
+	CodeInvalidName      = "invalid_name"
+	CodeInvalidHost      = "invalid_host"
+	CodeInvalidRole      = "invalid_role"
+	CodeInvalidSubPort   = "invalid_sub_port"
+	CodeInvalidSubScheme = "invalid_sub_scheme"
+	CodeInvalidPosition  = "invalid_position"
+	CodeNotAnEdge        = "not_an_edge"
+	CodeHopNotJoined     = "hop_not_joined"
+	CodeActiveEdgeInUse  = "active_edge_in_use"
+)
+
+// Defaults for a hop the owner did not spell out: the panel's own sub port and
+// TLS, which is what a freshly installed box listens on.
+const (
+	defaultHopSubPort   = 2096
+	defaultHopSubScheme = "https"
+)
+
+// ChainError is a refusal with a stable code. The registry never repairs a
+// broken request quietly — it says which rule it broke.
+type ChainError struct {
+	Code    string
+	Message string
+}
+
+func (e *ChainError) Error() string {
+	return e.Code + ": " + e.Message
+}
+
+func chainErrorf(code, format string, args ...any) error {
+	return &ChainError{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// ChainErrorCode returns the stable code of a registry refusal, or "" for any
+// other error.
+func ChainErrorCode(err error) string {
+	var chainErr *ChainError
+	if errors.As(err, &chainErr) {
+		return chainErr.Code
+	}
+	return ""
+}
+
+// ChainState is the whole registry as the UI and the bot read it (§2.4).
+type ChainState struct {
+	Revision    int64            `json:"revision"`
+	ActiveEdge  string           `json:"activeEdge"`
+	PollSeconds int              `json:"pollSeconds"`
+	Hops        []model.ChainHop `json:"hops"`
+}
+
+// AddHopInput describes a hop the owner is creating. Position only means
+// something for an inner front; an edge always hangs off the last inner, which
+// the service works out itself.
+type AddHopInput struct {
+	Name      string
+	Host      string
+	Role      string
+	SubPort   int
+	SubScheme string
+	Position  *int
+}
+
+// UpdateHopInput changes what the owner is allowed to change on an existing
+// hop (§2.4). Role, position, state and activity are not in here: they move
+// through Add, Delete and SetActive, which keep the invariants.
+type UpdateHopInput struct {
+	Name      *string
+	Host      *string
+	SubPort   *int
+	SubScheme *string
+}
+
+// DeleteResult carries the hint of §4.5: the registry write is instant, but
+// the owner must wait for the deleted hop's outer neighbour to confirm the new
+// revision before powering the box off, or the traffic still on it is cut.
+type DeleteResult struct {
+	SafeToPowerOffWhen SafeToPowerOff `json:"safeToPowerOffWhen"`
+}
+
+// SafeToPowerOff names the hop to watch and the revision to wait for. Hop is
+// empty when nothing hangs off the deleted hop — then the box can go at once.
+type SafeToPowerOff struct {
+	Hop      string `json:"hop"`
+	Revision int64  `json:"revision"`
+}
+
+// List returns the registry with the current revision and poll interval.
+func (s *ChainService) List() (*ChainState, error) {
+	revision, err := s.settingService.GetChainRevision()
+	if err != nil {
+		return nil, err
+	}
+	poll, err := s.settingService.GetChainPollSeconds()
+	if err != nil {
+		return nil, err
+	}
+	hops, err := orderedHops(database.GetDB())
+	if err != nil {
+		return nil, err
+	}
+	state := &ChainState{Revision: revision, PollSeconds: poll, Hops: hops}
+	for _, hop := range hops {
+		if hop.IsActive {
+			state.ActiveEdge = hop.Name
+			break
+		}
+	}
+	return state, nil
+}
+
+// Add creates a hop in state pending and returns its join token in the clear —
+// the only time the panel ever shows it (§4.1).
+//
+// The revision does not move: a pending hop appears in no document, so nothing
+// a box could fetch has changed. That is what makes inserting an inner safe at
+// any distance in time from installing its box (§2.6.3) — the outer neighbour
+// is re-chained onto it only when it really joins.
+func (s *ChainService) Add(in AddHopInput) (*model.ChainHop, string, int64, error) {
+	name, err := validName(in.Name)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	host, err := validHost(in.Host)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	if in.Role != chain.RoleInner && in.Role != chain.RoleEdge {
+		return nil, "", 0, chainErrorf(CodeInvalidRole, "role must be %q or %q, got %q", chain.RoleInner, chain.RoleEdge, in.Role)
+	}
+	subPort, err := validSubPort(in.SubPort)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	subScheme, err := validSubScheme(in.SubScheme)
+	if err != nil {
+		return nil, "", 0, err
+	}
+
+	token := chain.NewSecret()
+	expires, err := s.joinTokenExpiry()
+	if err != nil {
+		return nil, "", 0, err
+	}
+
+	hop := &model.ChainHop{
+		Name:             name,
+		Host:             host,
+		Role:             in.Role,
+		SubPort:          subPort,
+		SubScheme:        subScheme,
+		State:            chain.StatePending,
+		JoinTokenHash:    chain.HashSecret(token),
+		JoinTokenExpires: expires,
+	}
+
+	err = database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := nameIsFree(tx, name, 0); err != nil {
+			return err
+		}
+		if in.Role == chain.RoleInner {
+			inners, err := innerHops(tx)
+			if err != nil {
+				return err
+			}
+			position := len(inners)
+			if in.Position != nil {
+				position = *in.Position
+			}
+			if position < 0 || position > len(inners) {
+				return chainErrorf(CodeInvalidPosition, "position %d is outside 0..%d", position, len(inners))
+			}
+			// Everything from the insertion point outward steps one place out;
+			// reconcile then re-chains next_hop_id along the new order.
+			if err := tx.Model(&model.ChainHop{}).
+				Where("role = ? AND position >= ?", chain.RoleInner, position).
+				UpdateColumn("position", gorm.Expr("position + 1")).Error; err != nil {
+				return err
+			}
+			hop.Position = position
+		}
+		if err := tx.Create(hop).Error; err != nil {
+			return err
+		}
+		return reconcileTopology(tx)
+	})
+	if err != nil {
+		return nil, "", 0, err
+	}
+	return hop, token, expires, nil
+}
+
+// Update changes the name, host, sub port or sub scheme of a hop. Any of them
+// changes the outer neighbour's document, so the revision moves — but only if
+// something really changed, because a spurious bump restarts relays for
+// nothing (§3.5).
+func (s *ChainService) Update(id int, in UpdateHopInput) error {
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		hop, err := loadHop(tx, id)
+		if err != nil {
+			return err
+		}
+		changed := false
+		if in.Name != nil {
+			name, err := validName(*in.Name)
+			if err != nil {
+				return err
+			}
+			if name != hop.Name {
+				if err := nameIsFree(tx, name, hop.Id); err != nil {
+					return err
+				}
+				hop.Name, changed = name, true
+			}
+		}
+		if in.Host != nil {
+			host, err := validHost(*in.Host)
+			if err != nil {
+				return err
+			}
+			if host != hop.Host {
+				hop.Host, changed = host, true
+			}
+		}
+		if in.SubPort != nil {
+			subPort, err := validSubPort(*in.SubPort)
+			if err != nil {
+				return err
+			}
+			if subPort != hop.SubPort {
+				hop.SubPort, changed = subPort, true
+			}
+		}
+		if in.SubScheme != nil {
+			subScheme, err := validSubScheme(*in.SubScheme)
+			if err != nil {
+				return err
+			}
+			if subScheme != hop.SubScheme {
+				hop.SubScheme, changed = subScheme, true
+			}
+		}
+		if !changed {
+			return nil
+		}
+		if err := tx.Save(hop).Error; err != nil {
+			return err
+		}
+		return bumpRevisionTx(tx)
+	})
+}
+
+// Delete removes a hop and re-chains around it (§4.5).
+//
+// The active edge is refused unless force is set, and force is only allowed
+// when no other joined edge exists — that is decommissioning the chain, not
+// switching over. Handing the override to a standby by itself would be an
+// automatic failover, which is out of scope; disabling it quietly would
+// publish the real server's address, which is the one thing the whole
+// construction hides (§2.6.4).
+func (s *ChainService) Delete(id int, force bool) (*DeleteResult, error) {
+	result := &DeleteResult{}
+	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
+		hop, err := loadHop(tx, id)
+		if err != nil {
+			return err
+		}
+		if hop.IsActive {
+			var others int64
+			if err := tx.Model(&model.ChainHop{}).
+				Where("id <> ? AND role = ? AND state IN ?", hop.Id, chain.RoleEdge,
+					[]string{chain.StateJoined, chain.StateLegacy}).
+				Count(&others).Error; err != nil {
+				return err
+			}
+			switch {
+			case others > 0:
+				return chainErrorf(CodeActiveEdgeInUse,
+					"%q is the active edge; make another edge active before deleting it", hop.Name)
+			case !force:
+				return chainErrorf(CodeActiveEdgeInUse,
+					"%q is the active edge and the last one; deleting it publishes the real server address, so it needs force", hop.Name)
+			default:
+				logger.Warning("chain: override disabled, the real server address is now published")
+			}
+		}
+
+		// Whoever hung off this hop is the one that has to see the new
+		// revision before the box may be powered off.
+		outer, err := outerNeighbour(tx, hop.Id)
+		if err != nil {
+			return err
+		}
+		result.SafeToPowerOffWhen.Hop = outer
+
+		if err := tx.Delete(&model.ChainHop{}, hop.Id).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.ChainHop{}).Where("next_hop_id = ?", hop.Id).
+			Updates(map[string]any{"next_hop_id": hop.NextHopId}).Error; err != nil {
+			return err
+		}
+		if err := reconcileTopology(tx); err != nil {
+			return err
+		}
+		if err := bumpRevisionTx(tx); err != nil {
+			return err
+		}
+		revision, err := revisionTx(tx)
+		if err != nil {
+			return err
+		}
+		result.SafeToPowerOffWhen.Revision = revision
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SetActive makes one joined edge the active one — the single registry write
+// behind /proxy <name> and the switch button. Nothing changes on any box
+// (§4.7): the only consequence is which host the panel publishes.
+func (s *ChainService) SetActive(id int) error {
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		hop, err := loadHop(tx, id)
+		if err != nil {
+			return err
+		}
+		if hop.Role != chain.RoleEdge {
+			return chainErrorf(CodeNotAnEdge, "%q is an %s front; only an edge can be active", hop.Name, hop.Role)
+		}
+		if hop.State != chain.StateJoined && hop.State != chain.StateLegacy {
+			return chainErrorf(CodeHopNotJoined, "%q is %s; only a hop that has entered the chain can be active", hop.Name, hop.State)
+		}
+		if hop.IsActive {
+			return nil
+		}
+		if err := tx.Model(&model.ChainHop{}).Where("is_active = ?", true).
+			Update("is_active", false).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.ChainHop{}).Where("id = ?", hop.Id).
+			Update("is_active", true).Error; err != nil {
+			return err
+		}
+		return bumpRevisionTx(tx)
+	})
+}
+
+// ClearActive turns the override off without deleting anything: what /proxy
+// off means once the chain exists. With no active edge the panel publishes the
+// real server's address again, so this is as loud a step as a forced delete.
+func (s *ChainService) ClearActive() error {
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.ChainHop{}).Where("is_active = ?", true).Update("is_active", false)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		logger.Warning("chain: override disabled, the real server address is now published")
+		return bumpRevisionTx(tx)
+	})
+}
+
+// ReissueToken hands out a new join token for an existing hop; the old one is
+// dead the moment the hash is overwritten (§4.1).
+//
+// A joined hop goes back to pending: in v1 there is no way to rotate a hop
+// secret without entering again (§4.2). Its secret hash stays until the new
+// box really joins, so the old box keeps receiving its document until it is
+// replaced (§4.4) — and the revision does not move, because no document has
+// changed yet.
+func (s *ChainService) ReissueToken(id int) (string, int64, error) {
+	token := chain.NewSecret()
+	expires, err := s.joinTokenExpiry()
+	if err != nil {
+		return "", 0, err
+	}
+	err = database.GetDB().Transaction(func(tx *gorm.DB) error {
+		hop, err := loadHop(tx, id)
+		if err != nil {
+			return err
+		}
+		hop.JoinTokenHash = chain.HashSecret(token)
+		hop.JoinTokenExpires = expires
+		if hop.State == chain.StateJoined {
+			hop.State = chain.StatePending
+		}
+		return tx.Save(hop).Error
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return token, expires, nil
+}
+
+// MarkJoined is the registry half of a join (§4.3): the hop takes its hop
+// secret's hash, spends its join token and becomes part of every document from
+// this revision on. The join flow of ticket #81 calls it once it has checked
+// the token.
+func (s *ChainService) MarkJoined(id int, secretHash, observedAddr string) error {
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		hop, err := loadHop(tx, id)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UnixMilli()
+		hop.State = chain.StateJoined
+		if secretHash != "" {
+			hop.SecretHash = secretHash
+		}
+		if observedAddr != "" {
+			hop.ObservedAddr = observedAddr
+		}
+		hop.JoinTokenHash = ""
+		hop.JoinTokenExpires = 0
+		hop.JoinedAt = now
+		hop.LastSeenAt = now
+		if err := tx.Save(hop).Error; err != nil {
+			return err
+		}
+		if err := reconcileTopology(tx); err != nil {
+			return err
+		}
+		return bumpRevisionTx(tx)
+	})
+}
+
+// RecordSeen notes that a hop confirmed a revision. It is the one write that
+// happens constantly and must never move the revision itself (§3.4), or the
+// chain would chase its own tail.
+func (s *ChainService) RecordSeen(id int, revision int64) error {
+	return database.GetDB().Model(&model.ChainHop{}).Where("id = ?", id).
+		Updates(map[string]any{"last_seen_at": time.Now().UnixMilli(), "last_revision": revision}).Error
+}
+
+// ActiveEdgeHost is the address the panel publishes: the host of the active
+// edge, if there is one. A pending edge never counts — no box is answering on
+// it yet.
+func (s *ChainService) ActiveEdgeHost() (string, bool) {
+	db := database.GetDB()
+	if db == nil {
+		return "", false
+	}
+	var hop model.ChainHop
+	err := db.Where("is_active = ? AND role = ? AND state IN ?", true, chain.RoleEdge,
+		[]string{chain.StateJoined, chain.StateLegacy}).First(&hop).Error
+	if err != nil {
+		return "", false
+	}
+	host := strings.TrimSpace(hop.Host)
+	return host, host != ""
+}
+
+// BumpRevision moves the registry to a new revision, inside tx when one is
+// given. Callers that change what a document contains — the port composition
+// hooks of §3.4, for instance — use it directly.
+func (s *ChainService) BumpRevision(tx *gorm.DB) error {
+	if tx == nil {
+		tx = database.GetDB()
+	}
+	return bumpRevisionTx(tx)
+}
+
+// MigrateLegacyOverride imports a panel that had a single hand-set
+// proxyOverrideHost into the registry as one hop named legacy (§2.3), so the
+// address the panel publishes keeps coming from the same place for everyone.
+//
+// It runs on every start and does nothing at all unless the registry is empty
+// and the legacy host is set. is_active mirrors proxyOverrideEnable: an
+// override that was off must not switch itself on during an upgrade.
+func (s *ChainService) MigrateLegacyOverride() error {
+	db := database.GetDB()
+	if db == nil {
+		return nil
+	}
+	// The settings are read before the transaction opens: SQLite here runs on
+	// a single connection, and a settings read from inside a transaction would
+	// wait for a connection the transaction itself is holding.
+	host, err := s.settingService.GetProxyOverrideHost()
+	if err != nil {
+		return err
+	}
+	if host = strings.TrimSpace(host); host == "" {
+		return nil
+	}
+	enabled, err := s.settingService.GetProxyOverrideEnable()
+	if err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var hops int64
+		if err := tx.Model(&model.ChainHop{}).Count(&hops).Error; err != nil {
+			return err
+		}
+		if hops > 0 {
+			return nil
+		}
+		now := time.Now().UnixMilli()
+		hop := &model.ChainHop{
+			Name:      "legacy",
+			Host:      host,
+			Role:      chain.RoleEdge,
+			SubPort:   defaultHopSubPort,
+			SubScheme: defaultHopSubScheme,
+			State:     chain.StateLegacy,
+			IsActive:  enabled,
+			JoinedAt:  now,
+		}
+		if err := tx.Create(hop).Error; err != nil {
+			return err
+		}
+		logger.Infof("chain: imported the legacy host override %s as hop %q", host, hop.Name)
+		return bumpRevisionTx(tx)
+	})
+}
+
+// joinTokenExpiry is now plus chainJoinTokenHours, in milliseconds.
+func (s *ChainService) joinTokenExpiry() (int64, error) {
+	hours, err := s.settingService.GetChainJoinTokenHours()
+	if err != nil {
+		return 0, err
+	}
+	if hours <= 0 {
+		hours = 24
+	}
+	return time.Now().Add(time.Duration(hours) * time.Hour).UnixMilli(), nil
+}
+
+// reconcileTopology restores invariants 2, 3 and 5 from the current rows: the
+// inner fronts form one path ordered by position with no gaps, and every edge
+// hangs off the last inner that has actually entered the chain.
+//
+// Doing it as a sweep after each write, rather than patching next_hop_id at
+// every call site, is what keeps "one path, no branches, no cycles" true by
+// construction instead of by discipline.
+func reconcileTopology(tx *gorm.DB) error {
+	inners, err := innerHops(tx)
+	if err != nil {
+		return err
+	}
+	var previousId *int
+	var lastEnteredId *int
+	for index := range inners {
+		hop := &inners[index]
+		changed := false
+		if hop.Position != index {
+			hop.Position, changed = index, true
+		}
+		if !sameId(hop.NextHopId, previousId) {
+			hop.NextHopId, changed = copyId(previousId), true
+		}
+		if changed {
+			if err := tx.Save(hop).Error; err != nil {
+				return err
+			}
+		}
+		previousId = &hop.Id
+		if hop.State == chain.StateJoined || hop.State == chain.StateLegacy {
+			lastEnteredId = &hop.Id
+		}
+	}
+
+	var edges []model.ChainHop
+	if err := tx.Where("role = ?", chain.RoleEdge).Order("id").Find(&edges).Error; err != nil {
+		return err
+	}
+	for index := range edges {
+		edge := &edges[index]
+		if sameId(edge.NextHopId, lastEnteredId) {
+			continue
+		}
+		edge.NextHopId = copyId(lastEnteredId)
+		if err := tx.Save(edge).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sameId(a, b *int) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return *a == *b
+	}
+}
+
+func copyId(id *int) *int {
+	if id == nil {
+		return nil
+	}
+	value := *id
+	return &value
+}
+
+func loadHop(tx *gorm.DB, id int) (*model.ChainHop, error) {
+	var hop model.ChainHop
+	err := tx.Where("id = ?", id).First(&hop).Error
+	if database.IsNotFound(err) {
+		return nil, chainErrorf(CodeUnknownHop, "no hop with id %d", id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &hop, nil
+}
+
+func innerHops(tx *gorm.DB) ([]model.ChainHop, error) {
+	var inners []model.ChainHop
+	err := tx.Where("role = ?", chain.RoleInner).Order("position, id").Find(&inners).Error
+	return inners, err
+}
+
+// orderedHops lists the registry the way it reads: the inner path from the
+// real server outward, then the edges.
+func orderedHops(tx *gorm.DB) ([]model.ChainHop, error) {
+	hops := []model.ChainHop{}
+	if tx == nil {
+		return hops, nil
+	}
+	err := tx.Model(&model.ChainHop{}).
+		Order("CASE role WHEN '" + chain.RoleInner + "' THEN 0 ELSE 1 END, position, id").
+		Find(&hops).Error
+	return hops, err
+}
+
+// outerNeighbour names one hop that hangs off id, preferring an inner front:
+// when the last inner goes, every edge on it is re-chained, and the inner path
+// is the part the owner watches.
+func outerNeighbour(tx *gorm.DB, id int) (string, error) {
+	var neighbours []model.ChainHop
+	if err := tx.Where("next_hop_id = ?", id).
+		Order("CASE role WHEN '" + chain.RoleInner + "' THEN 0 ELSE 1 END, position, id").
+		Find(&neighbours).Error; err != nil {
+		return "", err
+	}
+	if len(neighbours) == 0 {
+		return "", nil
+	}
+	return neighbours[0].Name, nil
+}
+
+func nameIsFree(tx *gorm.DB, name string, exceptId int) error {
+	var taken int64
+	if err := tx.Model(&model.ChainHop{}).Where("name = ? AND id <> ?", name, exceptId).
+		Count(&taken).Error; err != nil {
+		return err
+	}
+	if taken > 0 {
+		return chainErrorf(CodeNameTaken, "a hop named %q already exists", name)
+	}
+	return nil
+}
+
+func validName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if !chain.NameValid(name) {
+		return "", chainErrorf(CodeInvalidName, "name %q must match [a-z0-9-]{1,32}", name)
+	}
+	return name, nil
+}
+
+func validHost(host string) (string, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", chainErrorf(CodeInvalidHost, "host must not be empty")
+	}
+	if len(host) > 255 {
+		return "", chainErrorf(CodeInvalidHost, "host is longer than 255 characters")
+	}
+	return host, nil
+}
+
+func validSubPort(port int) (int, error) {
+	if port == 0 {
+		return defaultHopSubPort, nil
+	}
+	if port < 1 || port > 65535 {
+		return 0, chainErrorf(CodeInvalidSubPort, "sub port %d is outside 1-65535", port)
+	}
+	return port, nil
+}
+
+func validSubScheme(scheme string) (string, error) {
+	switch scheme = strings.TrimSpace(scheme); scheme {
+	case "":
+		return defaultHopSubScheme, nil
+	case "http", "https":
+		return scheme, nil
+	}
+	return "", chainErrorf(CodeInvalidSubScheme, "sub scheme %q must be http or https", scheme)
+}
+
+// bumpRevisionTx increments chainRevision inside the transaction that changed
+// the registry, so a reader can never see a new registry with an old revision.
+func bumpRevisionTx(tx *gorm.DB) error {
+	var setting model.Setting
+	err := tx.Where("key = ?", chainRevisionKey).First(&setting).Error
+	if database.IsNotFound(err) {
+		return tx.Create(&model.Setting{Key: chainRevisionKey, Value: "1"}).Error
+	}
+	if err != nil {
+		return err
+	}
+	current, err := strconv.ParseInt(strings.TrimSpace(setting.Value), 10, 64)
+	if err != nil {
+		// A revision that cannot be read is worse than one that jumps: start
+		// again from 1 rather than leave every box on a stale document.
+		logger.Warningf("chain: chainRevision %q is not a number, restarting from 1", setting.Value)
+		current = 0
+	}
+	setting.Value = strconv.FormatInt(current+1, 10)
+	return tx.Save(&setting).Error
+}
+
+func revisionTx(tx *gorm.DB) (int64, error) {
+	var setting model.Setting
+	err := tx.Where("key = ?", chainRevisionKey).First(&setting).Error
+	if database.IsNotFound(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(strings.TrimSpace(setting.Value), 10, 64)
+}
