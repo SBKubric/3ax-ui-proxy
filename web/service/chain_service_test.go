@@ -607,6 +607,55 @@ func TestChainReissueOnTheActiveEdgeKeepsTheOverride(t *testing.T) {
 	}
 }
 
+// §2.3 — the imported legacy hop is not a special case for reissue: handing
+// out a token for it is how a real box takes the hand-set host over, and the
+// hop becomes an ordinary pending hop like any other. It keeps carrying the
+// override while that box arrives.
+func TestChainReissueTurnsTheLegacyHopIntoAnOrdinaryPendingOne(t *testing.T) {
+	s := newChainService(t)
+	setSetting(t, "proxyOverrideEnable", "true")
+	setSetting(t, "proxyOverrideHost", "front.example.net")
+	if err := s.MigrateLegacyOverride(); err != nil {
+		t.Fatalf("MigrateLegacyOverride: %v", err)
+	}
+	legacy := hopByName(t, s, "legacy")
+	if legacy.State != chain.StateLegacy || !legacy.IsActive {
+		t.Fatalf("imported hop = %+v; want an active legacy hop", legacy)
+	}
+	before := revisionOf(t, s)
+
+	token, expires, err := s.ReissueToken(legacy.Id)
+	if err != nil {
+		t.Fatalf("ReissueToken: %v", err)
+	}
+	if len(token) != chain.SecretLength {
+		t.Fatalf("token %q is not %d characters", token, chain.SecretLength)
+	}
+	if expires <= time.Now().UnixMilli() {
+		t.Fatalf("expiry %d is not in the future", expires)
+	}
+
+	after := hopByName(t, s, "legacy")
+	if after.State != chain.StatePending {
+		t.Errorf("state after the reissue is %q, want pending", after.State)
+	}
+	if after.JoinTokenHash != chain.HashSecret(token) {
+		t.Error("the stored hash is not the hash of the returned token")
+	}
+	if !after.IsActive {
+		t.Error("the hop must stay active — the panel is still publishing its host")
+	}
+	if after.Host != legacy.Host || after.Id != legacy.Id {
+		t.Errorf("the hop moved: %+v, was %+v", after, legacy)
+	}
+	if host, ok := s.ActiveEdgeHost(); !ok || host != "front.example.net" {
+		t.Errorf("ActiveEdgeHost = %q, %v; want front.example.net, true", host, ok)
+	}
+	if revisionOf(t, s) != before {
+		t.Error("a reissue changes no document, so it must not move the revision")
+	}
+}
+
 // §2.3 — the legacy proxyOverrideHost becomes one hop named legacy, and the
 // migration may run on every start.
 func TestChainMigrateLegacyOverride(t *testing.T) {

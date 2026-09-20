@@ -411,11 +411,16 @@ func (s *ChainService) ClearActive() error {
 // ReissueToken hands out a new join token for an existing hop; the old one is
 // dead the moment the hash is overwritten (§4.1).
 //
-// A joined hop goes back to pending: in v1 there is no way to rotate a hop
-// secret without entering again (§4.2). Its secret hash stays until the new
-// box really joins, so the old box keeps receiving its document until it is
-// replaced (§4.4) — and the revision does not move, because no document has
-// changed yet.
+// The hop goes back to pending, whichever state it was in: in v1 there is no
+// way to rotate a hop secret without entering again (§4.2). That includes the
+// imported legacy hop — a token for it exists precisely so a real box can take
+// the hand-set host over, and once it enters it is an ordinary hop like any
+// other (§2.3). Its secret hash stays until the new box really joins, so the
+// old box keeps receiving its document until it is replaced (§4.4).
+//
+// is_active is untouched, and so is the revision: nothing in any document has
+// changed yet, and the panel keeps publishing the hop's host throughout
+// (ActiveEdgeHost).
 func (s *ChainService) ReissueToken(id int) (string, int64, error) {
 	token := chain.NewSecret()
 	expires, err := s.joinTokenExpiry()
@@ -429,9 +434,7 @@ func (s *ChainService) ReissueToken(id int) (string, int64, error) {
 		}
 		hop.JoinTokenHash = chain.HashSecret(token)
 		hop.JoinTokenExpires = expires
-		if hop.State == chain.StateJoined {
-			hop.State = chain.StatePending
-		}
+		hop.State = chain.StatePending
 		return tx.Save(hop).Error
 	})
 	if err != nil {
