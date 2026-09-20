@@ -27,6 +27,13 @@ type ChainService struct {
 	settingService SettingService
 }
 
+// The legacy host override is imported into the registry at the end of
+// InitDB's migrations. It is registered rather than called from database/,
+// which cannot import this package without an import cycle (§2.3).
+func init() {
+	database.RegisterPostMigrate((&ChainService{}).MigrateLegacyOverride)
+}
+
 // Error codes. They are part of the API: the controller puts them in the
 // message, and the UI and the bot key their wording off them, so they are
 // stable snake_case strings rather than prose.

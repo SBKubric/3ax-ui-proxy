@@ -375,6 +375,11 @@ func InitDB(dbPath string) error {
 	// (unique Uuid, non-unique Email), carrying any recorded traffic across.
 	migrateMtprotoClientsTable()
 
+	// Migrations that live in a service and cannot be called from here without
+	// an import cycle (see post_migrate.go); the chain registry imports the
+	// legacy host override this way.
+	runPostMigrateHooks()
+
 	isUsersEmpty, err := isTableEmpty("users")
 	if err != nil {
 		return err
