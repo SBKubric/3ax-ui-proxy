@@ -453,26 +453,34 @@ func (s *ChainService) MarkJoined(id int, secretHash, observedAddr string) error
 		if err != nil {
 			return err
 		}
-		now := time.Now().UnixMilli()
-		hop.State = chain.StateJoined
-		if secretHash != "" {
-			hop.SecretHash = secretHash
-		}
-		if observedAddr != "" {
-			hop.ObservedAddr = observedAddr
-		}
-		hop.JoinTokenHash = ""
-		hop.JoinTokenExpires = 0
-		hop.JoinedAt = now
-		hop.LastSeenAt = now
-		if err := tx.Save(hop).Error; err != nil {
-			return err
-		}
-		if err := reconcileTopology(tx); err != nil {
-			return err
-		}
-		return bumpRevisionTx(tx)
+		return markJoinedTx(tx, hop, secretHash, observedAddr)
 	})
+}
+
+// markJoinedTx is MarkJoined on a hop already loaded inside a transaction: the
+// join flow (chain_join.go) finds its hop by token hash and may have changed
+// the address the box reported, and all of that has to land in the same
+// transaction as the state, the secret and the revision.
+func markJoinedTx(tx *gorm.DB, hop *model.ChainHop, secretHash, observedAddr string) error {
+	now := time.Now().UnixMilli()
+	hop.State = chain.StateJoined
+	if secretHash != "" {
+		hop.SecretHash = secretHash
+	}
+	if observedAddr != "" {
+		hop.ObservedAddr = observedAddr
+	}
+	hop.JoinTokenHash = ""
+	hop.JoinTokenExpires = 0
+	hop.JoinedAt = now
+	hop.LastSeenAt = now
+	if err := tx.Save(hop).Error; err != nil {
+		return err
+	}
+	if err := reconcileTopology(tx); err != nil {
+		return err
+	}
+	return bumpRevisionTx(tx)
 }
 
 // RecordSeen notes that a hop confirmed a revision. It is the one write that
