@@ -99,6 +99,10 @@ func TestChainProxyCommand(t *testing.T) {
 		name string
 		args []string
 		want string
+		// wantActiveEdge, when set, is checked against the registry's active
+		// edge after chainProxyCommand runs — for the switch cases, on top of
+		// the message itself.
+		wantActiveEdge string
 	}{
 		{
 			name: "bare listing",
@@ -110,6 +114,17 @@ func TestChainProxyCommand(t *testing.T) {
 			args: []string{"edge-b"},
 			want: "✅ Active edge is now <code>edge-b</code>.\r\n" +
 				"Links already handed out keep using the previous edge until clients refresh the subscription.",
+			wantActiveEdge: "edge-b",
+		},
+		{
+			// A legacy hop is as switchable as a joined one (§2.7 invariant
+			// 1: active is joined OR legacy) — the pre-chain override host,
+			// imported at startup, is still a valid /proxy <name> target.
+			name: "switch to a legacy hop",
+			args: []string{"edge-legacy"},
+			want: "✅ Active edge is now <code>edge-legacy</code>.\r\n" +
+				"Links already handed out keep using the previous edge until clients refresh the subscription.",
+			wantActiveEdge: "edge-legacy",
 		},
 		{
 			name: "unknown name falls back to the listing",
@@ -133,6 +148,15 @@ func TestChainProxyCommand(t *testing.T) {
 			got := bot.chainProxyCommand(tc.args)
 			if got != tc.want {
 				t.Fatalf("chainProxyCommand(%v):\n got %q\nwant %q", tc.args, got, tc.want)
+			}
+			if tc.wantActiveEdge != "" {
+				state, err := (&ChainService{}).List()
+				if err != nil {
+					t.Fatalf("List: %v", err)
+				}
+				if state.ActiveEdge != tc.wantActiveEdge {
+					t.Fatalf("active edge is %q, want %q", state.ActiveEdge, tc.wantActiveEdge)
+				}
 			}
 		})
 	}
