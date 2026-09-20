@@ -293,3 +293,17 @@ func requestHost(c *gin.Context) string {
 	}
 	return host
 }
+
+// warnChainNeedsSubServer is the one thing the panel can do about a chain
+// whose only door is shut: the endpoints of §3.3 live on the sub server, so a
+// registry with hops in it and subEnable off is a chain that will never hear
+// another revision. It is a warning rather than a refusal — the sub server is
+// the owner's switch, not ours.
+func warnChainNeedsSubServer() {
+	state, err := (&service.ChainService{}).List()
+	if err != nil || len(state.Hops) == 0 {
+		return
+	}
+	logger.Warningf("chain: the registry has %d hop(s) but the subscription server is off; "+
+		"/chain/v1/* is unreachable and no hop can poll or join until subEnable is on", len(state.Hops))
+}

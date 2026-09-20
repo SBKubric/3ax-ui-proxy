@@ -321,6 +321,7 @@ func (s *Server) Start() (err error) {
 		return err
 	}
 	if !subEnable {
+		warnChainNeedsSubServer()
 		return nil
 	}
 
