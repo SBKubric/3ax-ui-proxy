@@ -10,9 +10,9 @@ import (
 
 // chainPortsChanged moves the chain to a new revision after something changed
 // the panel's port composition (docs/spec/proxy-chain.md §3.4): an inbound
-// added, edited or deleted, a tunnel server saved. Without it the fronts would
-// keep relaying yesterday's ports until some unrelated registry edit happened
-// to bump the revision.
+// added, edited, switched off or deleted, a tunnel server saved. Without it
+// the fronts would keep relaying yesterday's ports until some unrelated
+// registry edit happened to bump the revision.
 //
 // It takes the caller's transaction when there is one, and every call site
 // must pass one if it still has a transaction open: SQLite here runs on a
@@ -24,8 +24,20 @@ import (
 // polling, and a revision counter climbing on a panel that has no fronts is
 // noise in the settings table.
 //
-// A failure is logged, not returned: the write that just happened is the
-// operator's, it succeeded, and refusing it after the fact over a revision
+// The new composition is worked out before the bump, because a list the panel
+// cannot make sense of must not become a revision (§3.8): a port claimed by
+// two sources has no one right answer, and telling every front to fetch a
+// document that will fail to build would take the chain down over a
+// mistake the operator can fix in the editor. The refusal is logged naming
+// both sources and kept for the banner; the revision stays where it is, so
+// the fronts keep relaying the last list that made sense.
+//
+// Any other failure — an xray config that cannot be read, say — still bumps:
+// it is a fault of the panel's own state, likely momentary, and holding the
+// revision back would hide every real port change behind it.
+//
+// A failure to bump is logged, not returned: the write that just happened is
+// the operator's, it succeeded, and refusing it after the fact over a revision
 // counter would be a worse outcome than a chain that catches up on the next
 // change.
 func chainPortsChanged(tx *gorm.DB) {
@@ -43,6 +55,15 @@ func chainPortsChanged(tx *gorm.DB) {
 	if hops == 0 {
 		return
 	}
+
+	if _, err := (&ChainPortsService{db: tx}).Ports(); err != nil {
+		if ChainErrorCode(err) == CodeDuplicatePort {
+			logger.Warning("chain: the relayed ports were left at the previous revision:", err)
+			return
+		}
+		logger.Warning("chain: the relayed ports could not be computed:", err)
+	}
+
 	if err := (&ChainService{}).BumpRevision(tx); err != nil {
 		logger.Warning("chain: the relayed ports changed but the revision did not move:", err)
 	}

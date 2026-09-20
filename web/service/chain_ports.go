@@ -1,16 +1,20 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/chainports"
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/xray"
+
+	"gorm.io/gorm"
 )
 
 // CodeDuplicatePort is the refusal of "one port, one source" (§3.8): two
@@ -30,9 +34,50 @@ const CodeDuplicatePort = "duplicate_port"
 type ChainPortsService struct {
 	settingService SettingService
 
+	// db binds every query to one handle. The port hooks run inside the
+	// transaction of the write that changed the ports, and this SQLite has a
+	// single connection: a query of our own there would wait for the
+	// connection that transaction is holding. Nil means the global handle.
+	db *gorm.DB
+
 	// xrayConfigPath overrides the running panel's config path. Only tests
 	// set it; the panel has exactly one config and it is the one xray runs.
 	xrayConfigPath string
+}
+
+// lastChainPortsProblem is the last composition refusal, kept for the editor's
+// banner (§3.8): the panel refuses to publish a port list it cannot make sense
+// of, and the operator has to be told which two sources collide. It is
+// package-level because whoever reads it — a UI request — is not the caller
+// that composed the list.
+var lastChainPortsProblem atomic.Pointer[ChainError]
+
+// LastProblem returns the composition problem the last build ran into, or nil
+// when the ports came out clean. It is a snapshot, not a subscription.
+func (s *ChainPortsService) LastProblem() *ChainError {
+	return lastChainPortsProblem.Load()
+}
+
+// recordPortsProblem remembers a refusal the banner can explain and forgets it
+// as soon as a build succeeds. An error that is not a ChainError — an
+// unreadable xray config, say — is a fault of the panel's own state rather
+// than of the port composition, so it clears the banner instead of filling it
+// with something the operator cannot act on in the chain editor.
+func recordPortsProblem(err error) {
+	var chainErr *ChainError
+	if errors.As(err, &chainErr) {
+		lastChainPortsProblem.Store(chainErr)
+		return
+	}
+	lastChainPortsProblem.Store(nil)
+}
+
+// handle is the connection every query goes through.
+func (s *ChainPortsService) handle() *gorm.DB {
+	if s.db != nil {
+		return s.db
+	}
+	return database.GetDB()
 }
 
 func (s *ChainPortsService) configPath() string {
@@ -46,11 +91,24 @@ func (s *ChainPortsService) configPath() string {
 // same state are byte-identical — a document that reshuffled its ports would
 // look like a change to every box that reads it.
 func (s *ChainPortsService) Ports() ([]chain.Port, error) {
-	// Settings first, outside any transaction: SQLite here runs on a single
-	// connection and a settings read from inside one would deadlock.
-	extra, err := s.settingService.GetChainExtraPorts()
-	if err != nil {
-		return nil, err
+	ports, err := s.compose()
+	recordPortsProblem(err)
+	return ports, err
+}
+
+// compose is Ports without the bookkeeping.
+func (s *ChainPortsService) compose() ([]chain.Port, error) {
+	db := s.handle()
+	extra := []ChainExtraPort{}
+	if db != nil {
+		raw, err := getSettingTx(db, chainExtraPortsKey)
+		if err != nil {
+			return nil, err
+		}
+		extra, err = parseChainExtraPorts(raw)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ports, err := s.xrayPorts()
@@ -124,7 +182,7 @@ func (s *ChainPortsService) xrayPorts() ([]chain.Port, error) {
 // one public port behind nginx, so the result is deduplicated: 443 is relayed
 // once, whatever is multiplexed behind it.
 func (s *ChainPortsService) publicPorts(ports []chain.Port) ([]chain.Port, error) {
-	db := database.GetDB()
+	db := s.handle()
 	if db == nil {
 		return ports, nil
 	}
@@ -175,7 +233,7 @@ func (s *ChainPortsService) publicPorts(ports []chain.Port) ([]chain.Port, error
 // servers. They are host listeners, not xray inbounds, so nothing in the xray
 // config would ever mention them.
 func (s *ChainPortsService) tunnelPorts() ([]chain.Port, error) {
-	db := database.GetDB()
+	db := s.handle()
 	if db == nil {
 		return nil, nil
 	}
@@ -205,7 +263,7 @@ func (s *ChainPortsService) tunnelPorts() ([]chain.Port, error) {
 // the xray config (web/service/xray.go — an mtg sidecar serves them), so the
 // table is the only place that knows their ports.
 func (s *ChainPortsService) mtprotoPorts() ([]chain.Port, error) {
-	db := database.GetDB()
+	db := s.handle()
 	if db == nil {
 		return nil, nil
 	}

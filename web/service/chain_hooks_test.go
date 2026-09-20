@@ -1,7 +1,9 @@
 package service
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,5 +163,76 @@ func TestAddingAnInboundOnAPanelWithoutAChain(t *testing.T) {
 
 	if after := chainRevision(t); after != before {
 		t.Errorf("chainRevision = %d on a panel with no chain, want it left at %d", after, before)
+	}
+}
+
+// withXrayConfig points the panel at a config of the test's own, so the hook
+// composes a real port list instead of failing to find one.
+func withXrayConfig(t *testing.T, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XUI_BIN_FOLDER", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write xray config: %v", err)
+	}
+}
+
+// TestADuplicatePortDoesNotMoveTheRevision: one port, one source (§3.8). A
+// list the panel cannot make sense of must not become a revision — every front
+// would fetch a document that fails to build, and the chain would go down over
+// a mistake the operator can undo in the editor. The fronts keep relaying the
+// last list that made sense, and the refusal waits in LastProblem for the
+// banner.
+func TestADuplicatePortDoesNotMoveTheRevision(t *testing.T) {
+	newPanel(t)
+	withXrayConfig(t, `{"inbounds":[{"listen":"0.0.0.0","port":443,"protocol":"vless","tag":"inbound-443"}]}`)
+	joinedRegistry(t)
+
+	var setting SettingService
+	if err := setting.SetChainExtraPorts([]ChainExtraPort{{Port: 443, Network: chain.NetworkTCP, Note: "clash"}}); err != nil {
+		t.Fatalf("SetChainExtraPorts: %v", err)
+	}
+	before := chainRevision(t)
+
+	inbounds := &InboundService{}
+	if _, _, err := inbounds.AddInbound(&model.Inbound{
+		UserId: 1, Enable: false, Port: 34567, Protocol: model.VLESS, Tag: "inbound-34567",
+		Remark: "vless", Settings: `{"clients":[],"decryption":"none"}`,
+	}); err != nil {
+		t.Fatalf("AddInbound: %v", err)
+	}
+
+	if after := chainRevision(t); after != before {
+		t.Errorf("chainRevision = %d while two sources claim port 443, want it left at %d", after, before)
+	}
+	problem := (&ChainPortsService{}).LastProblem()
+	if problem == nil {
+		t.Fatal("LastProblem is nil; the editor has nothing to put in its banner")
+	}
+	if problem.Code != CodeDuplicatePort {
+		t.Errorf("LastProblem code = %q, want %q", problem.Code, CodeDuplicatePort)
+	}
+	for _, want := range []string{chain.SourceXray, chain.SourceExtra} {
+		if !strings.Contains(problem.Message, want) {
+			t.Errorf("LastProblem %q does not name the source %q", problem.Message, want)
+		}
+	}
+
+	// Taking the collision away lets the chain move again, and clears the
+	// banner: a problem nobody has any more must not keep being shown.
+	if err := setting.SetChainExtraPorts(nil); err != nil {
+		t.Fatalf("SetChainExtraPorts: %v", err)
+	}
+	if _, _, err := inbounds.AddInbound(&model.Inbound{
+		UserId: 1, Enable: false, Port: 34568, Protocol: model.VLESS, Tag: "inbound-34568",
+		Remark: "vless", Settings: `{"clients":[],"decryption":"none"}`,
+	}); err != nil {
+		t.Fatalf("AddInbound after the fix: %v", err)
+	}
+	if after := chainRevision(t); after <= before {
+		t.Errorf("chainRevision = %d once the ports made sense again, want more than %d", after, before)
+	}
+	if problem := (&ChainPortsService{}).LastProblem(); problem != nil {
+		t.Errorf("LastProblem = %v after a clean build, want nil", problem)
 	}
 }

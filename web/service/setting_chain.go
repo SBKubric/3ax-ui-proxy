@@ -96,6 +96,13 @@ func (s *SettingService) GetChainExtraPorts() ([]ChainExtraPort, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseChainExtraPorts(raw)
+}
+
+// parseChainExtraPorts is the stored value turned into ports, so the settings
+// accessor and the transaction-bound reader below cannot disagree about what
+// the operator wrote.
+func parseChainExtraPorts(raw string) ([]ChainExtraPort, error) {
 	ports := []ChainExtraPort{}
 	if raw = strings.TrimSpace(raw); raw == "" {
 		return ports, nil
@@ -145,6 +152,25 @@ func (s *SettingService) SetChainExtraPorts(ports []ChainExtraPort) error {
 		}
 		return bumpRevisionTx(tx)
 	})
+}
+
+// getSettingTx is getString inside a transaction, falling back to the default
+// for a key that has never been saved — the same answer the settings accessors
+// give, without the second connection they would need.
+func getSettingTx(tx *gorm.DB, key string) (string, error) {
+	var setting model.Setting
+	err := tx.Where("key = ?", key).First(&setting).Error
+	if database.IsNotFound(err) {
+		value, known := defaultValueMap[key]
+		if !known {
+			return "", common.NewErrorf("setting %q has no default", key)
+		}
+		return value, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return setting.Value, nil
 }
 
 // saveSettingTx is saveSetting inside a transaction: the settings accessors go
