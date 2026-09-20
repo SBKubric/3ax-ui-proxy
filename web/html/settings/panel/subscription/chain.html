@@ -13,8 +13,12 @@
             data-testid="chain-ports-problem" :message="text.portsProblem"
             :description="portsProblem.message"></a-alert>
 
-        <a-alert v-if="hasLegacy" type="warning" show-icon :style="{ marginBottom: '12px' }"
-            data-testid="chain-legacy-banner" :message="text.legacyReinstall"></a-alert>
+        <!-- A legacy hop is the imported host override: it has no hop secret,
+             gets no document and relays no new port, so the banner stays until
+             its box is re-installed as a real hop (§2.3). -->
+        <a-alert v-if="legacyNames" type="warning" show-icon :style="{ marginBottom: '12px' }"
+            data-testid="chain-legacy-banner" :message="legacyNames"
+            :description="text.legacyReinstall"></a-alert>
 
         <div data-testid="chain-real-server" :style="{ marginBottom: '8px' }">
             <b>real-server</b>
@@ -240,8 +244,8 @@
             edgeHops() {
                 return this.hops.filter(h => h.role === ChainUtil.ROLE_EDGE);
             },
-            hasLegacy() {
-                return this.hops.some(ChainUtil.isLegacy);
+            legacyNames() {
+                return this.hops.filter(ChainUtil.isLegacy).map(h => h.name).join(', ');
             },
             // What the new hop will be chained onto, by the same rule the
             // service applies: an edge hangs off the last inner that has

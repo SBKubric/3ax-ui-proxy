@@ -8,6 +8,10 @@
  * localized wording the controller picked, so callers only have to decide what
  * to do, not what to say.
  *
+ * Writes go through postJson, not post: the panel's axios sends a form body by
+ * default (assets/js/axios-init.js), and these routes read JSON, which is what
+ * §2.4 documents and what the bot and a future orchestrator will send too.
+ *
  * ChainUtil holds the few derivations both the editor and the read-only
  * override row make from a hop: whether it is fresh, how its token is shown,
  * how a stamp reads. A Vue template can only reach properties of its own
@@ -30,19 +34,19 @@ const ChainApi = {
     },
     /** Creates a hop; the answer carries its join token, once and never again. */
     add(hop) {
-        return HttpUtil.post(ChainApi._base + 'add', hop);
+        return HttpUtil.postJson(ChainApi._base + 'add', hop);
     },
     update(id, patch) {
-        return HttpUtil.post(ChainApi._base + 'update/' + encodeURIComponent(id), patch);
+        return HttpUtil.postJson(ChainApi._base + 'update/' + encodeURIComponent(id), patch);
     },
     del(id, force) {
-        return HttpUtil.post(ChainApi._base + 'del/' + encodeURIComponent(id), { force: !!force });
+        return HttpUtil.postJson(ChainApi._base + 'del/' + encodeURIComponent(id), { force: !!force });
     },
     setActive(id) {
-        return HttpUtil.post(ChainApi._base + 'setActive/' + encodeURIComponent(id));
+        return HttpUtil.postJson(ChainApi._base + "setActive/" + encodeURIComponent(id), {});
     },
     reissueToken(id) {
-        return HttpUtil.post(ChainApi._base + 'reissueToken/' + encodeURIComponent(id));
+        return HttpUtil.postJson(ChainApi._base + "reissueToken/" + encodeURIComponent(id), {});
     },
 };
 
