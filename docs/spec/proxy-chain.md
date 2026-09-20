@@ -10,7 +10,9 @@
 
 Вне карты (см. Out of scope в #68): шифрованный хоп между звеньями, несколько активных edge, автоматический failover, IP-allowlist на внутренних звеньях, оркестратор, PROXY protocol, nginx «всё за 443», TLS/домен для подписок на боксах, WARP+, Hysteria2.
 
-Правила реализации: аддитивность к upstream ([ADR 0002](../adr/0002-additive-upstream-compatibility.md)), тесты по `docs/agents/testing.md` (unit + Playwright e2e), ветки `<номер>-<название>`, Conventional Commits.
+Термины карты уточнены: *chain secret* (общий секрет цепочки) из списка карты в спеке заменён на **hop secret** — персональный секрет звена (§3.7, ADR 0003); в CONTEXT.md *chain secret* помечен как избегаемый синоним. *Setup page* стала *join page*.
+
+Правила реализации: аддитивность к upstream ([ADR 0002](../adr/0002-additive-upstream-compatibility.md) — сейчас на ветке `spec/tunnel-subscription`, в `main` приходит с её мержем; эта спека опирается на его текст), тесты по `docs/agents/testing.md` (unit + Playwright e2e), ветки `<номер>-<название>`, Conventional Commits.
 
 ### 1.1 Сквозные решения
 
@@ -188,7 +190,7 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
 **2.6.3 Вставка нового inner между существующими.** Было `real ← A(pos 0) ← B(pos 1) ← edges`; вставляем `M` между `A` и `B`.
 
 Порядок действий владельца:
-1. `POST /add {"name":"m","role":"inner","host":"…","position":1}` → в одной транзакции: `M.next_hop_id = A.id`, `B.next_hop_id = M.id`, `B.position = 2`, `M.state = pending`, `chainRevision++`. Ответ несёт join-токен.
+1. `POST /add {"name":"m","role":"inner","host":"…","position":1}` → в одной транзакции: `M.next_hop_id = A.id`, `B.next_hop_id = M.id`, `B.position = 2`, `M.state = pending`. Ревизия **не** бампается: пока `M` в `pending`, ни один документ не меняется (см. ниже); бамп случится в транзакции join (§4.3). Ответ несёт join-токен.
 2. Поставить бокс `M` с этим токеном (`PROXY_JOIN_TOKEN`, §4.1). `M` входит в цепочку через `A` → `панель`, получает hop secret и свой документ, поднимает relay на `A` и sub-сервер.
 3. Волна сама доводит `B` до нового next hop: на ближайшем опросе `B` увидит ревизию, в которой `nextHop = M`, перепишет outbound relay и upstream подписок и перезапустит relay.
 
@@ -229,6 +231,8 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
 | `database/db.go:40` (`initModels`) | `&model.ChainHop{},` в конец среза |
 | `database/db.go:101` (`namedIndexes`) | три индекса `idx_chain_hops_*` |
 | `database/db.go:350-367` (блок миграций) | вызов `service.MigrateLegacyOverride()` |
+
+Три вставки в `database/db.go` и две в `web/service/setting.go` — сознательное исключение из «одна вставка на файл» ADR 0002: регистрация модели, индексов и миграции — стандартная триада, которую форк уже делает для мониторинга в тех же местах, а `defaultValueMap` + `GetProxyOverride` лежат внутри форкового блока `proxyOverride*`. Хуки `ChainService.BumpRevision()` в `inbound.go`, `tunnel_service.go`, `mtproto_service.go` (§3) — принимаемая цена аддитивности: любое изменение состава портов должно поднять ревизию, а общего события «порты изменились» в панели нет.
 | `web/service/setting.go:92` (`defaultValueMap`, блок `proxyOverride*`) | пять ключей 2.2 |
 | `web/service/setting.go:388` (`GetProxyOverride`) | обёртка над реестром, тело → `setting_chain.go` |
 | `web/entity/entity.go:91` (`AllSetting`, форковый блок) | четыре поля (без `chainRevision`) |
@@ -339,7 +343,7 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
 
 `chainRevision` — монотонный `int64` в настройках панели, инкремент в той же транзакции, что и запись в реестр, **если запись меняет хоть один документ**: заведение/удаление/переименование звена, смена хоста, `subPort`, `subScheme`, порядка, смена активного edge, успешный join, ротация hop secret, изменение `chainExtraPorts`, а также изменение состава relayed ports (добавление/удаление/включение inbound'а, смена порта AWG/WG/MTProto — хук в конце уже существующих обработчиков, см. «Тронутые файлы»).
 
-Не инкрементят: обновление `last_seen_at`/`last_revision`, выдача join-токена уже существующему `pending`-звену (документ от этого не меняется), правка `chainPollSeconds`.
+Не инкрементят: обновление `last_seen_at`/`last_revision`, заведение звена в `pending` и выдача или перевыпуск его join-токена (документы строятся без `pending`-звеньев, §2.6.3), правка `chainPollSeconds`.
 
 ETag — строка `"<revision>"`. Ревизия глобальна на цепочку: звено, до которого изменение не дошло по смыслу, всё равно увидит новое число и просто не найдёт диффа (§3.5) — это дешевле, чем ревизия на документ.
 
@@ -477,6 +481,8 @@ ETag — строка `"<revision>"`. Ревизия глобальна на ц�
 ```json
 {"token":"<32 символа>","host":"a.example.net","subPort":2096,"subScheme":"https"}
 ```
+
+> **Отступление от рамки карты.** «Решено при чартинге» говорит: «следующее звено сверяет токен по документу и отдаёт конфиг»; тикет #71 оставлял выбор между хэшем токена в документе и запросом глубже. Выбран второй вариант, и вот почему: сосед может сверить хэш, но не может ни выдать hop secret, ни перевести звено в `joined`, ни бампнуть ревизию — всё это только у панели. Локальная сверка потребовала бы того же обращения внутрь плюс второй копии хэшей токенов в документах; сосед в этой схеме — только транспорт, а панель — единственный судья. Цена — join не работает, пока путь до панели разорван, что и так было бы правдой.
 
 Звено, получившее запрос, не разбирает его: проверяет только размер тела (≤ 4 КиБ) и наличие `token`, добавляет `X-Chain-Observed: <RemoteAddr>` (только если заголовка ещё нет — значит, оно прямой получатель) и `X-Chain-Forwarded: <n+1>`, и шлёт тот же JSON на **свой** next hop. При `n+1 > 16` — `400` `join_loop`. Ответ next hop'а возвращается звонящему байт в байт.
 
@@ -1161,13 +1167,13 @@ Switch the active edge: <code>/proxy &lt;name&gt;</code>
 3. Кнопка «Make active» ничего не спрашивает про miграцию клиентских ссылок подписки (URI могут кэшироваться у клиентов на старый host). Нужно ли предупреждение в модалке подтверждения переключения (по аналогии с отказом удаления активного edge), или это описывается только в рантайм-документации?
 4. Позиция `position` для inner-звеньев в модалке «Add hop» сейчас не выбирается явно (звено добавляется в конец списка inner); нужен ли селектор позиции (вставка между двумя существующими inner) уже в MVP редактора?
 
-## 8. Порядок реализации
+## 8. План реализации
 
 Каждый пункт — отдельный тикет карты (графуируют из fog после мержа этой спеки), ветка `<номер>-<название>`, свой PR в `main`, тесты по `docs/agents/testing.md` (`docker run --rm -v $PWD:/src -w /src golang:1.26 go test -race -count=1 ./...` + `make e2e`). Порядок выбран так, чтобы панель и бокс можно было релизить независимо, а стенд проверять по шагам.
 
 | # | тикет | что входит | зависит от |
 |---|---|---|---|
-| 1 | Реестр: модель и сервис | `database/model/chain.go`, `web/service/chain_service.go` (инварианты §2.7, ревизия, миграция legacy override), `setting_chain.go`, производный `GetProxyOverride()` (§2.3); unit-тесты на четыре сценария §2.6 | — |
+| 1 | Реестр: модель и сервис | `database/model/chain.go` (константы для `role`/`state`, не голые строки), `web/service/chain_service.go` (инварианты §2.7, ревизия, миграция legacy override), `setting_chain.go`, производный `GetProxyOverride()` (§2.3); unit-тесты на четыре сценария §2.6 | — |
 | 2 | Порты и документ | `chainports/` (переименование `relaymanifest`, §5.9), `web/service/chain_document.go` (сборка, усечение §3.2, ETag), хуки `BumpRevision()` в inbound/tunnel/mtproto; `x-ui chain ports` + алиас | 1 |
 | 3 | Sub-сервер панели: `/chain/v1/*` | `sub/chainController.go` — `document` (§3.3), `join` (§4.3), `status`; `web/service/chain_join.go` | 2 |
 | 4 | UI реестра и API | `web/controller/chain_controller.go` (§2.4), `chain.html` по прототипу `prototype/proxy-chain-ui` (§7), `chain.js`, read-only блок в `general.html`, локализация; e2e `e2e/tests/chain-editor.spec.ts` | 1, 3 |
