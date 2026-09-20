@@ -20,15 +20,15 @@ _Avoid_: forwarder, tunnel
 Публичный порт real server, который relay открывает у себя и пробрасывает один-в-один. Складывается из xray inbound ports и extra ports.
 
 **Xray inbound port**:
-Relayed port, который relay узнаёт из документа цепочки.
+Relayed port, который панель берёт из своего xray-конфига по правилам пропуска и кладёт в документ цепочки.
 
 **Relay manifest**:
-Санированная выписка из xray-конфига real server — только адрес, порт, протокол, тег и признак TPROXY каждого inbound'а, без ключей и паролей; в цепочке уступает место документу цепочки.
+Историческое: санированная выписка из xray-конфига real server, которую владелец вставлял в setup page (ADR 0001). В цепочке заменена документом цепочки; правила отбора портов живут в пакете `chainports`.
 _Avoid_: panel config, exported config.json, panel-xray.json
 
-**Setup page**:
-Одноразовая страница на proxy front по секретной ссылке, через которую владелец вводит бокс в цепочку; исчезает, как только вход принят.
-_Avoid_: bootstrap page, onboarding, wizard
+**Join page** (страница входа):
+Одноразовая страница на proxy front по секретной ссылке, в которую владелец вводит адрес next hop и join token; исчезает, как только вход принят. Преемница setup page из ADR 0001.
+_Avoid_: setup page, bootstrap page, onboarding, wizard
 
 **Extra port**:
 Relayed port, который real server обслуживает вне xray (AmneziaWG, WireGuard, MTProto) и который поэтому нельзя узнать из xray-конфига.
@@ -84,6 +84,6 @@ _Avoid_: push, sync, broadcast, propagation
 Одноразовый секрет, выданный панелью новому звену; по нему next hop узнаёт звено и впускает его в цепочку.
 _Avoid_: enrollment key, pairing code, invite
 
-**Chain secret** (секрет цепочки):
-Общий секрет панели и звеньев, под которым между звеньями ходят волна и подписки.
-_Avoid_: API key, shared password, chain token
+**Hop secret** (секрет звена):
+Долгоживущий секрет, который панель выдаёт звену при входе; next hop сверяет его по хэшу из документа цепочки и только по нему отдаёт волну. У каждого звена свой; изъятое edge раскрывает только свой.
+_Avoid_: chain secret, shared secret, API key, chain token

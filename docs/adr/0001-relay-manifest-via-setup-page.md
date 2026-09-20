@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted; delivery part superseded by [ADR 0003](0003-chain-document-and-join-token.md)
 ---
 
 # Relay manifest instead of the raw panel config, delivered through a setup page
