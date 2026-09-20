@@ -158,7 +158,30 @@
 {{end}}
 
 {{define "settings/panel/subscription/chainOverrideMarkup"}}
-<a-tag color="blue" data-testid="chain-override-active">[[ activeEdge ]]</a-tag>
+<div>
+    <!-- An empty registry is a panel that was upgraded and has no chain yet:
+         the two legacy fields stay editable and keep working exactly as before,
+         because there is no active edge for the host to come from (§2.3). The
+         moment the first hop exists the registry owns the override, and these
+         become the read-only row. -->
+    <div v-if="empty" data-testid="chain-override-legacy">
+        <div>
+            <span>{{ i18n "pages.settings.proxyOverrideEnable"}}</span>
+            <a-switch v-model="allSetting.proxyOverrideEnable" :style="{ marginInlineStart: '8px' }"
+                data-testid="chain-override-enable"></a-switch>
+        </div>
+        <div :style="{ marginTop: '6px' }">
+            <span>{{ i18n "pages.settings.proxyOverrideHost"}}</span>
+            <a-input type="text" v-model="allSetting.proxyOverrideHost" placeholder="proxy.example.com"
+                data-testid="chain-override-host"></a-input>
+        </div>
+        <p class="mon-muted" :style="{ margin: '4px 0 0' }">{{ i18n "pages.settings.proxyOverrideHostDesc"}}</p>
+    </div>
+    <div v-else>
+        <a-tag color="blue" data-testid="chain-override-active">[[ activeEdge ]]</a-tag>
+        <p class="mon-muted" :style="{ margin: '4px 0 0' }">{{ i18n "pages.settings.chain.overrideNote"}}</p>
+    </div>
+</div>
 {{end}}
 
 {{define "settings/panel/subscription/chain"}}
@@ -442,13 +465,25 @@
     // because the two sit in different templates and neither owns the other.
     Vue.component('chain-override-readonly', {
         delimiters: ['[[', ']]'],
+        props: {
+            allSetting: { type: Object, required: true },
+        },
         data() {
-            return { activeEdge: '—' };
+            // hops starts null rather than empty: "not asked yet" must not
+            // render as "no chain" and flash the legacy fields at a panel that
+            // has a registry.
+            return { activeEdge: '—', hops: null };
+        },
+        computed: {
+            empty() {
+                return Array.isArray(this.hops) && this.hops.length === 0;
+            },
         },
         async mounted() {
             const msg = await ChainApi.list();
-            if (msg.success && msg.obj && msg.obj.activeEdge) {
-                this.activeEdge = msg.obj.activeEdge;
+            if (msg.success && msg.obj) {
+                this.hops = msg.obj.hops || [];
+                if (msg.obj.activeEdge) this.activeEdge = msg.obj.activeEdge;
             }
         },
         template: `{{ template "settings/panel/subscription/chainOverrideMarkup" . }}`,

@@ -77,9 +77,8 @@
              registry is empty, so a downgrade keeps working. -->
         <a-setting-list-item paddings="small" data-testid="chain-override-readonly">
             <template #title>{{ i18n "pages.settings.proxyOverride"}}</template>
-            <template #description>{{ i18n "pages.settings.chain.overrideNote"}}</template>
             <template #control>
-                <chain-override-readonly></chain-override-readonly>
+                <chain-override-readonly :all-setting="allSetting"></chain-override-readonly>
             </template>
         </a-setting-list-item>
     </a-collapse-panel>

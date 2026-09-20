@@ -47,9 +47,13 @@ test.describe('chain editor', () => {
     // A panel nobody has built a chain on says so rather than showing an empty
     // list that could be mistaken for a chain that is down.
     await expect(authedPage.getByTestId('chain-empty')).toBeVisible();
-    // The Proxy front row of the general section is read-only now: the host
-    // clients get is the active edge's, and there is no active edge yet.
-    await expect(authedPage.getByTestId('chain-override-readonly')).toContainText('—');
+    // With an empty registry the Proxy front row keeps the two legacy fields
+    // editable (§2.3): a panel upgraded without a chain has no active edge for
+    // the host to come from, and taking the old inputs away would leave it with
+    // no override at all.
+    await expect(authedPage.getByTestId('chain-override-legacy')).toBeVisible();
+    await expect(authedPage.getByTestId('chain-override-enable')).toBeVisible();
+    await expect(authedPage.getByTestId('chain-override-active')).toHaveCount(0);
 
     await authedPage.getByTestId('chain-add-hop').click();
     await field(authedPage, 'chain-add-hop-name').fill('e2e-inner');
@@ -76,6 +80,10 @@ test.describe('chain editor', () => {
     // Reloading the page loses it — the registry cannot hand it out again, so
     // the row falls back to the expiry and the Reissue button.
     await openSubscriptionTab(authedPage);
+    // And now that a hop exists the registry owns the override: the legacy
+    // inputs are gone and the row is read-only.
+    await expect(authedPage.getByTestId('chain-override-active')).toBeVisible();
+    await expect(authedPage.getByTestId('chain-override-enable')).toHaveCount(0);
     await expect(authedPage.getByTestId('chain-hop-e2e-inner-token')).not.toContainText(shown.slice(0, 16));
     await authedPage.getByTestId('chain-hop-e2e-inner-reissue').click();
     await authedPage.getByRole('button', { name: 'Sure' }).click();
