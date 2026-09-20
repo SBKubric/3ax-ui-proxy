@@ -1,7 +1,10 @@
 package controller
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strconv"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
@@ -125,6 +128,45 @@ type chainDelRequest struct {
 	Force bool `json:"force"`
 }
 
+// chainMaxBodyBytes caps what a registry write may send. The largest body here
+// is six short fields; 16 KiB is room to spare and still refuses a request that
+// would otherwise be read into memory whole.
+const chainMaxBodyBytes = 16 << 10
+
+// readBody decodes a JSON body into dst the way the monitoring contract does
+// (monitoring.go): the reader is capped, unknown fields are a refusal rather
+// than something quietly dropped, and trailing data is refused too. A field the
+// panel does not know is nearly always a client sending the wrong shape, and
+// silently ignoring it hides the mistake until the hop behaves unexpectedly.
+//
+// Unlike the contract's version, the refusal travels in the panel's
+// {success,msg,obj} envelope, and an empty body is not an error: del,
+// setActive and reissueToken carry nothing, and the zero value is what they
+// mean. The decoder's own message is kept — it names the offending field, and
+// a malformed request is the caller's own text, not the panel's internals.
+func (a *ChainController) readBody(c *gin.Context, dst any) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, chainMaxBodyBytes)
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			pureJsonMsg(c, http.StatusRequestEntityTooLarge, false, "chain: body larger than 16 KiB")
+			return false
+		}
+		pureJsonMsg(c, http.StatusBadRequest, false, "chain: invalid body: "+err.Error())
+		return false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		pureJsonMsg(c, http.StatusBadRequest, false, "chain: trailing data after the JSON body")
+		return false
+	}
+	return true
+}
+
 // GET list — the whole registry, the revision the editor compares each hop's
 // against, and the ports banner.
 func (a *ChainController) list(c *gin.Context) {
@@ -149,8 +191,7 @@ func (a *ChainController) list(c *gin.Context) {
 // only its hash, so a lost token is reissued, never recovered.
 func (a *ChainController) add(c *gin.Context) {
 	var request chainAddRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		a.fail(c, err)
+	if !a.readBody(c, &request) {
 		return
 	}
 	hop, token, expires, err := a.chainService.Add(service.AddHopInput{
@@ -178,8 +219,7 @@ func (a *ChainController) update(c *gin.Context) {
 		return
 	}
 	var request chainUpdateRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		a.fail(c, err)
+	if !a.readBody(c, &request) {
 		return
 	}
 	err = a.chainService.Update(id, service.UpdateHopInput{
@@ -206,7 +246,9 @@ func (a *ChainController) del(c *gin.Context) {
 	}
 	var request chainDelRequest
 	// An empty body is a plain delete: force is the exception, never a default.
-	_ = c.ShouldBindJSON(&request)
+	if !a.readBody(c, &request) {
+		return
+	}
 	result, err := a.chainService.Delete(id, request.Force)
 	if err != nil {
 		a.fail(c, err)

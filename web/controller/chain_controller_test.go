@@ -331,3 +331,68 @@ func TestChainHopsHealthIsAStub(t *testing.T) {
 		}
 	}
 }
+
+// TestChainRefusesAMalformedBody: the registry writes read their JSON the way
+// the monitoring contract does — a capped reader and no unknown fields — so a
+// client sending the wrong shape is told, rather than having the field it
+// misspelled silently ignored.
+func TestChainRefusesAMalformedBody(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+
+	// An unknown field: 400, and the answer names it.
+	w := chainPost(r, "/panel/api/chain/add", cookie,
+		`{"name":"edge-a","host":"a.example.net","role":"edge","isActive":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("add with an unknown field: status %d, want 400 (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "isActive") {
+		t.Errorf("add with an unknown field: %s, want the field named", w.Body.String())
+	}
+
+	// A body past the cap: 413, and nothing of it is read into the registry.
+	big := `{"name":"edge-a","host":"` + strings.Repeat("h", chainMaxBodyBytes) + `","role":"edge"}`
+	w = chainPost(r, "/panel/api/chain/add", cookie, big)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("add with an oversized body: status %d, want 413 (%s)", w.Code, w.Body.String())
+	}
+
+	// Both refusals keep the panel's envelope, so the page reads them the same
+	// way as any other no.
+	for _, body := range []string{
+		`{"name":"edge-a","host":"a.example.net","role":"edge","isActive":true}`,
+		big,
+		`{"host":"a.example.net"} trailing`,
+	} {
+		w := chainPost(r, "/panel/api/chain/update/1", cookie, body)
+		var env monUIEnvelope
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("envelope: %v (%s)", err, w.Body.String())
+		}
+		if env.Success || env.Msg == "" {
+			t.Errorf("malformed body answered %+v, want success:false with a reason", env)
+		}
+	}
+
+	// Nothing was created by any of it.
+	state, err := (&service.ChainService{}).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Hops) != 0 {
+		t.Errorf("hops = %+v, want a registry no malformed request could touch", state.Hops)
+	}
+}
+
+// TestChainDelTakesAnEmptyBody: del, setActive and reissueToken carry nothing,
+// and an empty body means the zero value rather than a refusal.
+func TestChainDelTakesAnEmptyBody(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+	added := chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
+
+	env := monUIDecode(t, chainPost(r, "/panel/api/chain/del/"+strconv.Itoa(added.Hop.Id), cookie, ""))
+	if !env.Success {
+		t.Fatalf("del with an empty body: %s", env.Msg)
+	}
+}
