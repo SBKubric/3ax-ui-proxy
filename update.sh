@@ -799,9 +799,12 @@ config_debug_mode_after_update() {
 
 config_after_update() {
     if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
-        echo -e "${green}Proxy-front mode — keeping /etc/x-ui/proxy.json unchanged.${plain}"
-        if grep -q '"xrayConfigPath"' /etc/x-ui/proxy.json 2>/dev/null; then
-            echo -e "${red}/etc/x-ui/proxy.json still uses \"xrayConfigPath\": this release reads a relay manifest instead (key \"relayManifestPath\", file /etc/x-ui/relay-manifest.json) and refuses the panel's raw config.json. Re-run the installer in proxy mode, or edit proxy.json and paste a manifest from the real panel (x-ui relay-manifest) — the service will not start until then.${plain}"
+        echo -e "${green}Proxy-front mode — keeping /etc/x-ui/proxy.json, /etc/x-ui/chain/ and the certificate unchanged.${plain}"
+        # Legacy configs never reach this point: proxy_config_gate stops the
+        # update before the binary is replaced (§5.7). What is left to say is
+        # the one thing a v2 box may still be missing.
+        if [[ "${proxy_not_joined:-0}" == "1" ]]; then
+            echo -e "${yellow}This box has not joined the chain yet — the join page is at: x-ui chain join-url${plain}"
         fi
         return
     fi
@@ -1975,12 +1978,41 @@ detect_debug_mode_from_existing_install() {
     fi
 }
 
+# Decides whether this release may touch the box at all (spec §5.7).
+#
+# A v1 proxy.json — one carrying a key from the manifest era, or lacking the v2
+# marker — belongs to a box that cannot run as a chain hop: its ports, its next
+# hop and its secret all used to come from places this release no longer reads.
+# The check lives here, before the binary is replaced, and not in
+# config_after_update where its ancestor sat: by then "we stopped" would mean a
+# dead relay restarting in a loop, whereas here it means the box keeps serving
+# its clients on the version it already runs until its owner reinstalls it.
+proxy_config_gate() {
+    local cfg="/etc/x-ui/proxy.json" key
+    local hint="this release runs proxy fronts as chain hops. The box keeps running on the current binary. Re-install it as a chain hop: docs/runbooks/proxy-front.md §«Переустановка бокса»."
+    for key in upstreamHost relayManifestPath extraPorts upstreamBase subPath jsonPath; do
+        if grep -q "\"${key}\"" "${cfg}" 2>/dev/null; then
+            echo -e "${red}${cfg} is a v1 proxy-front config (key \"${key}\"): ${hint}${plain}"
+            exit 1
+        fi
+    done
+    if ! grep -Eq '"version"[[:space:]]*:[[:space:]]*2' "${cfg}" 2>/dev/null; then
+        echo -e "${red}${cfg} carries no \"version\": 2 marker, so it is a v1 proxy-front config: ${hint}${plain}"
+        exit 1
+    fi
+    # A v2 box with no hop secret is fine — it simply has not joined yet.
+    if ! grep -Eq '"hopSecret"[[:space:]]*:[[:space:]]*"[^"]+"' "${cfg}" 2>/dev/null; then
+        proxy_not_joined=1
+    fi
+}
+
 # Proxy-front boxes carry /etc/x-ui/proxy.json; update them in proxy mode
-# (replace the binary, keep proxy.json + the proxy unit) and skip the panel /
-# WireGuard steps.
+# (replace the binary, keep proxy.json, /etc/x-ui/chain/, the certificate and
+# the proxy unit) and skip the panel / WireGuard steps.
 if [[ -f /etc/x-ui/proxy.json ]]; then
     export XUI_PROXY_MODE=1
     echo -e "${yellow}Detected proxy-front install (/etc/x-ui/proxy.json) — updating in proxy mode.${plain}"
+    proxy_config_gate
 fi
 if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
     detect_debug_mode_from_existing_install
