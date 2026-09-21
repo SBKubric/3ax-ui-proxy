@@ -2044,7 +2044,7 @@ detect_debug_mode_from_existing_install() {
 # dead relay restarting in a loop, whereas here it means the box keeps serving
 # its clients on the version it already runs until its owner reinstalls it.
 proxy_config_gate() {
-    local cfg="/etc/x-ui/proxy.json" key
+    local cfg="${1:-/etc/x-ui/proxy.json}" key
     local hint="this release runs proxy fronts as chain hops. The box keeps running on the current binary. Re-install it as a chain hop: docs/runbooks/proxy-front.md §«Переустановка бокса»."
     for key in upstreamHost relayManifestPath extraPorts upstreamBase subPath jsonPath; do
         if grep -q "\"${key}\"" "${cfg}" 2>/dev/null; then
