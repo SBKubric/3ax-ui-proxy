@@ -197,7 +197,8 @@ func (j *JoinPage) URL() string {
 	if host == "" {
 		host = outboundIP()
 	}
-	return j.cfg.Scheme() + "://" + net.JoinHostPort(host, strconv.Itoa(j.cfg.SubPort)) + j.Path()
+	scheme := j.cfg.Scheme()
+	return scheme + "://" + PublicHostPort(scheme, host, j.cfg.SubPort) + j.Path()
 }
 
 // outboundIP finds the address the host would use to reach the internet (no

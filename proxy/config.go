@@ -116,6 +116,19 @@ func (c *Config) NextHopBase() string {
 	return c.NextHop.SubScheme + "://" + net.JoinHostPort(c.NextHop.Host, strconv.Itoa(c.NextHop.SubPort))
 }
 
+// PublicHostPort is host, or host:port when port is not the scheme's default
+// (443 for https, 80 for http). Every place that builds this hop's own public
+// URL from its configured Domain must go through this: leaving the port off
+// unconditionally sends clients to whatever else answers the scheme's default
+// port — on a box with a chosen sub port, that is xray, not the sub server
+// (#98).
+func PublicHostPort(scheme, host string, port int) string {
+	if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
 // NextHopHint is the address to prefill the join page's "next hop" field with:
 // the configured one, else the v1 upstreamHost of a legacy file — the one
 // value of a v1 config worth anything to its owner.
