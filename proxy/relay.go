@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
+	"sync"
+	"time"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/config"
@@ -21,55 +22,13 @@ func relayConfigPath() string {
 
 // PortsHint is appended to every rejection so the operator knows where the
 // port list comes from now that no manifest exists (docs/spec/proxy-chain.md
-// §5.9): the panel computes it, and `x-ui chain ports` prints exactly what a
-// chain document carries.
-const PortsHint = "the panel computes the relayed ports — print them there with `x-ui chain ports` and use that output"
+// §5.9): the panel computes it, the chain document carries it, and `x-ui chain
+// ports` on the panel prints exactly what a document carries.
+const PortsHint = "the panel computes the relayed ports — print them there with `x-ui chain ports`"
 
-// ParseRelayPorts reads the relayed-port list the front works from: the same
-// array of ports a chain document carries (§3.8), so the box has one format
-// whether the list arrived in a document or was pasted by the operator.
-//
-// It is strict about the vocabulary rather than about the shape: a port the
-// relay cannot open, or a network it cannot name, is a silently dead listener
-// otherwise.
-func ParseRelayPorts(data []byte) ([]chain.Port, error) {
-	var ports []chain.Port
-	if err := json.Unmarshal(data, &ports); err != nil {
-		return nil, fmt.Errorf("not a chain port list (%v); %s", err, PortsHint)
-	}
-	if len(ports) == 0 {
-		return nil, fmt.Errorf("the chain port list is empty; %s", PortsHint)
-	}
-	for _, port := range ports {
-		if port.Port < 1 || port.Port > 65535 {
-			return nil, fmt.Errorf("port %d is out of range 1-65535; %s", port.Port, PortsHint)
-		}
-		switch port.Network {
-		case chain.NetworkTCP, chain.NetworkUDP, chain.NetworkTCPUDP:
-		default:
-			return nil, fmt.Errorf("port %d has network %q, want one of %q, %q, %q; %s",
-				port.Port, port.Network, chain.NetworkTCP, chain.NetworkUDP, chain.NetworkTCPUDP, PortsHint)
-		}
-	}
-	return ports, nil
-}
-
-// LoadRelayPorts reads the port list from disk.
-func LoadRelayPorts(path string) ([]chain.Port, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read chain port list %q: %w", path, err)
-	}
-	ports, err := ParseRelayPorts(data)
-	if err != nil {
-		return nil, fmt.Errorf("chain port list %q: %w", path, err)
-	}
-	return ports, nil
-}
-
-// relayInbound builds one dokodemo-door inbound forwarding port to upstreamHost.
-func relayInbound(listenJSON []byte, upstreamHost string, port int, network string) xray.InboundConfig {
-	settings := fmt.Sprintf(`{"address":%q,"port":%d,"network":%q,"followRedirect":false}`, upstreamHost, port, network)
+// relayInbound builds one dokodemo-door inbound forwarding port to nextHopHost.
+func relayInbound(listenJSON []byte, nextHopHost string, port int, network string) xray.InboundConfig {
+	settings := fmt.Sprintf(`{"address":%q,"port":%d,"network":%q,"followRedirect":false}`, nextHopHost, port, network)
 	return xray.InboundConfig{
 		Listen:   json_util.RawMessage(listenJSON),
 		Port:     port,
@@ -80,17 +39,17 @@ func relayInbound(listenJSON []byte, upstreamHost string, port int, network stri
 }
 
 // BuildRelayConfig builds a dokodemo-door relay config that L4-forwards every
-// port of the chain document to upstreamHost (raw TCP and/or UDP, so the real
-// server still terminates TLS/Reality and no keys live on the front).
+// port of the chain document to nextHopHost (raw TCP and/or UDP, so the real
+// server still terminates TLS/Reality and no keys live on a hop).
 //
-// The list already carries every source the panel knows — xray inbounds,
-// AmneziaWG/WireGuard, MTProto and the operator's extras — so this no longer
-// decides what is relayable; it only turns ports into listeners. One port, one
-// source still holds: a port claimed twice is a refusal, not a silent winner.
-// It returns the config plus the relayed ports.
-func BuildRelayConfig(ports []chain.Port, upstreamHost, listen string) (*xray.Config, []int, error) {
+// The document's list already carries every source the panel knows — xray
+// inbounds, AmneziaWG/WireGuard, MTProto and the operator's extras — so this
+// does not decide what is relayable; it only turns ports into listeners. One
+// port, one source still holds: a port claimed twice is a refusal, not a
+// silent winner. It returns the config plus the relayed ports.
+func BuildRelayConfig(ports []chain.Port, nextHopHost, listen string) (*xray.Config, []int, error) {
 	if listen == "" {
-		listen = "::"
+		listen = DefaultRelayListen
 	}
 	listenJSON, _ := json.Marshal(listen)
 
@@ -98,17 +57,26 @@ func BuildRelayConfig(ports []chain.Port, upstreamHost, listen string) (*xray.Co
 	var relayed []int
 	seen := make(map[int]chain.Port, len(ports))
 	for _, port := range ports {
+		if port.Port < 1 || port.Port > 65535 {
+			return nil, nil, fmt.Errorf("port %d is out of range 1-65535; %s", port.Port, PortsHint)
+		}
+		switch port.Network {
+		case chain.NetworkTCP, chain.NetworkUDP, chain.NetworkTCPUDP:
+		default:
+			return nil, nil, fmt.Errorf("port %d has network %q, want one of %q, %q, %q; %s",
+				port.Port, port.Network, chain.NetworkTCP, chain.NetworkUDP, chain.NetworkTCPUDP, PortsHint)
+		}
 		if first, taken := seen[port.Port]; taken {
 			return nil, nil, fmt.Errorf("port %d is declared twice: %s %q and %s %q",
 				port.Port, first.Source, first.Tag, port.Source, port.Tag)
 		}
 		seen[port.Port] = port
 		relayed = append(relayed, port.Port)
-		inbounds = append(inbounds, relayInbound(listenJSON, upstreamHost, port.Port, port.Network))
+		inbounds = append(inbounds, relayInbound(listenJSON, nextHopHost, port.Port, port.Network))
 	}
 
 	if len(inbounds) == 0 {
-		return nil, nil, fmt.Errorf("the chain port list carries no ports; %s", PortsHint)
+		return nil, nil, fmt.Errorf("the chain document carries no ports; %s", PortsHint)
 	}
 
 	cfg := &xray.Config{
@@ -119,52 +87,89 @@ func BuildRelayConfig(ports []chain.Port, upstreamHost, listen string) (*xray.Co
 	return cfg, relayed, nil
 }
 
-// extraRelayPorts turns the box-local extra ports of proxy.json into document
-// ports, so BuildRelayConfig sees one list. They keep the document's own
-// naming for an operator port (§3.8).
-func extraRelayPorts(extra []ExtraPort) []chain.Port {
-	ports := make([]chain.Port, 0, len(extra))
-	for _, ep := range extra {
-		ports = append(ports, chain.Port{
-			Port:    ep.Port,
-			Network: ep.Network,
-			Tag:     "extra-" + strconv.Itoa(ep.Port),
-			Source:  chain.SourceExtra,
-		})
-	}
-	return ports
-}
-
-// Relay manages the dokodemo-door xray process that forwards traffic upstream.
+// Relay manages the dokodemo-door xray process that forwards traffic to the
+// next hop. It is rebuilt and restarted whenever an applied chain revision
+// changes the relayed ports or the next hop's address (§3.5): dokodemo-door
+// has no soft reload, so the process is replaced.
 type Relay struct {
-	proc  *xray.Process
-	ports []int
+	listen string
+
+	mu          sync.Mutex
+	proc        *xray.Process
+	ports       []int
+	host        string
+	restartedAt int64
 }
 
-// NewRelay builds the relay config from cfg and prepares (but does not start) the
-// xray process.
-func NewRelay(cfg *Config) (*Relay, error) {
-	ports, err := LoadRelayPorts(cfg.RelayManifestPath)
-	if err != nil {
-		return nil, err
+// NewRelay prepares a relay that binds on listen. Nothing runs until Apply.
+func NewRelay(listen string) *Relay {
+	if listen == "" {
+		listen = DefaultRelayListen
 	}
-	ports = append(ports, extraRelayPorts(cfg.ExtraRelayPorts())...)
-	xrayCfg, relayed, err := BuildRelayConfig(ports, cfg.UpstreamHost, cfg.RelayListen)
-	if err != nil {
-		return nil, err
-	}
-	logger.Infof("proxy-front: relaying %d ports to %s", len(relayed), cfg.UpstreamHost)
-	return &Relay{
-		proc:  xray.NewTestProcess(xrayCfg, relayConfigPath()),
-		ports: relayed,
-	}, nil
+	return &Relay{listen: listen}
 }
 
-// Ports returns the inbound ports being relayed.
-func (r *Relay) Ports() []int { return r.ports }
+// Apply makes the running relay match ports and nextHopHost, restarting xray.
+// A failed start leaves the relay stopped and the error to the caller, which
+// keeps the document and retries on the next revision (§3.5).
+func (r *Relay) Apply(ports []chain.Port, nextHopHost string) error {
+	xrayCfg, relayed, err := BuildRelayConfig(ports, nextHopHost, r.listen)
+	if err != nil {
+		return err
+	}
 
-// Start launches the relay xray process.
-func (r *Relay) Start() error { return r.proc.Start() }
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.proc != nil {
+		if err := r.proc.Stop(); err != nil {
+			logger.Warning("proxy-front: error stopping the relay before a restart:", err)
+		}
+		r.proc = nil
+	}
+	proc := xray.NewTestProcess(xrayCfg, relayConfigPath())
+	if err := proc.Start(); err != nil {
+		r.ports = nil
+		return fmt.Errorf("start relay xray: %w", err)
+	}
+	r.proc = proc
+	r.ports = relayed
+	r.host = nextHopHost
+	r.restartedAt = time.Now().UnixMilli()
+	logger.Infof("proxy-front: relaying ports %v -> %s via dokodemo-door (L4 passthrough)", relayed, nextHopHost)
+	return nil
+}
 
-// Stop terminates the relay xray process and removes its config file.
-func (r *Relay) Stop() error { return r.proc.Stop() }
+// Ports returns the ports currently being relayed.
+func (r *Relay) Ports() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.ports...)
+}
+
+// Running reports whether the relay xray process is up.
+func (r *Relay) Running() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.proc != nil && r.proc.IsRunning()
+}
+
+// RestartedAt is when the relay last came up, in milliseconds.
+func (r *Relay) RestartedAt() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.restartedAt
+}
+
+// Stop terminates the relay xray process and removes its generated config.
+func (r *Relay) Stop() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	defer os.Remove(relayConfigPath())
+	if r.proc == nil {
+		return nil
+	}
+	err := r.proc.Stop()
+	r.proc = nil
+	r.ports = nil
+	return err
+}

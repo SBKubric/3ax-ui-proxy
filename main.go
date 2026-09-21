@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -512,6 +513,96 @@ func chainPorts(out string) {
 	fmt.Printf("chain ports written to %s\n", out)
 }
 
+// defaultProxyConfig is where a box keeps its proxy.json (§5.5).
+const defaultProxyConfig = "/etc/x-ui/proxy.json"
+
+// chainCommand runs `x-ui chain <subcommand>` and returns the process exit
+// code. One subcommand belongs to the panel (`ports`), three to a box
+// (`join-url`, `status`, `rejoin`) — the same binary runs in both roles, so
+// they live in one place (docs/spec/proxy-chain.md §5.8).
+func chainCommand(args []string, out io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(out, "chain: subcommands are `ports` (panel), `join-url`, `status` and `rejoin` (box)")
+		return 1
+	}
+	switch args[0] {
+	case "ports":
+		cmd := flag.NewFlagSet("chain ports", flag.ContinueOnError)
+		cmd.SetOutput(out)
+		portsOut := cmd.String("o", "", "write the port list to this file instead of stdout")
+		if err := cmd.Parse(args[1:]); err != nil {
+			return 1
+		}
+		chainPorts(*portsOut)
+		return 0
+
+	case "join-url":
+		cmd := flag.NewFlagSet("chain join-url", flag.ContinueOnError)
+		cmd.SetOutput(out)
+		cfgPath := cmd.String("c", defaultProxyConfig, "path to the proxy-front config JSON")
+		if err := cmd.Parse(args[1:]); err != nil {
+			return 1
+		}
+		url, err := proxy.ReadJoinURL(*cfgPath)
+		if err != nil {
+			fmt.Fprintln(out, err)
+			return 1
+		}
+		fmt.Fprintln(out, url)
+		return 0
+
+	case "status":
+		cmd := flag.NewFlagSet("chain status", flag.ContinueOnError)
+		cmd.SetOutput(out)
+		cfgPath := cmd.String("c", defaultProxyConfig, "path to the proxy-front config JSON")
+		if err := cmd.Parse(args[1:]); err != nil {
+			return 1
+		}
+		cfg, err := proxy.LoadConfig(*cfgPath)
+		if err != nil {
+			fmt.Fprintln(out, err)
+			return 1
+		}
+		status, err := proxy.FetchStatus(context.Background(), cfg)
+		if err != nil {
+			fmt.Fprintln(out, err)
+			return 1
+		}
+		proxy.PrintStatus(out, status)
+		return 0
+
+	case "rejoin":
+		cmd := flag.NewFlagSet("chain rejoin", flag.ContinueOnError)
+		cmd.SetOutput(out)
+		cfgPath := cmd.String("c", defaultProxyConfig, "path to the proxy-front config JSON")
+		nextHop := cmd.String("next-hop", "", "address of the next hop (the panel, for the innermost hop)")
+		subPort := cmd.Int("sub-port", 0, "sub port of the next hop (default: keep the configured one, else 2096)")
+		scheme := cmd.String("scheme", "", "http|https of the next hop's sub port (default: keep the configured one)")
+		token := cmd.String("token", "", "a fresh join token from the panel's chain registry")
+		if err := cmd.Parse(args[1:]); err != nil {
+			return 1
+		}
+		cfg, err := proxy.LoadConfig(*cfgPath)
+		if err != nil {
+			fmt.Fprintln(out, err)
+			return 1
+		}
+		result, err := proxy.Rejoin(context.Background(), cfg, *nextHop, *subPort, *scheme, *token)
+		if err != nil {
+			fmt.Fprintln(out, err)
+			return 1
+		}
+		fmt.Fprintf(out, "joined the chain as %q (%s) at revision %d, next hop %s\n",
+			result.Document.Self.Name, result.Document.Self.Role, result.Document.Revision, cfg.NextHopBase())
+		fmt.Fprintln(out, "restart x-ui to apply (systemctl restart x-ui)")
+		return 0
+
+	default:
+		fmt.Fprintf(out, "chain: unknown subcommand %q; try `ports`, `join-url`, `status` or `rejoin`\n", args[0])
+		return 1
+	}
+}
+
 // generateAwg2 fills the AmneziaWG server row with freshly generated 2.0
 // obfuscation parameters (DB only, no interface changes). Used by install.sh on
 // a FRESH install so new setups default to AmneziaWG 2.0; on update the caller
@@ -599,9 +690,11 @@ func main() {
 		fmt.Println("    run            run web panel")
 		fmt.Println("    migrate        migrate form other/old x-ui")
 		fmt.Println("    setting        set settings")
-		fmt.Println("    proxy          run sacrificial proxy front (dokodemo relay + sub)")
-		fmt.Println("    chain ports    print the relayed ports of the chain document (debug export)")
-		fmt.Println("    proxy-setup-url show the pending setup-page link of a proxy front")
+		fmt.Println("    proxy          run one hop of the proxy chain (dokodemo relay + sub port)")
+		fmt.Println("    chain ports    print the relayed ports of the chain document (debug export, panel)")
+		fmt.Println("    chain join-url show the pending join-page link of a box (box)")
+		fmt.Println("    chain status   show this box's place in the chain (box)")
+		fmt.Println("    chain rejoin   point this box at a next hop and join it with a fresh token (box)")
 	}
 
 	flag.Parse()
@@ -672,36 +765,7 @@ func main() {
 			updateCert(webCertFile, webKeyFile)
 		}
 	case "chain":
-		chainCmd := flag.NewFlagSet("chain", flag.ExitOnError)
-		var chainOut string
-		chainCmd.StringVar(&chainOut, "o", "", "write the port list to this file instead of stdout")
-		if len(os.Args) < 3 {
-			fmt.Println("chain: the only subcommand is `ports`")
-			os.Exit(1)
-		}
-		if os.Args[2] != "ports" {
-			fmt.Printf("chain: unknown subcommand %q; the only one is `ports`\n", os.Args[2])
-			os.Exit(1)
-		}
-		if err := chainCmd.Parse(os.Args[3:]); err != nil {
-			fmt.Println(err)
-			return
-		}
-		chainPorts(chainOut)
-	case "proxy-setup-url":
-		urlCmd := flag.NewFlagSet("proxy-setup-url", flag.ExitOnError)
-		var urlCfgPath string
-		urlCmd.StringVar(&urlCfgPath, "c", "/etc/x-ui/proxy.json", "path to the proxy-front config JSON")
-		if err := urlCmd.Parse(os.Args[2:]); err != nil {
-			fmt.Println(err)
-			return
-		}
-		data, err := os.ReadFile(proxy.SetupURLPath(urlCfgPath))
-		if err != nil {
-			fmt.Println("no setup page pending: the relay manifest is in place, or `x-ui proxy` is not running")
-			os.Exit(1)
-		}
-		os.Stdout.Write(data)
+		os.Exit(chainCommand(os.Args[2:], os.Stdout))
 	case "proxy":
 		proxyCmd := flag.NewFlagSet("proxy", flag.ExitOnError)
 		var proxyConfigPath string

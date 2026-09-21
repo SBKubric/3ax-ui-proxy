@@ -1,137 +1,163 @@
-// Package proxy implements the "proxy front" run mode: a sacrificial relay that
-// L4-forwards client traffic to the real (hidden) panel server via xray
-// dokodemo-door, and serves subscriptions fetched from the real panel. When the
-// front gets blocked it is thrown away and replaced, while the real server —
-// whose address never appears in client configs — keeps running.
+// Package proxy implements the "proxy front" run mode — one hop of the proxy
+// chain (docs/spec/proxy-chain.md §5). A hop L4-forwards client traffic to its
+// next hop via xray dokodemo-door, serves subscriptions fetched from it, and
+// learns what to relay from the chain document it polls from that same next
+// hop. When a hop gets blocked it is thrown away and replaced, while the real
+// server — whose address never appears in client configs, and which a hop only
+// knows through its next hop — keeps running.
 package proxy
 
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-// Config is the proxy-front runtime configuration, loaded from a JSON file given
-// via `x-ui proxy -c <file>`. The real server address is provided here separately
-// from the relay manifest (which only lists the inbound ports to relay).
+// ConfigVersion is the proxy.json format this build speaks (§5.1). It is the
+// version of the box's own file — not of the chain document, and not the
+// registry revision. A file claiming a higher one is refused; a file claiming
+// none is a v1 file (§5.3).
+const ConfigVersion = 2
+
+// Defaults of the keys a proxy.json may leave out (§5.1).
+const (
+	DefaultSubPort      = 2096
+	DefaultSubScheme    = "https"
+	DefaultRelayListen  = "::"
+	DefaultStateDir     = "/etc/x-ui/chain"
+	DefaultPollSeconds  = 30
+	DefaultStaleMinutes = 60
+)
+
+// NextHop is the one address a hop knows towards the real server: where the
+// relay forwards to, where subscriptions come from, and where the chain
+// document is polled. For the innermost hop it is the panel itself.
+type NextHop struct {
+	Host      string `json:"host"`
+	SubPort   int    `json:"subPort"`
+	SubScheme string `json:"subScheme"`
+}
+
+// Config is the proxy-front runtime configuration, loaded from a JSON file
+// given via `x-ui proxy -c <file>` (§5.1). Everything the hop relays — ports,
+// subscription paths, its own name — arrives in the chain document instead,
+// so this file only answers "who is my next hop and what do I prove myself
+// with".
 type Config struct {
-	// --- Relay: forwards client traffic to the real server ---
+	Version int     `json:"version"`
+	NextHop NextHop `json:"nextHop"`
 
-	// UpstreamHost is the real (hidden) server address that relayed traffic is
-	// forwarded to (the dokodemo-door destination).
-	UpstreamHost string `json:"upstreamHost"`
+	// HopSecret is the hop secret the panel issued at join: the bearer of
+	// GET /chain/v1/document at the next hop. Empty means this box has not
+	// joined yet — bootstrap/join mode (§5.4), not an error.
+	HopSecret string `json:"hopSecret"`
 
-	// RelayManifestPath points to the relay manifest exported from the real
-	// panel (`x-ui relay-manifest`): the sanitised list of inbounds the relay
-	// opens ports for. A raw panel config.json is refused. When the file does
-	// not exist yet, `x-ui proxy` starts in bootstrap mode and serves a setup
-	// page to paste it in (see setup.go); the file is written here.
-	RelayManifestPath string `json:"relayManifestPath"`
-
-	// RelayListen is the address the dokodemo-door relay binds on. Defaults to
-	// "::" (dual-stack — accepts both IPv4 and IPv6); set "0.0.0.0" on hosts with
-	// IPv6 disabled.
+	SubListen   string `json:"subListen"`
+	SubPort     int    `json:"subPort"`
 	RelayListen string `json:"relayListen"`
+	Domain      string `json:"domain"`
+	CertFile    string `json:"cert"`
+	KeyFile     string `json:"key"`
 
-	// ExtraPorts lists the real server's public ports that are not xray inbounds
-	// and therefore never appear in RelayManifestPath — AmneziaWG / WireGuard
-	// listeners, the MTProto sidecar — but must be relayed all the same. Each
-	// entry is "<port>/<tcp|udp|tcp+udp>"; the protocol suffix is mandatory. A
-	// port that is also an xray inbound in the panel config is an error.
-	ExtraPorts []string `json:"extraPorts"`
+	// StateDir holds the last accepted chain document, the one thing that
+	// lets a rebooted box relay before the first poll comes back.
+	StateDir string `json:"stateDir"`
 
-	extraPorts []ExtraPort
-	path       string // where this config was loaded from (for SetupURLPath)
+	// PollSeconds overrides the wave interval for debugging a single box;
+	// 0 means "as the chain says" (chainPollSeconds, default 30).
+	PollSeconds int `json:"pollSeconds"`
 
-	// --- Subscription server: the proxy's own /sub + /json endpoints, proxied
-	// from the real panel. Enabled when UpstreamBase is set. ---
+	// StaleMinutes is how long the next hop may stay unreachable before the
+	// hop calls itself stale. It never stops relaying (§3.6).
+	StaleMinutes int `json:"staleMinutes"`
 
-	// UpstreamBase is the real panel's subscription server base, reachable from the
-	// proxy (often by IP), e.g. "https://1.2.3.4:2096". The proxy fetches
-	// UpstreamBase+SubPath+id and UpstreamBase+JsonPath+id from it.
-	UpstreamBase string `json:"upstreamBase"`
-
-	// Domain is the proxy's public host advertised in the sub URLs it hands out
-	// (defaults to the request Host when empty).
-	Domain    string `json:"domain"`
-	SubListen string `json:"subListen"` // "" = all interfaces
-	SubPort   int    `json:"subPort"`   // default 2096
-	SubPath   string `json:"subPath"`   // default "/sub/"
-	JsonPath  string `json:"jsonPath"`  // default "/json/"
-	CertFile  string `json:"cert"`
-	KeyFile   string `json:"key"`
+	path           string   // where this config was loaded from
+	legacyWarnings []string // one line per v1 key found (§5.3)
+	legacyNextHop  string   // v1 upstreamHost, kept only as a join-page prefill
 }
 
-// ExtraPort is one relayed port that the real server serves outside xray
-// (see Config.ExtraPorts). Network is the dokodemo-door network selector:
-// "tcp", "udp" or "tcp,udp".
-type ExtraPort struct {
-	Port    int
-	Network string
-}
-
-// ParseExtraPort parses a "<port>/<tcp|udp|tcp+udp>" entry.
-func ParseExtraPort(s string) (ExtraPort, error) {
-	s = strings.TrimSpace(s)
-	portStr, proto, ok := strings.Cut(s, "/")
-	if !ok {
-		return ExtraPort{}, fmt.Errorf("extra port %q: protocol suffix required (e.g. \"51820/udp\")", s)
-	}
-	port, err := strconv.Atoi(strings.TrimSpace(portStr))
-	if err != nil || port < 1 || port > 65535 {
-		return ExtraPort{}, fmt.Errorf("extra port %q: port must be 1-65535", s)
-	}
-	var network string
-	switch strings.ToLower(strings.TrimSpace(proto)) {
-	case "tcp":
-		network = "tcp"
-	case "udp":
-		network = "udp"
-	case "tcp+udp", "udp+tcp":
-		network = "tcp,udp"
-	default:
-		return ExtraPort{}, fmt.Errorf("extra port %q: protocol must be tcp, udp or tcp+udp", s)
-	}
-	return ExtraPort{Port: port, Network: network}, nil
-}
-
-// parseExtraPorts parses every entry and rejects duplicate ports.
-func parseExtraPorts(entries []string) ([]ExtraPort, error) {
-	seen := make(map[int]bool, len(entries))
-	out := make([]ExtraPort, 0, len(entries))
-	for _, e := range entries {
-		if strings.TrimSpace(e) == "" {
-			continue
-		}
-		ep, err := ParseExtraPort(e)
-		if err != nil {
-			return nil, err
-		}
-		if seen[ep.Port] {
-			return nil, fmt.Errorf("extra port %d listed twice", ep.Port)
-		}
-		seen[ep.Port] = true
-		out = append(out, ep)
-	}
-	return out, nil
+// legacyKeys are the v1 keys and what replaced them. A v1 proxy.json reaches a
+// live box through update.sh long before its owner does (§5.3), so each one is
+// a WARN naming its replacement — never a refusal.
+var legacyKeys = []struct{ key, replacement string }{
+	{"upstreamHost", `the chain takes it from "nextHop.host" (join this box: x-ui chain join-url)`},
+	{"relayManifestPath", "relayed ports now arrive in the chain document"},
+	{"extraPorts", `extra ports now live in the panel registry setting "chainExtraPorts" and arrive in the chain document`},
+	{"upstreamBase", `the subscription upstream is built from "nextHop"`},
+	{"subPath", `subscription paths arrive in the chain document ("nextHop.subPath")`},
+	{"jsonPath", `subscription paths arrive in the chain document ("nextHop.jsonPath")`},
 }
 
 // Path is the file this config was loaded from ("" when built in code).
 func (c *Config) Path() string { return c.path }
 
-// ExtraRelayPorts returns the parsed ExtraPorts entries.
-func (c *Config) ExtraRelayPorts() []ExtraPort { return c.extraPorts }
+// Bootstrap reports whether this box still has to join the chain: no hop
+// secret means no document, no relay, and a join page on the sub port (§5.4).
+func (c *Config) Bootstrap() bool { return strings.TrimSpace(c.HopSecret) == "" }
 
-// SubEnabled reports whether the subscription server should run, i.e. an upstream
-// base to fetch subscriptions from has been configured.
-func (c *Config) SubEnabled() bool { return c.UpstreamBase != "" }
-
-// TLS reports whether the proxy serves its subscription endpoint over HTTPS.
+// TLS reports whether this hop serves its sub port (subscriptions, the join
+// page and /chain/v1/*) over HTTPS.
 func (c *Config) TLS() bool { return c.CertFile != "" && c.KeyFile != "" }
 
-// LoadConfig reads and validates the proxy config from a JSON file.
+// Scheme is how the outside reaches this hop's sub port.
+func (c *Config) Scheme() string {
+	if c.TLS() {
+		return "https"
+	}
+	return "http"
+}
+
+// NextHopBase is the next hop's sub server: subscriptions and /chain/v1/*.
+func (c *Config) NextHopBase() string {
+	return c.NextHop.SubScheme + "://" + net.JoinHostPort(c.NextHop.Host, strconv.Itoa(c.NextHop.SubPort))
+}
+
+// PublicHostPort is host, or host:port when port is not the scheme's default
+// (443 for https, 80 for http). Every place that builds this hop's own public
+// URL from its configured Domain must go through this: leaving the port off
+// unconditionally sends clients to whatever else answers the scheme's default
+// port — on a box with a chosen sub port, that is xray, not the sub server
+// (#98).
+func PublicHostPort(scheme, host string, port int) string {
+	if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// NextHopHint is the address to prefill the join page's "next hop" field with:
+// the configured one, else the v1 upstreamHost of a legacy file — the one
+// value of a v1 config worth anything to its owner.
+func (c *Config) NextHopHint() string {
+	if c.NextHop.Host != "" {
+		return c.NextHop.Host
+	}
+	return c.legacyNextHop
+}
+
+// LegacyWarnings is one line per v1 key found in the file, for Run to log.
+func (c *Config) LegacyWarnings() []string { return c.legacyWarnings }
+
+// DocumentPath is where the last accepted chain document is cached (§5.5).
+func (c *Config) DocumentPath() string { return filepath.Join(c.StateDir, "document.json") }
+
+// Poll is the wave interval this box uses when the chain does not say
+// otherwise.
+func (c *Config) Poll() int {
+	if c.PollSeconds > 0 {
+		return c.PollSeconds
+	}
+	return DefaultPollSeconds
+}
+
+// LoadConfig reads the proxy config, applies the defaults of §5.1 and decides
+// which of the three modes of §5.3 the file is in. It fails only on a version
+// newer than this build: a box that cannot parse its config is a box with no
+// service, and the running relay is worth more than the diagnosis.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -141,52 +167,116 @@ func LoadConfig(path string) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse proxy config %q: %w", path, err)
 	}
-
-	cfg.UpstreamHost = strings.TrimSpace(cfg.UpstreamHost)
-	cfg.RelayManifestPath = strings.TrimSpace(cfg.RelayManifestPath)
-	cfg.UpstreamBase = strings.TrimRight(strings.TrimSpace(cfg.UpstreamBase), "/")
-	cfg.Domain = strings.TrimSpace(cfg.Domain)
-
-	if cfg.UpstreamHost == "" {
-		return nil, fmt.Errorf("proxy config %q: upstreamHost is required", path)
-	}
-	if cfg.RelayManifestPath == "" {
-		return nil, fmt.Errorf("proxy config %q: relayManifestPath is required (the relay manifest exported from the panel; the former xrayConfigPath is gone — a raw panel config is no longer accepted)", path)
+	if cfg.Version > ConfigVersion {
+		return nil, fmt.Errorf("proxy config %q: version %d is newer than this build understands (%d)", path, cfg.Version, ConfigVersion)
 	}
 
-	cfg.RelayListen = strings.TrimSpace(cfg.RelayListen)
-	if cfg.RelayListen == "" {
-		cfg.RelayListen = "::"
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse proxy config %q: %w", path, err)
 	}
-
-	extra, err := parseExtraPorts(cfg.ExtraPorts)
-	if err != nil {
-		return nil, fmt.Errorf("proxy config %q: %w", path, err)
-	}
-	cfg.extraPorts = extra
-
-	if cfg.SubEnabled() {
-		cfg.SubPath = normalizePath(cfg.SubPath, "/sub/")
-		cfg.JsonPath = normalizePath(cfg.JsonPath, "/json/")
-		if cfg.SubPort == 0 {
-			cfg.SubPort = 2096
+	for _, legacy := range legacyKeys {
+		if _, found := raw[legacy.key]; !found {
+			continue
+		}
+		cfg.legacyWarnings = append(cfg.legacyWarnings,
+			fmt.Sprintf("proxy config %s: %q is a v1 key, ignored — %s", path, legacy.key, legacy.replacement))
+		if legacy.key == "upstreamHost" {
+			var host string
+			_ = json.Unmarshal(raw[legacy.key], &host)
+			cfg.legacyNextHop = strings.TrimSpace(host)
 		}
 	}
+	// A file with no version marker is v1 whatever else it carries: its
+	// values say nothing about the chain, which hands out the secret and the
+	// ports only through a join.
+	if cfg.Version < ConfigVersion {
+		cfg.NextHop = NextHop{}
+		cfg.HopSecret = ""
+	}
+
+	cfg.applyDefaults()
 	return cfg, nil
 }
 
-// normalizePath ensures p is bracketed by single slashes, falling back to def
-// when empty.
-func normalizePath(p, def string) string {
-	p = strings.TrimSpace(p)
-	if p == "" {
-		p = def
+// applyDefaults fills in every key §5.1 lets a file leave out.
+func (c *Config) applyDefaults() {
+	c.NextHop.Host = strings.TrimSpace(c.NextHop.Host)
+	if c.NextHop.SubPort == 0 {
+		c.NextHop.SubPort = DefaultSubPort
 	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
+	c.NextHop.SubScheme = strings.ToLower(strings.TrimSpace(c.NextHop.SubScheme))
+	if c.NextHop.SubScheme != "http" {
+		c.NextHop.SubScheme = DefaultSubScheme
 	}
-	if !strings.HasSuffix(p, "/") {
-		p += "/"
+	c.HopSecret = strings.TrimSpace(c.HopSecret)
+	c.Domain = strings.TrimSpace(c.Domain)
+	c.SubListen = strings.TrimSpace(c.SubListen)
+	if c.SubPort == 0 {
+		c.SubPort = DefaultSubPort
 	}
-	return p
+	c.RelayListen = strings.TrimSpace(c.RelayListen)
+	if c.RelayListen == "" {
+		c.RelayListen = DefaultRelayListen
+	}
+	c.StateDir = strings.TrimSpace(c.StateDir)
+	if c.StateDir == "" {
+		c.StateDir = DefaultStateDir
+	}
+	if c.StaleMinutes <= 0 {
+		c.StaleMinutes = DefaultStaleMinutes
+	}
+}
+
+// Save writes the config back — how a box records the hopSecret and the
+// nextHop it just joined with. The write is atomic and 0600: a half-written
+// proxy.json would cost the box its place in the chain, and the hop secret is
+// the one credential it has.
+func (c *Config) Save() error {
+	if c.path == "" {
+		return fmt.Errorf("proxy config: nowhere to save to (config was not loaded from a file)")
+	}
+	c.Version = ConfigVersion
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode proxy config: %w", err)
+	}
+	if err := writeFileAtomic(c.path, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write proxy config %q: %w", c.path, err)
+	}
+	return nil
+}
+
+// writeFileAtomic writes data to a sibling temporary file, fsyncs it and
+// renames it over path (§3.6). Both the config and the cached chain document
+// are read by the box at boot, when nothing can fix a truncated file: a rename
+// either happened or did not.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeded
+
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
