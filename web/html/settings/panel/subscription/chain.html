@@ -37,7 +37,11 @@
                     :data-testid="'chain-hop-' + hop.name + '-health'">[[ healthOf(hop) ]]</span>
                 <span class="mon-muted" :data-testid="'chain-hop-' + hop.name + '-freshness'"
                     :title="lastSeenText(hop)">[[ freshnessText(hop) ]]</span>
-                <a-button size="small" icon="delete" :style="{ marginInlineStart: '8px' }"
+                <!-- A departing hop carries no buttons: draining is terminal
+                     (§4.5.5), and the card says who it is still waiting for. -->
+                <span v-if="isDraining(hop)" class="mon-muted"
+                    :data-testid="'chain-hop-' + hop.name + '-draining'">[[ drainingText(hop) ]]</span>
+                <a-button v-else size="small" icon="delete" :style="{ marginInlineStart: '8px' }"
                     @click="confirmDelete(hop)"
                     :data-testid="'chain-hop-' + hop.name + '-delete'">{{ i18n "pages.settings.chain.delete"}}</a-button>
                 <div v-if="tokenOf(hop)" :data-testid="'chain-hop-' + hop.name + '-token'"
@@ -69,6 +73,9 @@
                     :title="lastSeenText(hop)">[[ freshnessText(hop) ]]</span>
                 <a-tag v-if="hop.isActive" color="green"
                     :data-testid="'chain-hop-' + hop.name + '-active-marker'">{{ i18n "pages.settings.chain.active"}}</a-tag>
+                <span v-if="isDraining(hop)" class="mon-muted"
+                    :data-testid="'chain-hop-' + hop.name + '-draining'">[[ drainingText(hop) ]]</span>
+                <template v-else>
                 <a-button v-if="hop.isActive" size="small" :style="{ marginInlineStart: '8px' }"
                     @click="confirmClearActive()"
                     data-testid="chain-clear-active">{{ i18n "pages.settings.chain.clearActive"}}</a-button>
@@ -78,6 +85,7 @@
                 <a-button size="small" icon="delete" :style="{ marginInlineStart: '8px' }"
                     @click="confirmDelete(hop)"
                     :data-testid="'chain-hop-' + hop.name + '-delete'">{{ i18n "pages.settings.chain.delete"}}</a-button>
+                </template>
                 <div v-if="tokenOf(hop)" :data-testid="'chain-hop-' + hop.name + '-token'"
                     :style="{ marginTop: '4px' }">
                     <span class="mon-mono">[[ tokenOf(hop) ]]</span>
@@ -214,6 +222,7 @@
             pending: '{{ i18n "pages.settings.chain.state.pending" }}',
             joined: '{{ i18n "pages.settings.chain.state.joined" }}',
             legacy: '{{ i18n "pages.settings.chain.state.legacy" }}',
+            draining: '{{ i18n "pages.settings.chain.state.draining" }}',
         },
         empty: '{{ i18n "pages.settings.chain.empty" }}',
         tokenOnce: '{{ i18n "pages.settings.chain.tokenOnce" }}',
@@ -229,6 +238,7 @@
         deleteActiveRefused: '{{ i18n "pages.settings.chain.deleteActiveRefused" }}',
         deletePowerOff: '{{ i18n "pages.settings.chain.deletePowerOff" }}',
         deletePowerOffNow: '{{ i18n "pages.settings.chain.deletePowerOffNow" }}',
+        drainingHint: '{{ i18n "pages.settings.chain.drainingHint" }}',
         clearActiveTitle: '{{ i18n "pages.settings.chain.clearActiveTitle" }}',
         clearActiveNote: '{{ i18n "pages.settings.chain.clearActiveNote" }}',
         reissueTitle: '{{ i18n "pages.settings.chain.reissueTitle" }}',
@@ -261,6 +271,7 @@
                 // the hash, so a token exists in this page from the moment it
                 // was issued until the operator leaves (§4.1).
                 tokens: {},
+                draining: {},
                 busy: false,
                 addModal: { visible: false, form: {} },
                 portsModal: { visible: false, text: '' },
@@ -300,6 +311,11 @@
                     this.activeEdge = msg.obj.activeEdge || '';
                     this.hops = msg.obj.hops || [];
                     this.portsProblem = msg.obj.portsProblem || null;
+                    // One card per departing hop: who it still waits for and
+                    // until when (§4.5.4).
+                    const draining = {};
+                    (msg.obj.draining || []).forEach(card => { draining[card.name] = card; });
+                    this.draining = draining;
                 }
                 const health = await ChainApi.health();
                 if (health.success && Array.isArray(health.obj)) {
@@ -315,6 +331,15 @@
             },
             isPending(hop) {
                 return hop.state === ChainUtil.STATE_PENDING;
+            },
+            isDraining: ChainUtil.isDraining,
+            // "Leaving the chain: still serving edge-a; the row goes by …".
+            drainingText(hop) {
+                const card = this.draining[hop.name] || {};
+                const waiting = (card.waiting && card.waiting.length ? card.waiting : card.outer) || [];
+                return this.text.drainingHint
+                    .replace('%s', waiting.join(', '))
+                    .replace('%s', ChainUtil.stamp(card.drainUntil));
             },
             healthOf(hop) {
                 return this.health[hop.name] || 'UNKNOWN';
@@ -423,18 +448,20 @@
                     title: this.text.deleteConfirmTitle,
                     content: hop.name,
                     onOk: async () => {
-                        const msg = await ChainApi.del(hop.id, false);
+                        const msg = await ChainApi.del(hop.id, false, false);
                         if (!msg.success) return;
-                        const wait = msg.obj && msg.obj.safeToPowerOffWhen;
-                        if (wait && wait.hop) {
-                            // §4.5: the registry write is instant, the box is
-                            // not safe to power off until its outer neighbour
-                            // has taken the new revision.
+                        const wait = (msg.obj && msg.obj.safeToPowerOffWhen) || {};
+                        const hops = wait.hops || [];
+                        if (hops.length) {
+                            // §4.5: the hop is draining — it keeps serving the
+                            // hops named here until they have taken the new
+                            // revision, and only then is its box safe to power
+                            // off.
                             this.$message.warning(
-                                this.text.deletePowerOff.replace('%s', wait.hop).replace('%s', wait.revision));
+                                this.text.deletePowerOff.replace('%s', hops.join(', ')).replace('%s', wait.revision));
                         } else {
-                            // Nothing hung off the deleted hop, so there is no
-                            // outer neighbour to wait for at all.
+                            // Nothing hung off the deleted hop, so the row went
+                            // at once and there is nobody to wait for.
                             this.$message.info(this.text.deletePowerOffNow);
                         }
                         this.$delete(this.tokens, hop.name);

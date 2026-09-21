@@ -233,15 +233,14 @@ func TestChainDeleteOfTheActiveEdgeIsRefused(t *testing.T) {
 	if !env.Success {
 		t.Fatalf("deleting a standby edge: %s", env.Msg)
 	}
-	// Nothing hangs off a standalone edge — the outer neighbour that would
-	// otherwise have to confirm a revision does not exist — so the answer is
-	// safeToPowerOffWhen:null, not an object with an empty hop.
+	// Nothing hangs off a standalone edge, so the row goes at once and there
+	// is nobody to wait for (§4.5.1 step 3).
 	var result service.DeleteResult
 	if err := json.Unmarshal(env.Obj, &result); err != nil {
 		t.Fatalf("delete obj: %v (%s)", err, env.Obj)
 	}
-	if result.SafeToPowerOffWhen != nil {
-		t.Errorf("delete = %+v, want safeToPowerOffWhen:null — the box is safe to power off now", result)
+	if result.State != service.DeleteStateDeleted || len(result.SafeToPowerOffWhen.Hops) != 0 {
+		t.Errorf("delete = %+v, want a deleted row with nobody to wait for", result)
 	}
 }
 
@@ -542,10 +541,10 @@ func TestChainUpdateRefusesAnImmutableField(t *testing.T) {
 	}
 }
 
-// TestChainDeleteSafeToPowerOffIsNullWithNoOuterNeighbour: an edge is always a
-// leaf of the chain — nothing ever hangs off one — so deleting it never has
-// anything to wait for.
-func TestChainDeleteSafeToPowerOffIsNullWithNoOuterNeighbour(t *testing.T) {
+// TestChainDeleteWithNothingToServeIsImmediate: an edge is always a leaf of
+// the chain — nothing ever hangs off one — so its row goes at once and there
+// is nothing to wait for (§4.5.1 step 3).
+func TestChainDeleteWithNothingToServeIsImmediate(t *testing.T) {
 	r := newChainRouter(t)
 	cookie := monUILogin(t, r)
 	added := chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
@@ -554,21 +553,28 @@ func TestChainDeleteSafeToPowerOffIsNullWithNoOuterNeighbour(t *testing.T) {
 	if !env.Success {
 		t.Fatalf("del: %s", env.Msg)
 	}
-	if strings.TrimSpace(string(env.Obj)) != `{"safeToPowerOffWhen":null}` {
-		t.Errorf("del obj = %s, want safeToPowerOffWhen:null", env.Obj)
+	want := `{"state":"deleted","hop":"edge-a","drainRevision":0,"drainUntil":0,` +
+		`"safeToPowerOffWhen":{"hops":[],"revision":1}}`
+	if strings.TrimSpace(string(env.Obj)) != want {
+		t.Errorf("del obj = %s, want %s", env.Obj, want)
 	}
 }
 
-// TestChainDeleteSafeToPowerOffNamesTheOuterNeighbour: deleting an inner front
-// something else has chained onto hands back that neighbour's name and the
-// revision it must confirm before its box may be powered off.
-func TestChainDeleteSafeToPowerOffNamesTheOuterNeighbour(t *testing.T) {
+// TestChainDeleteWithNeighboursAnswersDraining: deleting an inner that still
+// carries a living neighbour answers the draining card of §4.5.1 — the
+// revision and the deadline, and every hop that has to confirm before that box
+// may be powered off. The list surfaces the same departure to the editor.
+func TestChainDeleteWithNeighboursAnswersDraining(t *testing.T) {
 	r := newChainRouter(t)
 	cookie := monUILogin(t, r)
 	inner := chainAdd(t, r, cookie, `{"name":"inner-1","host":"i1.example.net","role":"inner"}`)
-	chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
-	if err := (&service.ChainService{}).MarkJoined(inner.Hop.Id, "hash", ""); err != nil {
-		t.Fatalf("MarkJoined: %v", err)
+	edge := chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
+	registry := &service.ChainService{}
+	if err := registry.MarkJoined(inner.Hop.Id, "hash", ""); err != nil {
+		t.Fatalf("MarkJoined(inner-1): %v", err)
+	}
+	if err := registry.MarkJoined(edge.Hop.Id, "hash-edge", ""); err != nil {
+		t.Fatalf("MarkJoined(edge-a): %v", err)
 	}
 
 	env := monUIDecode(t, chainPost(r, "/panel/api/chain/del/"+strconv.Itoa(inner.Hop.Id), cookie, "{}"))
@@ -579,7 +585,72 @@ func TestChainDeleteSafeToPowerOffNamesTheOuterNeighbour(t *testing.T) {
 	if err := json.Unmarshal(env.Obj, &result); err != nil {
 		t.Fatalf("delete obj: %v (%s)", err, env.Obj)
 	}
-	if result.SafeToPowerOffWhen == nil || result.SafeToPowerOffWhen.Hop != "edge-a" || result.SafeToPowerOffWhen.Revision == 0 {
-		t.Errorf("safeToPowerOffWhen = %+v, want edge-a and a revision to wait for", result.SafeToPowerOffWhen)
+	if result.State != service.DeleteStateDraining || result.Hop != "inner-1" {
+		t.Fatalf("delete = %+v, want inner-1 draining", result)
+	}
+	if result.DrainRevision == 0 || result.DrainUntil == 0 {
+		t.Errorf("delete = %+v, want a revision and a deadline", result)
+	}
+	if len(result.SafeToPowerOffWhen.Hops) != 1 || result.SafeToPowerOffWhen.Hops[0] != "edge-a" {
+		t.Errorf("safeToPowerOffWhen = %+v, want edge-a", result.SafeToPowerOffWhen)
+	}
+
+	// The editor reads the same departure back from the list.
+	listEnv := monUIDecode(t, monUIGet(r, "/panel/api/chain/list", cookie))
+	var list struct {
+		Hops     []struct{ Name, State string } `json:"hops"`
+		Draining []struct {
+			Name    string   `json:"name"`
+			Waiting []string `json:"waiting"`
+		} `json:"draining"`
+	}
+	if err := json.Unmarshal(listEnv.Obj, &list); err != nil {
+		t.Fatalf("list obj: %v (%s)", err, listEnv.Obj)
+	}
+	if len(list.Draining) != 1 || list.Draining[0].Name != "inner-1" ||
+		len(list.Draining[0].Waiting) != 1 || list.Draining[0].Waiting[0] != "edge-a" {
+		t.Errorf("list draining = %+v, want inner-1 waiting for edge-a", list.Draining)
+	}
+	for _, hop := range list.Hops {
+		if hop.Name == "inner-1" && hop.State != "draining" {
+			t.Errorf("list has inner-1 as %q, want draining", hop.State)
+		}
+	}
+}
+
+// TestChainDelSkipDrainDropsTheRow: the runbook's flag for a box that is
+// already dead (§4.5.9) — no departure, the row goes now.
+func TestChainDelSkipDrainDropsTheRow(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+	inner := chainAdd(t, r, cookie, `{"name":"inner-1","host":"i1.example.net","role":"inner"}`)
+	edge := chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
+	registry := &service.ChainService{}
+	if err := registry.MarkJoined(inner.Hop.Id, "hash", ""); err != nil {
+		t.Fatalf("MarkJoined(inner-1): %v", err)
+	}
+	if err := registry.MarkJoined(edge.Hop.Id, "hash-edge", ""); err != nil {
+		t.Fatalf("MarkJoined(edge-a): %v", err)
+	}
+
+	env := monUIDecode(t, chainPost(r, "/panel/api/chain/del/"+strconv.Itoa(inner.Hop.Id), cookie, `{"skipDrain":true}`))
+	if !env.Success {
+		t.Fatalf("del with skipDrain: %s", env.Msg)
+	}
+	var result service.DeleteResult
+	if err := json.Unmarshal(env.Obj, &result); err != nil {
+		t.Fatalf("delete obj: %v (%s)", err, env.Obj)
+	}
+	if result.State != service.DeleteStateDeleted {
+		t.Fatalf("delete = %+v, want deleted", result)
+	}
+	state, err := registry.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hop := range state.Hops {
+		if hop.Name == "inner-1" {
+			t.Fatal("skipDrain must drop the row there and then")
+		}
 	}
 }

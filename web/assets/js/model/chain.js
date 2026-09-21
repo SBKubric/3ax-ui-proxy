@@ -39,8 +39,14 @@ const ChainApi = {
     update(id, patch) {
         return HttpUtil.postJson(ChainApi._base + 'update/' + encodeURIComponent(id), patch);
     },
-    del(id, force) {
-        return HttpUtil.postJson(ChainApi._base + 'del/' + encodeURIComponent(id), { force: !!force });
+    /**
+     * Deletes a hop. skipDrain drops the row at once instead of letting the
+     * hop hand its neighbours over (§4.5.9) — the runbook's flag for a box
+     * that is already dead. The answer says which of the two happened.
+     */
+    del(id, force, skipDrain) {
+        return HttpUtil.postJson(ChainApi._base + 'del/' + encodeURIComponent(id),
+            { force: !!force, skipDrain: !!skipDrain });
     },
     setActive(id) {
         return HttpUtil.postJson(ChainApi._base + "setActive/" + encodeURIComponent(id), {});
@@ -58,13 +64,14 @@ const ChainUtil = {
     STATE_PENDING: 'pending',
     STATE_JOINED: 'joined',
     STATE_LEGACY: 'legacy',
+    STATE_DRAINING: 'draining',
 
     ROLE_INNER: 'inner',
     ROLE_EDGE: 'edge',
 
     /** The tag colour of a state; legacy is deliberately colourless. */
     stateColor(state) {
-        return { pending: 'orange', joined: 'green', legacy: 'default' }[state] || 'default';
+        return { pending: 'orange', joined: 'green', legacy: 'default', draining: 'red' }[state] || 'default';
     },
 
     /**
@@ -94,6 +101,16 @@ const ChainUtil = {
     /** Only a pending hop has a join token to show at all (§4.1). */
     hasToken(hop) {
         return !!hop && hop.state === ChainUtil.STATE_PENDING;
+    },
+
+    /**
+     * A hop on its way out (§4.5). It is in the registry but not in the chain:
+     * it serves its former neighbours until they have re-chained, and nothing
+     * about it can be changed any more — which is why its row carries no
+     * buttons.
+     */
+    isDraining(hop) {
+        return !!hop && hop.state === ChainUtil.STATE_DRAINING;
     },
 
     /** A legacy hop never entered by token: it wants re-installing (§2.3). */

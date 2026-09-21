@@ -94,6 +94,10 @@ type chainListResponse struct {
 	PollSeconds  int              `json:"pollSeconds"`
 	Hops         []model.ChainHop `json:"hops"`
 	PortsProblem *chainProblem    `json:"portsProblem"`
+
+	// Draining is one card per hop on its way out (§4.5): the names it still
+	// waits for and the deadline, neither of which the hop row itself carries.
+	Draining []service.DrainingHop `json:"draining"`
 }
 
 // chainProblem is a service refusal in the shape the page reads: the stable
@@ -160,10 +164,14 @@ func (r chainUpdateRequest) immutableField() string {
 	}
 }
 
-// chainDelRequest carries the force flag of §4.5: deleting the last active edge
-// publishes the real server's address, so it is never the default.
+// chainDelRequest carries the two flags of §4.5. force is what deleting the
+// last active edge needs, because that publishes the real server's address.
+// skipDrain drops the row at once instead of letting the hop serve its former
+// neighbours: the runbook uses it on a box that is already dead (§4.5.9),
+// where a departure would only keep a useless row alive for ten minutes.
 type chainDelRequest struct {
-	Force bool `json:"force"`
+	Force     bool `json:"force"`
+	SkipDrain bool `json:"skipDrain"`
 }
 
 // chainMaxBodyBytes caps what a registry write may send. The largest body here
@@ -218,6 +226,7 @@ func (a *ChainController) list(c *gin.Context) {
 		ActiveEdge:  state.ActiveEdge,
 		PollSeconds: state.PollSeconds,
 		Hops:        state.Hops,
+		Draining:    state.Draining,
 	}
 	if problem := a.portsService.LastProblem(); problem != nil {
 		response.PortsProblem = &chainProblem{Code: problem.Code, Message: problem.Message}
@@ -280,9 +289,12 @@ func (a *ChainController) update(c *gin.Context) {
 	jsonMsg(c, I18nWeb(c, "pages.settings.chain.saved"), nil)
 }
 
-// POST del/:id — the answer carries the hop and revision to wait for before
-// the box is powered off (§4.5). Deleting the active edge is refused with
-// active_edge_in_use, which the editor turns into its own wording.
+// POST del/:id — the answer says which of the two deletes happened (§4.5.1):
+// "deleted" when the row went at once, "draining" when the hop stays to hand
+// its neighbours over. Either way safeToPowerOffWhen names every hop that has
+// to confirm the revision before that box may be switched off. Deleting the
+// active edge is refused with active_edge_in_use, which the editor turns into
+// its own wording.
 func (a *ChainController) del(c *gin.Context) {
 	id, err := chainHopId(c)
 	if err != nil {
@@ -294,7 +306,7 @@ func (a *ChainController) del(c *gin.Context) {
 	if !a.readBody(c, &request) {
 		return
 	}
-	result, err := a.chainService.Delete(id, request.Force)
+	result, err := a.chainService.Delete(id, request.Force, request.SkipDrain)
 	if err != nil {
 		a.fail(c, err)
 		return
