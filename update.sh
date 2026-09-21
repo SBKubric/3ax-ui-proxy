@@ -31,12 +31,14 @@ is_local_source_install() {
 }
 
 # Branch to fetch auxiliary files (x-ui.sh, service files) from.
-# --beta / --pre → dev branch; otherwise → main
-if [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
-    REPO_BRANCH="dev"
-else
-    REPO_BRANCH="main"
-fi
+#
+# Always `main`. `--beta`/`--pre` choose which *release* to install, not which
+# branch the helper files come from: this fork has no `dev` branch, so the old
+# mapping sent every --beta run to a 404 — and the wrapper fetch that 404'd sat
+# below the point where the service is stopped and its unit removed, which is
+# how a --beta update left a front on the stand with no service at all.
+# XUI_REPO_BRANCH overrides it for testing from a branch.
+REPO_BRANCH="${XUI_REPO_BRANCH:-main}"
 
 # GitHub repo (owner/name) to fetch the release binary, wrapper and service
 # files from. Override with XUI_REPO=owner/name to update from a fork.
@@ -61,6 +63,22 @@ _command_exists() {
 _fail() {
     local msg=${1}
     echo -e "${red}${msg}${plain}"
+    exit 2
+}
+
+# _fail_after_stop <msg> — a failure once the service has already been stopped
+# and its unit removed.
+#
+# Plain _fail is safe only while nothing has been touched. Past the stop it
+# leaves the box with no service at all: no unit, disabled, nothing for
+# systemctl or the next update to restart. So put the unit back first and then
+# report — a unit pointing at a half-installed folder is still recoverable,
+# a box with no unit needs someone to ssh in.
+_fail_after_stop() {
+    local msg=${1}
+    echo -e "${red}${msg}${plain}"
+    echo -e "${yellow}Reinstalling the service unit so this box keeps one...${plain}"
+    update_x-ui_install_service
     exit 2
 }
 
@@ -1547,6 +1565,24 @@ update_x-ui() {
         _fail "ERROR: the downloaded archive does not contain the x-ui binary. Nothing has been changed."
     fi
 
+    # Stage the management wrapper while the box is still whole. It ships in the
+    # tarball, so the usual update needs no second download at all; only a
+    # tarball that predates it falls back to the raw file, and that fetch has to
+    # happen here — below, the service is already stopped and its unit gone, and
+    # a 404 there is what cost the stand its front.
+    wrapper_staged=""
+    if ! tar -tzf "x-ui-linux-$(arch).tar.gz" 2>/dev/null | grep -qx "x-ui/x-ui.sh"; then
+        echo -e "${yellow}This release tarball ships no x-ui.sh — fetching the management wrapper from ${REPO_BRANCH}...${plain}"
+        wrapper_staged="/tmp/x-ui.sh.xui-update.$$"
+        ${curl_bin} -fLRo "${wrapper_staged}" "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh" >/dev/null 2>&1 ||
+            ${curl_bin} -4fLRo "${wrapper_staged}" "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh" >/dev/null 2>&1
+        if [[ ! -s "${wrapper_staged}" ]]; then
+            rm -f "${wrapper_staged}" >/dev/null 2>&1
+            rm -f "x-ui-linux-$(arch).tar.gz" >/dev/null 2>&1
+            _fail "ERROR: failed to download x-ui.sh from ${XUI_REPO}@${REPO_BRANCH}. Nothing has been changed — the box keeps running on the current version."
+        fi
+    fi
+
     if [[ -e ${xui_folder}/ ]]; then
         for candidate in "${xui_folder}"/bin/xray-linux-*; do
             if [[ -f "$candidate" ]]; then
@@ -1608,10 +1644,10 @@ update_x-ui() {
     # Both steps are load-bearing and used to fail silently: the old version is
     # gone at this point, so anything that goes wrong here has to say so.
     if ! tar zxf x-ui-linux-$(arch).tar.gz >/dev/null 2>&1; then
-        _fail "ERROR: failed to unpack x-ui-linux-$(arch).tar.gz. The panel binary is missing — run the update again to restore it."
+        _fail_after_stop "ERROR: failed to unpack x-ui-linux-$(arch).tar.gz. The panel binary is missing — run the update again to restore it."
     fi
     rm x-ui-linux-$(arch).tar.gz -f >/dev/null 2>&1
-    cd x-ui || _fail "ERROR: the unpacked x-ui folder is missing. The panel binary is missing — run the update again to restore it."
+    cd x-ui || _fail_after_stop "ERROR: the unpacked x-ui folder is missing. The panel binary is missing — run the update again to restore it."
     chmod +x x-ui >/dev/null 2>&1
     
     # Check the system's architecture and rename the file accordingly
@@ -1638,15 +1674,18 @@ update_x-ui() {
         rm -f "$xray_backup" >/dev/null 2>&1
     fi
     
-    echo -e "${green}Downloading and installing x-ui.sh script...${plain}"
-    ${curl_bin} -fLRo /usr/bin/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh >/dev/null 2>&1
-    if [[ $? -ne 0 ]]; then
-        echo -e "${yellow}Trying to fetch x-ui with IPv4...${plain}"
-        ${curl_bin} -4fLRo /usr/bin/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh >/dev/null 2>&1
-        if [[ $? -ne 0 ]]; then
-            _fail "ERROR: Failed to download x-ui.sh script, please be sure that your server can access GitHub"
-        fi
+    echo -e "${green}Installing the x-ui.sh management script...${plain}"
+    # Whatever the tarball delivered wins — it is the wrapper that matches this
+    # binary. Otherwise the copy staged before the stop. Nothing is downloaded
+    # here: this side of the stop, a failed fetch must not end the run.
+    if [[ -s x-ui.sh ]]; then
+        cp -f x-ui.sh /usr/bin/x-ui >/dev/null 2>&1
+    elif [[ -n "${wrapper_staged}" && -s "${wrapper_staged}" ]]; then
+        cp -f "${wrapper_staged}" /usr/bin/x-ui >/dev/null 2>&1
+    else
+        echo -e "${yellow}WARNING: no x-ui.sh to install — the 'x-ui' command keeps its previous version. The service itself is unaffected.${plain}"
     fi
+    rm -f "${wrapper_staged}" >/dev/null 2>&1
     
     chmod +x ${xui_folder}/x-ui.sh >/dev/null 2>&1
     chmod +x /usr/bin/x-ui >/dev/null 2>&1
@@ -1725,9 +1764,9 @@ update_x-ui_install_service() {
         if [ -f "${xui_folder}/x-ui.rc" ]; then
             cp -f "${xui_folder}/x-ui.rc" /etc/init.d/x-ui >/dev/null 2>&1
         else
-            ${curl_bin} -fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc >/dev/null 2>&1
+            ${curl_bin} -fLRo /etc/init.d/x-ui "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc" >/dev/null 2>&1
             if [[ $? -ne 0 ]]; then
-                ${curl_bin} -4fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc >/dev/null 2>&1
+                ${curl_bin} -4fLRo /etc/init.d/x-ui "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc" >/dev/null 2>&1
                 [[ $? -ne 0 ]] && _fail "ERROR: Failed to download startup unit x-ui.rc"
             fi
         fi
@@ -1770,13 +1809,13 @@ update_x-ui_install_service() {
         echo -e "${yellow}Service files not found locally, downloading from GitHub...${plain}"
         case "${release}" in
             ubuntu | debian | armbian)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian" >/dev/null 2>&1
             ;;
             arch | manjaro | parch)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch" >/dev/null 2>&1
             ;;
             *)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel" >/dev/null 2>&1
             ;;
         esac
         [[ $? -ne 0 ]] && _fail "ERROR: Failed to install x-ui.service from GitHub"
