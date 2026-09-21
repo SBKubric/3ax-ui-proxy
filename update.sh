@@ -1531,6 +1531,20 @@ update_x-ui() {
             tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
         fi
         echo -e "Got x-ui latest pre-release version: ${tag_version}, beginning the installation..."
+    elif [[ -n "$1" ]]; then
+        # An explicit tag, positional exactly as install.sh takes one — e.g.
+        # forwarded by check_existing_install() when it hands a non-TTY caller
+        # over to us rather than silently swapping in the latest release. Same
+        # floor as install.sh's tagged install: this fork's own releases start
+        # at v1.0.0, and the 2.3.5 floor inherited from upstream 3x-ui belongs to
+        # its numbering, not ours.
+        tag_version="$1"
+        tag_version_numeric=${tag_version#v}
+        local min_version="1.0.0"
+        if [[ "$(printf '%s\n' "$min_version" "$tag_version_numeric" | sort -V | head -n1)" != "$min_version" ]]; then
+            _fail "ERROR: Please use a newer version (at least v${min_version}). Exiting update."
+        fi
+        echo -e "Updating to the requested version: ${tag_version}..."
     else
         tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$tag_version" ]]; then

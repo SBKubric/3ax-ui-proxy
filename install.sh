@@ -2685,6 +2685,30 @@ check_existing_install() {
     if [[ -f /usr/bin/x-ui || -f "${xui_folder}/x-ui" ]]; then
         echo -e "${yellow}3AX-UI is already installed on this system.${plain}"
         echo -e "Running the installer again stops the panel and overwrites the binary."
+
+        # Without a TTY there is no "default 1" to fall back to safely: a
+        # `read` at EOF used to silently take that default, hand off to
+        # update.sh, and drop any positional tag on the floor — update.sh then
+        # installed the latest stable release instead. A chain box ended in a
+        # crash loop with an empty /etc/x-ui from exactly this. So: no TTY and
+        # an explicit tag → reinstall that exact tag ourselves (option 2
+        # semantics), never silently substituting another release. No TTY and
+        # no tag → still hand over to update.sh, but forward the same
+        # release-selection flags (--beta/--pre) so that choice isn't lost either.
+        if [[ ! -t 0 ]]; then
+            if [[ -n "${1:-}" && "$1" != "--beta" && "$1" != "--pre" ]]; then
+                echo -e "${yellow}No TTY and an explicit version ($1) was requested — reinstalling that exact tag over the existing installation instead of handing off to update.sh.${plain}"
+                return
+            fi
+            echo -e "${green}No TTY — switching to the update script...${plain}"
+            if is_local_source_install && [[ -f ./update.sh ]]; then
+                bash ./update.sh "$@"
+            else
+                bash <(curl -Ls "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH:-main}/update.sh") "$@"
+            fi
+            exit $?
+        fi
+
         echo -e "  ${green}1)${plain} Update to the latest version (update.sh) — recommended"
         echo -e "  ${green}2)${plain} Reinstall over the existing installation"
         echo -e "  ${green}3)${plain} Cancel"
