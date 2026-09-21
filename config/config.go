@@ -72,7 +72,8 @@ func IsDebug() bool {
 }
 
 // GetBinFolderPath returns the path to the binary folder: XUI_BIN_FOLDER when
-// set, otherwise "bin" inside the folder the running binary lives in.
+// set, otherwise "bin" inside the folder the running binary lives in, falling
+// back to the bare relative name "bin" when that folder does not exist.
 //
 // The default used to be the bare relative name "bin", which only resolved
 // correctly when the process happened to be started with the install folder
@@ -83,6 +84,13 @@ func IsDebug() bool {
 // binary and its bin/ folder are always siblings (install.sh lays out
 // xui_folder/x-ui next to xui_folder/bin), so resolving against the
 // executable's own folder finds them from any cwd.
+//
+// That exe-relative folder does not exist for `go run .` or `go test`: the
+// compiled binary lands in a throwaway go-build temp directory that has no
+// bin/ next to it at all, while the developer's checkout does. Falling back
+// to the old cwd-relative "bin" in that case keeps those dev flows working
+// exactly as before, without reintroducing the ad-hoc-cwd bug for an
+// installed panel, whose exe-relative bin/ does exist.
 func GetBinFolderPath() string {
 	if binFolderPath := os.Getenv("XUI_BIN_FOLDER"); binFolderPath != "" {
 		return binFolderPath
@@ -91,7 +99,10 @@ func GetBinFolderPath() string {
 		if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
 			exePath = resolved
 		}
-		return filepath.Join(filepath.Dir(exePath), "bin")
+		exeRelative := filepath.Join(filepath.Dir(exePath), "bin")
+		if info, err := os.Stat(exeRelative); err == nil && info.IsDir() {
+			return exeRelative
+		}
 	}
 	return "bin"
 }

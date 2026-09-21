@@ -201,18 +201,30 @@ func TestPortsResolveTheXrayConfigFromAnyCwd(t *testing.T) {
 		t.Skip("XUI_BIN_FOLDER is set; this test exercises the unset default")
 	}
 
-	binDir := config.GetBinFolderPath()
-	if !filepath.IsAbs(binDir) {
-		t.Fatalf("GetBinFolderPath() = %q, want an absolute path so it does not depend on cwd", binDir)
+	// GetBinFolderPath only resolves against the executable's own folder when
+	// that folder's bin/ actually exists (its fallback for `go test`/`go run`
+	// is the plain relative "bin"), so the exe-relative folder has to be
+	// created before asking the function for it, not looked up first.
+	exePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("Executable: %v", err)
 	}
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = resolved
+	}
+	binDir := filepath.Join(filepath.Dir(exePath), "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll bin dir: %v", err)
 	}
+	t.Cleanup(func() { os.RemoveAll(binDir) })
+	if got := config.GetBinFolderPath(); got != binDir {
+		t.Fatalf("GetBinFolderPath() = %q, want the executable-relative folder %q now that it exists", got, binDir)
+	}
+
 	configPath := filepath.Join(binDir, "config.json")
 	if err := os.WriteFile(configPath, []byte(twoInbounds), 0o600); err != nil {
 		t.Fatalf("write xray config: %v", err)
 	}
-	t.Cleanup(func() { os.Remove(configPath) })
 
 	dir := t.TempDir()
 	if err := database.InitDB(filepath.Join(dir, "x-ui.db")); err != nil {
