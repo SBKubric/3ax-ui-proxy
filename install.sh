@@ -37,12 +37,14 @@ is_local_source_install() {
 }
 
 # Branch to fetch auxiliary files (x-ui.sh, service files) from.
-# --beta / --pre → dev branch; otherwise → main
-if [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
-    REPO_BRANCH="dev"
-else
-    REPO_BRANCH="main"
-fi
+#
+# Always `main`. `--beta`/`--pre` choose which *release* to install, not which
+# branch the helper files come from: this fork has no `dev` branch, so the old
+# mapping made every --beta run fetch raw files from a 404 — which on update.sh
+# meant the wrapper download failed after the service had already been stopped
+# and its unit removed, and the box was left with no service at all.
+# XUI_REPO_BRANCH overrides it for testing from a branch.
+REPO_BRANCH="${XUI_REPO_BRANCH:-main}"
 
 # GitHub repo (owner/name) to fetch the release binary, wrapper and service
 # files from. Override with XUI_REPO=owner/name to install from a fork.
@@ -362,9 +364,15 @@ setup_ip_certificate() {
     # Set reload command for auto-renewal (add || true so it doesn't fail during first install)
     local reloadCmd="systemctl restart x-ui 2>/dev/null || rc-service x-ui restart 2>/dev/null || true"
 
-    # Choose port for HTTP-01 listener (default 80, prompt override)
+    # Choose port for HTTP-01 listener (default 80, prompt override).
+    # Only ask when there is someone to answer: an unattended install (a proxy
+    # front, a scripted panel) has no TTY, and a `read` there returns instantly
+    # with nothing, which is fine — but asking anyway printed a question into a
+    # log that nobody could act on.
     local WebPort=""
-    read -rp "Port to use for ACME HTTP-01 listener (default 80): " WebPort
+    if [[ -t 0 ]]; then
+        read -rp "Port to use for ACME HTTP-01 listener (default 80): " WebPort
+    fi
     WebPort="${WebPort:-80}"
     if ! [[ "${WebPort}" =~ ^[0-9]+$ ]] || ((WebPort < 1 || WebPort > 65535)); then
         echo -e "${red}Invalid port provided. Falling back to 80.${plain}"
@@ -381,7 +389,9 @@ setup_ip_certificate() {
             echo -e "${yellow}Port ${WebPort} is in use.${plain}"
 
             local alt_port=""
-            read -rp "Enter another port for acme.sh standalone listener (leave empty to abort): " alt_port
+            if [[ -t 0 ]]; then
+                read -rp "Enter another port for acme.sh standalone listener (leave empty to abort): " alt_port
+            fi
             alt_port="${alt_port// /}"
             if [[ -z "${alt_port}" ]]; then
                 echo -e "${red}Port ${WebPort} is busy; cannot proceed.${plain}"
@@ -2289,6 +2299,13 @@ install_x-ui_finalize() {
     # local-source build path which only fetches xray). Never fatal.
     install_mtg "bin"
 
+    # The wrapper the tarball (or the local source tree) just delivered wins
+    # over anything staged earlier: it is the one that matches this binary.
+    [[ -f x-ui.sh ]] && cp -f x-ui.sh /usr/bin/x-ui-temp
+    if [[ ! -s /usr/bin/x-ui-temp ]]; then
+        echo -e "${red}No x-ui.sh to install as /usr/bin/x-ui — the panel is installed but the 'x-ui' command will not work. Re-run the installer.${plain}"
+        exit 1
+    fi
     mv -f /usr/bin/x-ui-temp /usr/bin/x-ui
     chmod +x /usr/bin/x-ui
     mkdir -p /var/log/x-ui
@@ -2334,7 +2351,7 @@ install_x-ui_service_unit() {
         if [ -f "${xui_folder}/x-ui.rc" ]; then
             cp -f "${xui_folder}/x-ui.rc" /etc/init.d/x-ui
         else
-            curl -4fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc
+            curl -4fLRo /etc/init.d/x-ui "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc"
             if [[ $? -ne 0 ]]; then
                 echo -e "${red}Failed to download x-ui.rc${plain}"
                 exit 1
@@ -2382,13 +2399,13 @@ install_x-ui_service_unit() {
         echo -e "${yellow}Service files not found locally, downloading from GitHub...${plain}"
         case "${release}" in
             ubuntu | debian | armbian)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian" >/dev/null 2>&1
             ;;
             arch | manjaro | parch)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch" >/dev/null 2>&1
             ;;
             *)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel" >/dev/null 2>&1
             ;;
         esac
         if [[ $? -ne 0 ]]; then
@@ -2506,12 +2523,6 @@ install_x-ui() {
             exit 1
         fi
     fi
-    curl -4fLRo /usr/bin/x-ui-temp https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh
-    if [[ $? -ne 0 ]]; then
-        echo -e "${red}Failed to download x-ui.sh${plain}"
-        exit 1
-    fi
-
     # Verify the archive BEFORE the old install is removed: an interrupted
     # download would otherwise leave the machine with neither version, which is
     # exactly what happened on a live panel.
@@ -2524,6 +2535,19 @@ install_x-ui() {
         rm x-ui-linux-$(arch).tar.gz -f
         echo -e "${red}The downloaded archive does not contain the x-ui binary. Nothing has been changed.${plain}"
         exit 1
+    fi
+
+    # The management wrapper ships inside the tarball, so the usual install
+    # needs no second download at all — install_x-ui_finalize copies it out of
+    # the unpacked folder. Only a tarball that predates it falls back to the raw
+    # file, and that fetch happens here, while nothing has been removed yet.
+    if ! tar -tzf "x-ui-linux-$(arch).tar.gz" 2>/dev/null | grep -qx "x-ui/x-ui.sh"; then
+        echo -e "${yellow}This release tarball ships no x-ui.sh — fetching the management wrapper from ${REPO_BRANCH}.${plain}"
+        if ! curl -4fLRo /usr/bin/x-ui-temp "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh"; then
+            rm -f "x-ui-linux-$(arch).tar.gz"
+            echo -e "${red}Failed to download x-ui.sh. Nothing has been changed — run the install again.${plain}"
+            exit 1
+        fi
     fi
 
     # Remove old install before extracting fresh tarball.
