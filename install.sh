@@ -255,8 +255,8 @@ gen_random_string() {
 # acme.sh gives up after that with `Cannot init API`; the same request with
 # `curl -4` answers in half a second.
 #
-# So IPv4 is the default and IPv6 is opt-in (PROXY_TLS_IPV6=1 / XUI_TLS_IPV6=1),
-# rather than the other way round with autodetection: a box that has a global
+# So IPv4 is the default and IPv6 is opt-in, rather than the other way round
+# with autodetection: a box that has a global
 # IPv6 address still has no guarantee of a working IPv6 path to the CA, which is
 # exactly the case autodetection would get wrong and send back into the 10 s
 # timeout.
@@ -271,6 +271,11 @@ gen_random_string() {
 # acme.sh exposes no knob for `_initAPI`'s retry budget — MAX_API_RETRY_TIMES,
 # the 10 s sleep and the 10 s connect timeout are local variables (acme.sh:3401
 # -3406) — so the retry that matters is the one the caller does around --issue.
+#
+# The opt-in is XUI_TLS_IPV6=1; PROXY_TLS_IPV6=1 is the same switch spelled for
+# proxy mode, where every other knob is PROXY_*. This governs every certificate
+# the installer issues — the box's IP certificate and the panel's domain one
+# alike, because the leg that hangs is the CA request, not the identifier.
 acme_ip_flags() {
     if [[ "${PROXY_TLS_IPV6:-${XUI_TLS_IPV6:-}}" == "1" ]]; then
         echo "--listen-v6"
@@ -336,7 +341,8 @@ setup_ssl_certificate() {
     echo -e "${yellow}Note: Port 80 must be open and accessible from the internet${plain}"
 
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
-    ~/.acme.sh/acme.sh --issue -d ${domain} --listen-v6 --standalone --httpport 80 --force
+    # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
+    ~/.acme.sh/acme.sh --issue -d ${domain} $(acme_ip_flags) --standalone --httpport 80 --force
 
     if [ $? -ne 0 ]; then
         echo -e "${yellow}Failed to issue certificate for ${domain}${plain}"
@@ -640,7 +646,8 @@ ssl_cert_issue() {
 
     # issue the certificate
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force
-    ~/.acme.sh/acme.sh --issue -d ${domain} --listen-v6 --standalone --httpport ${WebPort} --force
+    # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
+    ~/.acme.sh/acme.sh --issue -d ${domain} $(acme_ip_flags) --standalone --httpport ${WebPort} --force
     if [ $? -ne 0 ]; then
         echo -e "${red}Issuing certificate failed, please check logs.${plain}"
         rm -rf ~/.acme.sh/${domain}

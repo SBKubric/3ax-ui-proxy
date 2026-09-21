@@ -307,7 +307,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/ins
 | `PROXY_NEXT_HOP_SCHEME` | `https` | `http` или `https` для этого порта |
 | `PROXY_JOIN_TOKEN` | — | одноразовый токен из реестра; без него бокс отдаёт страницу входа |
 | `PROXY_TLS` | `letsencrypt-ip` | как звено получает TLS для своего порта подписок: `letsencrypt-ip`, `none` или `manual` |
-| `PROXY_TLS_IPV6` | выкл. | `1` — пускать ACME-клиент и по IPv6; по умолчанию он прибит к IPv4, потому что dual-stack-коннект к CA с бокса без рабочего IPv6 съедает весь таймаут и acme.sh сдаётся |
+| `PROXY_TLS_IPV6` | выкл. | `1` — пускать ACME-клиент и по IPv6; по умолчанию он прибит к IPv4, потому что dual-stack-коннект к CA с бокса без рабочего IPv6 съедает весь таймаут и acme.sh сдаётся. Вне режима прокси тот же переключатель зовётся `XUI_TLS_IPV6=1` и действует и на доменный сертификат панели |
 | `PROXY_DOMAIN` | Host запроса | публичный хост бокса: ссылки подписки и URL страницы входа |
 | `PROXY_SUB_PORT` | `2096` | собственный порт подписок звена |
 | `PROXY_SUB_LISTEN` | все интерфейсы | адрес привязки для него |

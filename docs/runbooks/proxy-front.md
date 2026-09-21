@@ -35,6 +35,7 @@ x-ui settings          # порт, webBasePath, сертификат и Access U
 `x-ui settings` (он же `/usr/local/x-ui/x-ui setting -show true`) **паролей не печатает** — только порт, `webBasePath`, пути к сертификату и Access URL. Без TTY установщик генерирует случайные креды и печатает их **один раз, в конце установки**; если вывод потерян, их не «показывают», а задают заново: `/usr/local/x-ui/x-ui setting -username <u> -password <p>`.
 
 Грабли:
+- **ACME-клиент и на панели ходит по IPv4** — и для доменного сертификата, и для IP: зависает именно запрос к CA, а не выбор идентификатора. IPv6 включается явно, `XUI_TLS_IPV6=1` (в режиме прокси тот же переключатель — `PROXY_TLS_IPV6=1`).
 - **Let's Encrypt для IP проигрывает гонку за порт 80** апстримному `install_nginx`: панель откатывается на self-signed (`/root/cert/self-signed/`). Для стенда достаточно; звено ходит к панели с `InsecureSkipVerify`.
 - Свежая установка ставит `nginxMode=shared`, и панель отвергает inbound на 443 («Port already exists»). Стенд живёт **без** nginx-режима «всё за 443»:
 

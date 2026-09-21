@@ -307,7 +307,7 @@ The installer writes `/etc/x-ui/proxy.json`, issues TLS, **joins the chain befor
 | `PROXY_NEXT_HOP_SCHEME` | `https` | `http` or `https` for that port |
 | `PROXY_JOIN_TOKEN` | — | the one-time token from the registry; without it the box serves a join page |
 | `PROXY_TLS` | `letsencrypt-ip` | how this hop gets TLS for its own subscription port: `letsencrypt-ip`, `none` or `manual` |
-| `PROXY_TLS_IPV6` | off | `1` runs the ACME client over IPv6 as well; by default it is pinned to IPv4, because a dual-stack connect to the CA from a box without working IPv6 costs the whole connect timeout and acme.sh gives up |
+| `PROXY_TLS_IPV6` | off | `1` runs the ACME client over IPv6 as well; by default it is pinned to IPv4, because a dual-stack connect to the CA from a box without working IPv6 costs the whole connect timeout and acme.sh gives up. Spelled `XUI_TLS_IPV6=1` outside proxy mode — it is the same switch, and it governs the panel's domain certificate too |
 | `PROXY_DOMAIN` | request host | this box's public host, used in subscription links and the join-page URL |
 | `PROXY_SUB_PORT` | `2096` | this hop's own subscription port |
 | `PROXY_SUB_LISTEN` | all interfaces | bind address for it |
