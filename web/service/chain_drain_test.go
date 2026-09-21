@@ -412,3 +412,115 @@ func TestChainInsertionSkipsADrainingHop(t *testing.T) {
 		t.Errorf("the draining hop keeps its own next hop %q, want a", got)
 	}
 }
+
+// Two sweeps reach the same chain: the ticker and the one every
+// acknowledgement fires (§4.5.4). Whichever loses the race must not take the
+// rest of the sweep with it — a row that is already gone is nothing left to
+// do, not an error that skips the departures behind it.
+func TestChainSweepSurvivesARowThatVanished(t *testing.T) {
+	s := newChainService(t)
+
+	addJoined(t, s, AddHopInput{Name: "a", Host: "10.0.0.1", Role: chain.RoleInner})
+	b := addJoined(t, s, AddHopInput{Name: "b", Host: "10.0.0.2", Role: chain.RoleInner})
+	c := addJoined(t, s, AddHopInput{Name: "c", Host: "10.0.0.3", Role: chain.RoleInner})
+	addJoined(t, s, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+
+	// Both inners leave; both are past their deadline, so a single sweep would
+	// finish the pair.
+	if _, err := s.Delete(c.Id, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Delete(b.Id, false, false); err != nil {
+		t.Fatal(err)
+	}
+	expireDrain(t, "b")
+	expireDrain(t, "c")
+
+	// The row of b disappears between the sweep's SELECT and its DELETE, which
+	// is exactly what a concurrent sweep does.
+	if err := database.GetDB().Where("name = ?", "b").Delete(&model.ChainHop{}).Error; err != nil {
+		t.Fatalf("removing b behind the sweep's back: %v", err)
+	}
+	if err := s.SweepDraining(); err != nil {
+		t.Fatalf("SweepDraining: %v", err)
+	}
+	if hopExists(t, s, "c") {
+		t.Fatal("the departure of c must still be finished although b's row had gone")
+	}
+
+	// And finishing the same departure twice is a no-op rather than a refusal.
+	if err := s.finishDraining(c.Id); err != nil {
+		t.Errorf("finishing an already finished departure: %v", err)
+	}
+}
+
+// A sweep that is already running does this sweep's work, so the second caller
+// returns at once instead of queueing behind it — and the chain is swept all
+// the same.
+func TestChainSweepIsSerialised(t *testing.T) {
+	s := newChainService(t)
+
+	addJoined(t, s, AddHopInput{Name: "a", Host: "10.0.0.1", Role: chain.RoleInner})
+	b := addJoined(t, s, AddHopInput{Name: "b", Host: "10.0.0.2", Role: chain.RoleInner})
+	addJoined(t, s, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	if _, err := s.Delete(b.Id, false, false); err != nil {
+		t.Fatal(err)
+	}
+	expireDrain(t, "b")
+
+	// While a sweep holds the lock, another caller must return immediately
+	// rather than block — RecordSeen runs on every poll and must not queue.
+	drainSweep.Lock()
+	done := make(chan error, 1)
+	go func() { done <- s.SweepDraining() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the second sweep must return quietly, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		drainSweep.Unlock()
+		t.Fatal("a sweep queued behind the one already running")
+	}
+	if !hopExists(t, s, "b") {
+		t.Error("the skipped sweep must not have touched anything")
+	}
+	drainSweep.Unlock()
+
+	if err := s.SweepDraining(); err != nil {
+		t.Fatalf("SweepDraining: %v", err)
+	}
+	if hopExists(t, s, "b") {
+		t.Error("the next sweep finishes the departure")
+	}
+}
+
+// §2.6.4 is untouched by draining: force-deleting the last edge, which is the
+// active one, still takes the row (and the override) with it there and then —
+// nothing hangs off an edge, so there is nobody to hand over to.
+func TestChainForceDeleteOfTheSoleActiveEdgeIsUnchanged(t *testing.T) {
+	s := newChainService(t)
+
+	addJoined(t, s, AddHopInput{Name: "a", Host: "10.0.0.1", Role: chain.RoleInner})
+	edge := addJoined(t, s, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	if err := s.SetActive(edge.Id); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+
+	_, err := s.Delete(edge.Id, false, false)
+	wantCode(t, err, CodeActiveEdgeInUse)
+
+	result, err := s.Delete(edge.Id, true, false)
+	if err != nil {
+		t.Fatalf("force-deleting the last edge: %v", err)
+	}
+	if result.State != DeleteStateDeleted {
+		t.Errorf("state %q, want deleted", result.State)
+	}
+	if hopExists(t, s, "edge-a") {
+		t.Fatal("the row must be gone")
+	}
+	if _, ok := s.ActiveEdgeHost(); ok {
+		t.Fatal("with the last edge gone the panel publishes the real server again")
+	}
+}

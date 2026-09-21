@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
@@ -36,6 +37,15 @@ const (
 	DeleteStateDeleted  = "deleted"
 	DeleteStateDraining = "draining"
 )
+
+// drainSweep serialises the sweeps. Two of them run from different places —
+// the 60 s ticker and every acknowledgement that lands in RecordSeen — and
+// without this they interleave between the SELECT and the DELETE: the second
+// one then works from a list of rows the first has already finished. It is a
+// TryLock rather than a Lock because a sweep that is already under way is
+// doing this sweep's work anyway; queueing behind it would only pile polls up
+// on a mutex.
+var drainSweep sync.Mutex
 
 // defaultChainDrainMinutes is what a panel whose setting cannot be read falls
 // back to, so a missing key can never mean "drain forever" or "do not drain".
@@ -179,6 +189,10 @@ func (s *ChainService) SweepDraining() error {
 	if db == nil {
 		return nil
 	}
+	if !drainSweep.TryLock() {
+		return nil
+	}
+	defer drainSweep.Unlock()
 	var draining []model.ChainHop
 	if err := db.Where("state = ?", chain.StateDraining).Order("id").Find(&draining).Error; err != nil {
 		return err
@@ -186,12 +200,21 @@ func (s *ChainService) SweepDraining() error {
 	if len(draining) == 0 {
 		return nil
 	}
+	// One hop's failure must not take the rest of the sweep with it: a row that
+	// cannot be read or finished now is retried on the next sweep, while every
+	// other departure still reaches its deadline. The first error is kept and
+	// returned at the end so a caller still learns something went wrong.
+	var firstErr error
 	now := time.Now().UnixMilli()
 	for index := range draining {
 		hop := draining[index]
 		waiting, err := drainWaiting(db, hop)
 		if err != nil {
-			return err
+			logger.Warning("chain: cannot check the departure of", hop.Name, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		switch {
 		case len(waiting) == 0:
@@ -204,10 +227,13 @@ func (s *ChainService) SweepDraining() error {
 			continue
 		}
 		if err := s.finishDraining(hop.Id); err != nil {
-			return err
+			logger.Warning("chain: cannot finish the departure of", hop.Name, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // drainWaiting names the former neighbours that have not confirmed the
@@ -237,6 +263,10 @@ func drainWaiting(tx *gorm.DB, hop model.ChainHop) ([]string, error) {
 // itself stale and keeps relaying, because the panel never turns a box off
 // (ADR 0003).
 //
+// A row that is not there any more is not an error: the ticker and a sweep
+// from RecordSeen can both reach the same departure, and whichever loses the
+// race has nothing left to do.
+//
 // The revision moves a second time only when the departing hop's next hop was
 // a hop rather than the panel: that hop loses one entry from its hops[], and
 // without a new revision it would go on admitting a secret that no longer
@@ -245,6 +275,9 @@ func drainWaiting(tx *gorm.DB, hop model.ChainHop) ([]string, error) {
 func (s *ChainService) finishDraining(id int) error {
 	return database.GetDB().Transaction(func(tx *gorm.DB) error {
 		hop, err := loadHop(tx, id)
+		if ChainErrorCode(err) == CodeUnknownHop {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
