@@ -279,7 +279,7 @@ The registry also holds `chainExtraPorts` — the ports the real server serves *
 - **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every relayed port to its next hop (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on a hop**. Which ports to relay arrives in the **chain document** the hop polls from its next hop — a truncated excerpt of the registry that shows the hop itself, everything outward of it and the port list, and nothing deeper.
 - **Serves subscriptions** — it fetches `/sub` and `/json` from its next hop and re-serves them: apps get the raw subscription, browsers get a custom page (traffic stats, QR, a **Copy VLESS JSON** button, and a curated app list).
 
-**Joining a hop to the chain.** Always work inwards-out: the panel first, then the innermost hop, then outwards, edge last.
+**Joining a hop to the chain.** Always work inwards-out: the panel first, then the innermost hop, then outwards, edge last. Creating the hop in the registry does **not** bump the chain revision — a `pending` hop is not in the document yet, so there is nothing in it to change; the revision moves once, when the box actually joins.
 
 1. On the panel, **Settings → Subscription → Chain** → add the hop (name, role, host). The panel shows a one-time **join token** (32 characters, valid 24 hours) — once, and never again; if it expires or is lost, press *reissue token*.
 2. On the box, run the installer in proxy mode with that token:
@@ -307,6 +307,7 @@ The installer writes `/etc/x-ui/proxy.json`, issues TLS, **joins the chain befor
 | `PROXY_NEXT_HOP_SCHEME` | `https` | `http` or `https` for that port |
 | `PROXY_JOIN_TOKEN` | — | the one-time token from the registry; without it the box serves a join page |
 | `PROXY_TLS` | `letsencrypt-ip` | how this hop gets TLS for its own subscription port: `letsencrypt-ip`, `none` or `manual` |
+| `PROXY_TLS_IPV6` | off | `1` runs the ACME client over IPv6 as well; by default it is pinned to IPv4, because a dual-stack connect to the CA from a box without working IPv6 costs the whole connect timeout and acme.sh gives up |
 | `PROXY_DOMAIN` | request host | this box's public host, used in subscription links and the join-page URL |
 | `PROXY_SUB_PORT` | `2096` | this hop's own subscription port |
 | `PROXY_SUB_LISTEN` | all interfaces | bind address for it |

@@ -71,6 +71,8 @@ ssh real 'x-ui chain ports'                       # в stdout
 ssh real 'x-ui chain ports -o /root/chain-ports.json'
 ```
 
+> Обходной путь, пока не выехал фикс: команда читает базу по относительному пути, поэтому запускать её надо из каталога установки — `ssh real 'cd /usr/local/x-ui && ./x-ui chain ports'`.
+
 Это debug-экспорт: `port`, `network`, `tag`, `source` (`xray` — из inbound'ов панели; `awg`/`wg`/`mtproto`/`extra` — то, что панель обслуживает вне xray). Ключей в нём нет: `grep -c 'privateKey\|password\|"id"' /root/chain-ports.json` → 0.
 
 Порты вне xray (AmneziaWG, WireGuard, MTProto, что угодно ещё) добавляются в настройке реестра `chainExtraPorts` — не на боксе.
@@ -101,7 +103,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/ins
 
 **Через join page (если токена под рукой нет):** запустите то же самое без `PROXY_JOIN_TOKEN`. Бокс стартует в bootstrap-режиме: релея нет, слушает только sub-порт и отдаёт одноразовую страницу входа. Футер печатает ссылку; повторно её покажет `x-ui chain join-url` (файл `/etc/x-ui/chain-join.url`). На странице — next hop (предзаполнен) и поле join-токена. После принятого входа страница отвечает 404, файл ссылки исчезает, релей и полный sub-сервер стартуют в том же процессе.
 
-Переменные установщика — в [README](../../README.md#11-proxy-chain-anti-blocking). Коротко: `PROXY_NEXT_HOP` (обязательна), `PROXY_NEXT_HOP_SUB_PORT` (2096), `PROXY_NEXT_HOP_SCHEME` (https), `PROXY_JOIN_TOKEN`, `PROXY_TLS` (`letsencrypt-ip`), `PROXY_DOMAIN`, `PROXY_SUB_PORT` (2096), `PROXY_SUB_LISTEN`, `PROXY_RELAY_LISTEN` (`::`), `PROXY_CERT`/`PROXY_KEY` (только при `PROXY_TLS=manual`).
+Переменные установщика — в [README](../../README.md#11-proxy-chain-anti-blocking). Коротко: `PROXY_NEXT_HOP` (обязательна), `PROXY_NEXT_HOP_SUB_PORT` (2096), `PROXY_NEXT_HOP_SCHEME` (https), `PROXY_JOIN_TOKEN`, `PROXY_TLS` (`letsencrypt-ip`), `PROXY_TLS_IPV6` (выкл.), `PROXY_DOMAIN`, `PROXY_SUB_PORT` (2096), `PROXY_SUB_LISTEN`, `PROXY_RELAY_LISTEN` (`::`), `PROXY_CERT`/`PROXY_KEY` (только при `PROXY_TLS=manual`).
 
 Старые переменные (`PROXY_UPSTREAM_HOST`, `PROXY_UPSTREAM_BASE`, `PROXY_EXTRA_PORTS`, `PROXY_RELAY_MANIFEST`, `PROXY_SUB_PATH`, `PROXY_JSON_PATH`, `PROXY_XRAY_CONFIG`) установщик **отвергает с ошибкой**, а не игнорирует: молча проглоченный `PROXY_EXTRA_PORTS` дал бы фронт без половины портов, и выяснилось бы это только на клиенте.
 
@@ -116,6 +118,13 @@ bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/ins
 Грабли:
 - **Порт 80 должен быть свободен и снаружи достижим** — и при выпуске, и при каждом продлении. Установщик проверяет занятость и при неудаче печатает WARN. Если цепочка релеит через этот бокс 80-й порт, IP-сертификат обречён: ставьте `PROXY_TLS=manual` с собственными `PROXY_CERT`/`PROXY_KEY` либо `none`.
 - **Бокс за NAT** IP-сертификат не получит.
+- **ACME-клиент ходит по IPv4** (`--listen-v4 --request-v4`): на боксе без глобального IPv6 холодный dual-stack-коннект к CA съедает весь таймаут curl, и acme.sh сдаётся с `Cannot init API`. IPv6 включается явно: `PROXY_TLS_IPV6=1`.
+- **Повторить выпуск, не переустанавливая бокс** (установщик печатает эту же строку в WARN):
+  ```bash
+  ~/.acme.sh/acme.sh --issue -d <ip бокса> --standalone --server letsencrypt \
+    --listen-v4 --request-v4 --certificate-profile shortlived --days 3 --httpport 80 --force
+  ```
+  затем прописать получившиеся пути в `cert`/`key` файла `/etc/x-ui/proxy.json` и `systemctl restart x-ui`.
 - **Выпуск не удался — установка не падает.** Бокс поднимается без TLS, join page отдаётся по **HTTP** с баннером «токен уйдёт открытым текстом». Это не блокировка: во время установки одноразового фронта эта страница часто и есть единственный работающий канал. Но если TLS нет, лучше переустановить бокс с `PROXY_JOIN_TOKEN` через ssh, чем вводить токен в HTTP-страницу.
 - `PROXY_TLS=none` — осознанный отказ от TLS (бокс за внешним терминатором, стенд, отладка). `manual` — прежнее поведение: сертификат ваш, продление ваше.
 
@@ -129,7 +138,7 @@ ssh bridge 'x-ui chain status'
 # relay:     running=true ports=[443 51820]
 # last wave: …
 ssh bridge 'systemctl is-active x-ui; ss -ltnup | grep -E ":443 |:51820 |:2096 "; journalctl -u x-ui -n 5 --no-pager'
-ssh bridge 'grep -rIl "privateKey\|PrivateKey" /etc/x-ui /usr/local/x-ui; ls -la /etc/x-ui'   # ключей нет; proxy.json 0600, chain/ 0700
+ssh bridge 'grep -RIl "privateKey\|PrivateKey" /etc/x-ui /usr/local/x-ui; ls -la /etc/x-ui'   # ключей нет; proxy.json 0600, chain/ 0700
 ```
 
 Ожидаем в логе: `joined chain as "bridge" (inner), next hop <ip real>:2096, revision 42` и `relaying ports [443 51820] -> <ip real> via dokodemo-door (L4 passthrough)`. Порт 12345 (TPROXY) на звене открываться **не должен**.
@@ -158,7 +167,7 @@ ssh bridge 'grep -rIl "privateKey\|PrivateKey" /etc/x-ui /usr/local/x-ui; ls -la
 4. Удалить legacy-артефакты: `rm -f /etc/x-ui/proxy.json /etc/x-ui/relay-manifest.json /etc/x-ui/proxy-setup.url`.
 5. Переустановить в режиме звена — команда из §3.2, с `PROXY_NEXT_HOP` = адрес next hop (`real`/`subDomain` для inner, адрес последнего inner для edge). Без `PROXY_JOIN_TOKEN` установщик напечатает ссылку join page.
 6. Проверить по §3.4: `x-ui chain status` → ревизия совпадает с панелью; `ss -ltnup | grep -E ":(443|51820|2096)"`; в реестре звено `joined` со свежим `last_seen_at`.
-7. Убедиться, что ключей на боксе нет: `grep -R "privateKey\|password" /etc/x-ui /usr/local/x-ui/bin || echo clean`.
+7. Убедиться, что ключей на боксе нет: `grep -RI "privateKey\|password" /etc/x-ui /usr/local/x-ui/bin || echo clean`. Флаг `-I` обязателен: без него grep находит обе строки внутри `geosite.dat`/`geoip.dat` и отчитывается о «ключах», которых нет.
 8. Если бокс — edge: отметить его активным (§4) и проверить подписку клиента.
 9. Следующее звено снаружи переустанавливается тем же порядком.
 
@@ -166,7 +175,11 @@ ssh bridge 'grep -rIl "privateKey\|PrivateKey" /etc/x-ui /usr/local/x-ui; ls -la
 
 Плановый вывод звена из цепочки (§4.5 спеки) делается **только в панели**: Settings → Subscription → *Chain* → удалить звено. Панель в одной транзакции перецепляет внешнего соседа удаляемого на его next hop, сжимает порядок оставшихся inner'ов и бампает ревизию. Активное edge удаляется только через `force` и только последним.
 
-Волна доносит новый `nextHop` до внешнего соседа за ≤ `chainPollSeconds` (по умолчанию 30 с), он перезапускает relay и начинает ходить мимо удалённого. `x-ui chain rejoin` при этом **не нужен**: перецепку делает волна, секрет и имя соседа не менялись.
+Волна доносит новый `nextHop` до внешнего соседа за ≤ `chainPollSeconds` (по умолчанию 30 с), он перезапускает relay и начинает ходить мимо удалённого.
+
+`x-ui chain rejoin` при этом **не нужен**: перецепку делает волна, секрет и имя соседа не менялись.
+
+**Заведение звена ревизию не двигает** (§2.6.3): пока звено `pending`, документа оно не меняет — его в цепочке ещё нет, менять нечего. Ревизия бампается ровно один раз, в момент успешного join. Поэтому после «создать звено» не ждите роста `chainRevision` — ждите его после того, как бокс вошёл.
 
 **Когда гасить сам бокс.** Ответ на удаление несёт `safeToPowerOffWhen: {hop, revision}`, и в реестре у внешнего соседа видно `lastRevision`. Дождитесь, пока сосед покажет ревизию ≥ указанной, — до этого момента удалённый бокс ещё держит старые соединения, и выключать его рано. Отдельного состояния «draining» нет: панель боксы не гасит, гасит их человек.
 
