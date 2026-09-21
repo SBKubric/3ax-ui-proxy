@@ -898,11 +898,18 @@ config_after_update() {
     else
         echo -e "${green}SSL certificate is already configured${plain}"
         # Show access URL with existing certificate. IP certificates are stored
-        # in /root/cert/ip, so the directory name is the literal "ip" — show the
-        # real detected server IP instead of printing "https://ip:...".
+        # in /root/cert/ip, so the directory name is the literal "ip"; a
+        # self-signed certificate (install.sh's generate_self_signed_cert)
+        # lives in /root/cert/self-signed regardless of which host it was
+        # actually issued for. Both directory names are placeholders, not
+        # hosts — printing them verbatim gave a live box's footer
+        # "Access URL: https://self-signed:PORT/...". install.sh's own
+        # footer never has this problem because it keeps SSL_HOST from the
+        # box's resolved address instead of round-tripping it through the
+        # cert path; do the same here.
         local cert_domain=$(basename "$(dirname "$existing_cert")")
         local access_host="$cert_domain"
-        if [[ "$cert_domain" == "ip" ]]; then
+        if [[ "$cert_domain" == "ip" || "$cert_domain" == "self-signed" ]]; then
             access_host="${server_ip:-$cert_domain}"
         fi
         echo ""
