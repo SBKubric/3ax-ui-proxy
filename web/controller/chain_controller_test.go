@@ -494,3 +494,47 @@ func TestChainAddReturnsTheComputedNextHopId(t *testing.T) {
 		}
 	}
 }
+
+// TestChainUpdateRefusesAnImmutableField: role (and the other fields that move
+// through add, del and setActive) get a field_immutable refusal that names the
+// field, distinct from the "unknown field" a name update has never heard of at
+// all.
+func TestChainUpdateRefusesAnImmutableField(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+	added := chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
+
+	for _, body := range []string{
+		`{"role":"inner"}`,
+		`{"position":0}`,
+		`{"state":"joined"}`,
+		`{"isActive":true}`,
+		`{"nextHopId":1}`,
+		`{"id":999}`,
+	} {
+		env := monUIDecode(t, chainPost(r, "/panel/api/chain/update/"+strconv.Itoa(added.Hop.Id), cookie, body))
+		if env.Success {
+			t.Errorf("update %s: success=true, want a field_immutable refusal", body)
+			continue
+		}
+		if !strings.Contains(env.Msg, service.CodeFieldImmutable) {
+			t.Errorf("update %s: msg %q does not name %q", body, env.Msg, service.CodeFieldImmutable)
+		}
+	}
+
+	// A name update has never heard of at all is still the decoder's own
+	// refusal, not field_immutable.
+	w := chainPost(r, "/panel/api/chain/update/"+strconv.Itoa(added.Hop.Id), cookie, `{"bogus":true}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("update with a truly unknown field: status %d, want 400 (%s)", w.Code, w.Body.String())
+	}
+
+	// None of the refused requests touched the hop.
+	state, err := (&service.ChainService{}).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Hops[0].Role != "edge" {
+		t.Errorf("role = %q after refused updates, want unchanged", state.Hops[0].Role)
+	}
+}

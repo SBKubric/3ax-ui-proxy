@@ -49,6 +49,7 @@ const (
 	CodeNotAnEdge        = "not_an_edge"
 	CodeHopNotJoined     = "hop_not_joined"
 	CodeActiveEdgeInUse  = "active_edge_in_use"
+	CodeFieldImmutable   = "field_immutable"
 )
 
 // Defaults for a hop the owner did not spell out: the panel's own sub port and

@@ -118,11 +118,46 @@ type chainAddRequest struct {
 // chainUpdateRequest is the body of POST update/:id: every field is a pointer,
 // so the editor can send the one control the operator touched without the rest
 // of the form silently rewriting the hop.
+//
+// Role, position, state, isActive, nextHopId and id are fields of the hop the
+// panel knows perfectly well, but update is not how they change: they move
+// through add, del and setActive, which are the calls that keep the topology
+// invariants. They are named here, pointers like the rest, purely so a request
+// that touches one gets field_immutable naming it instead of the decoder's
+// generic "unknown field" — which stays for a name update has never heard of.
 type chainUpdateRequest struct {
 	Name      *string `json:"name"`
 	Host      *string `json:"host"`
 	SubPort   *int    `json:"subPort"`
 	SubScheme *string `json:"subScheme"`
+
+	Role      *string `json:"role"`
+	Position  *int    `json:"position"`
+	State     *string `json:"state"`
+	IsActive  *bool   `json:"isActive"`
+	NextHopId *int    `json:"nextHopId"`
+	Id        *int    `json:"id"`
+}
+
+// immutableField returns the JSON name of the first foreclosed field the
+// request touches, or "" if it stuck to what update may change.
+func (r chainUpdateRequest) immutableField() string {
+	switch {
+	case r.Role != nil:
+		return "role"
+	case r.Position != nil:
+		return "position"
+	case r.State != nil:
+		return "state"
+	case r.IsActive != nil:
+		return "isActive"
+	case r.NextHopId != nil:
+		return "nextHopId"
+	case r.Id != nil:
+		return "id"
+	default:
+		return ""
+	}
 }
 
 // chainDelRequest carries the force flag of §4.5: deleting the last active edge
@@ -223,6 +258,13 @@ func (a *ChainController) update(c *gin.Context) {
 	}
 	var request chainUpdateRequest
 	if !a.readBody(c, &request) {
+		return
+	}
+	if field := request.immutableField(); field != "" {
+		a.fail(c, &service.ChainError{
+			Code:    service.CodeFieldImmutable,
+			Message: strconv.Quote(field) + " cannot be changed through update; use add, del or setActive instead",
+		})
 		return
 	}
 	err = a.chainService.Update(id, service.UpdateHopInput{
