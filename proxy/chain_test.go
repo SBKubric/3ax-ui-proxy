@@ -447,3 +447,31 @@ func TestDocumentStoreRefusesANewerVersion(t *testing.T) {
 		t.Fatal("a document from the future was accepted")
 	}
 }
+
+// §3.5, §4.5.3 — a revision that only flips this hop's own self.state to
+// draining changes nothing about the relay: same ports, same next hop, no
+// restart. What changes is what the hop hands outward, and the status the
+// owner reads.
+func TestApplyDrainingChangesNoRelay(t *testing.T) {
+	doc := testDocument(42)
+	poller, state, relay, _ := wavePoller(t, serveDocument(&doc, nil))
+
+	first := testDocument(42)
+	first.Self.State = chain.StateJoined
+	if err := poller.Apply(first); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	restarts := relay.applies
+
+	second := testDocument(43)
+	second.Self.State = chain.StateDraining
+	if err := poller.Apply(second); err != nil {
+		t.Fatalf("Apply(draining): %v", err)
+	}
+	if relay.applies != restarts {
+		t.Errorf("the relay was reconfigured %d time(s) for a state flip, want none", relay.applies-restarts)
+	}
+	if status := state.Status(relay, poller.cfg); !status.Draining {
+		t.Error("the status must report draining so `x-ui chain status` can print it")
+	}
+}

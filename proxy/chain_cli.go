@@ -66,6 +66,9 @@ func PrintStatus(w io.Writer, status *chain.Status) {
 	fmt.Fprintf(w, "name:      %s (%s)\n", status.Name, status.Role)
 	fmt.Fprintf(w, "next hop:  %s:%d (reachable: %t)\n", status.NextHop.Host, status.NextHop.SubPort, status.NextHop.Reachable)
 	fmt.Fprintf(w, "revision:  %d%s\n", status.Revision, staleSuffix(status.Stale))
+	if status.Draining {
+		fmt.Fprintln(w, "draining:  true (leaving the chain — still relaying, handing neighbours my next hop)")
+	}
 	fmt.Fprintf(w, "relay:     running=%t ports=[%s]\n", status.Relay.Running, strings.Join(ports, " "))
 	fmt.Fprintf(w, "last wave: %s\n", formatMilli(status.LastOk))
 	if status.ObservedHostMismatch {

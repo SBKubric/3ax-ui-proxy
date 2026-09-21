@@ -146,12 +146,19 @@ func (h *ChainHandler) recordAcks(hop chain.Hop, r *http.Request) {
 // its next hop, and nothing else inward. An edge sees only itself — a
 // neighbouring edge is beside it, not outward — and learns that an active edge
 // exists only when it is the active one itself.
+//
+// One branch belongs to a hop on its way out (§4.5.3): while self.state is
+// draining, the neighbour's nextHop is this hop's own nextHop rather than this
+// hop, so the neighbour re-chains past the departing box over the very channel
+// that is about to close. It is the whole box-side rule of draining, and the
+// neighbour learns nothing new from it: that address is the one the panel
+// would have given it anyway.
 func TruncateDocument(doc *chain.Document, hop chain.Hop, cfg *Config) chain.Document {
 	out := chain.Document{
 		Version:     chain.DocumentVersion,
 		Revision:    doc.Revision,
 		GeneratedAt: doc.GeneratedAt,
-		Self:        chain.Self{Name: hop.Name, Role: hop.Role, Host: hop.Host},
+		Self:        chain.Self{Name: hop.Name, Role: hop.Role, Host: hop.Host, State: hop.State},
 		NextHop: chain.NextHop{
 			Host:      selfHost(doc, cfg),
 			SubPort:   cfg.SubPort,
@@ -161,6 +168,9 @@ func TruncateDocument(doc *chain.Document, hop chain.Hop, cfg *Config) chain.Doc
 			TunPath:   doc.NextHop.TunPath,
 		},
 		Ports: doc.Ports,
+	}
+	if doc.Self.Draining() {
+		out.NextHop = doc.NextHop
 	}
 
 	if hop.Role == chain.RoleEdge {

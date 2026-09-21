@@ -328,6 +328,14 @@ func (p *Poller) Apply(doc *chain.Document) error {
 	needRelay := previous == nil || added != 0 || removed != 0 ||
 		previous.NextHop.Host != doc.NextHop.Host || !samePorts(previous.Ports, doc.Ports)
 
+	if doc.Self.Draining() && (previous == nil || !previous.Self.Draining()) {
+		// Nothing about this hop's own relay changes (§3.5): it keeps carrying
+		// the same ports to the same next hop. What changes is what it hands
+		// out — TruncateDocument gives every neighbour this hop's own next hop
+		// from here on (§4.5.3).
+		logger.Info("proxy-front: chain: this hop is draining, handing my next hop to my neighbours")
+	}
+
 	if secretsDiffer(previous, doc) {
 		// The authorisation table for /chain/v1/* is read straight from the
 		// current document, so a changed set of hashes needs no restart —

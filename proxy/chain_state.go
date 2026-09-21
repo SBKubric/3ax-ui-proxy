@@ -201,6 +201,7 @@ func (s *State) Status(relay RelayController, cfg *Config) chain.Status {
 		status.Name = doc.Self.Name
 		status.Role = doc.Self.Role
 		status.Revision = doc.Revision
+		status.Draining = doc.Self.Draining()
 		if doc.NextHop.Host != "" {
 			nextHost, nextPort = doc.NextHop.Host, doc.NextHop.SubPort
 		}

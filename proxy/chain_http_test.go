@@ -330,3 +330,63 @@ func TestJoinRefusesALoopAndJunk(t *testing.T) {
 		t.Errorf("an oversized join: status %d, want 413", w.Code)
 	}
 }
+
+// §4.5.3 — the box-side rule of draining, and the only one. While this hop's
+// own self.state is draining, every neighbour it answers is handed this hop's
+// own nextHop — host, port, scheme and paths — instead of this hop. That is
+// how a neighbour re-chains past a departing box over the very channel that is
+// about to close (the stand's freeze, #86). Everything else about the
+// truncation is unchanged.
+func TestTruncateDocumentWhileDraining(t *testing.T) {
+	cfg := &Config{Domain: "203.0.113.9", SubPort: 2096}
+	doc := innerDocument()
+	doc.Self = chain.Self{Name: "inner-2", Role: chain.RoleInner, Host: "203.0.113.9", State: chain.StateDraining}
+	doc.NextHop = chain.NextHop{
+		Host: "10.0.0.7", SubPort: 2096, SubScheme: "https",
+		SubPath: "/sub/", JsonPath: "/json/", TunPath: "/tun/",
+	}
+	edge := doc.Hops[2] // edge-a
+
+	out := TruncateDocument(doc, edge, cfg)
+	if out.NextHop != doc.NextHop {
+		t.Errorf("a draining hop hands over its own next hop, got %+v want %+v", out.NextHop, doc.NextHop)
+	}
+	if out.Self.Name != "edge-a" || out.Self.State != chain.StateJoined {
+		t.Errorf("the neighbour's self = %+v, want edge-a joined", out.Self)
+	}
+	if len(out.Hops) != 1 || out.Hops[0].Name != "edge-a" {
+		t.Errorf("hops = %v, want edge-a alone", hopNamesOf(out.Hops))
+	}
+
+	// The same hop before its departure names itself, as always.
+	doc.Self.State = chain.StateJoined
+	out = TruncateDocument(doc, edge, cfg)
+	if out.NextHop.Host != "203.0.113.9" {
+		t.Errorf("a living hop names itself, got %q", out.NextHop.Host)
+	}
+}
+
+// A neighbour that is itself draining reads its state from the hops[] entry of
+// the hop that serves it: that is how a departing inner gets the one document
+// (§4.5.3) in which it learns it is on its way out.
+func TestTruncateDocumentCarriesTheNeighbourState(t *testing.T) {
+	cfg := &Config{Domain: "10.0.0.7", SubPort: 2096}
+	doc := innerDocument()
+	doc.Hops[1].State = chain.StateDraining
+
+	out := TruncateDocument(doc, doc.Hops[1], cfg)
+	if out.Self.State != chain.StateDraining {
+		t.Errorf("the departing neighbour's self.state = %q, want draining", out.Self.State)
+	}
+	if out.NextHop.Host != "10.0.0.7" {
+		t.Errorf("it still dials the hop that serves it, got %q", out.NextHop.Host)
+	}
+}
+
+func hopNamesOf(hops []chain.Hop) []string {
+	names := make([]string, 0, len(hops))
+	for _, hop := range hops {
+		names = append(names, hop.Name)
+	}
+	return names
+}
