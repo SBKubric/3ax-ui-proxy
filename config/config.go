@@ -71,13 +71,29 @@ func IsDebug() bool {
 	return os.Getenv("XUI_DEBUG") == "true"
 }
 
-// GetBinFolderPath returns the path to the binary folder, defaulting to "bin" if not set via XUI_BIN_FOLDER.
+// GetBinFolderPath returns the path to the binary folder: XUI_BIN_FOLDER when
+// set, otherwise "bin" inside the folder the running binary lives in.
+//
+// The default used to be the bare relative name "bin", which only resolved
+// correctly when the process happened to be started with the install folder
+// as its cwd (the case systemd's WorkingDirectory arranges for `x-ui run`).
+// Anything invoked ad hoc from another directory — `x-ui chain ports` from an
+// operator's shell, say — went looking for "bin" under wherever the shell
+// was, and never found the panel's actual bin/config.json. The panel's own
+// binary and its bin/ folder are always siblings (install.sh lays out
+// xui_folder/x-ui next to xui_folder/bin), so resolving against the
+// executable's own folder finds them from any cwd.
 func GetBinFolderPath() string {
-	binFolderPath := os.Getenv("XUI_BIN_FOLDER")
-	if binFolderPath == "" {
-		binFolderPath = "bin"
+	if binFolderPath := os.Getenv("XUI_BIN_FOLDER"); binFolderPath != "" {
+		return binFolderPath
 	}
-	return binFolderPath
+	if exePath, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+			exePath = resolved
+		}
+		return filepath.Join(filepath.Dir(exePath), "bin")
+	}
+	return "bin"
 }
 
 func getBaseDir() string {

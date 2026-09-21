@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
+	"github.com/coinman-dev/3ax-ui/v2/config"
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 )
@@ -185,6 +186,60 @@ func TestDuplicatePortAcrossSourcesIsRefused(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name the source %q", err, want)
 		}
+	}
+}
+
+// TestPortsResolveTheXrayConfigFromAnyCwd is the regression for `x-ui chain
+// ports` failing with "open bin/config.json: no such file or directory" when
+// run from an arbitrary directory (e.g. an operator's `/root` shell): with no
+// override, ChainPortsService reads config.GetConfigPath(), which used to be
+// resolved against the process's cwd rather than the panel's install folder.
+// It must find the config regardless of where the process happens to be
+// running from.
+func TestPortsResolveTheXrayConfigFromAnyCwd(t *testing.T) {
+	if os.Getenv("XUI_BIN_FOLDER") != "" {
+		t.Skip("XUI_BIN_FOLDER is set; this test exercises the unset default")
+	}
+
+	binDir := config.GetBinFolderPath()
+	if !filepath.IsAbs(binDir) {
+		t.Fatalf("GetBinFolderPath() = %q, want an absolute path so it does not depend on cwd", binDir)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll bin dir: %v", err)
+	}
+	configPath := filepath.Join(binDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(twoInbounds), 0o600); err != nil {
+		t.Fatalf("write xray config: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(configPath) })
+
+	dir := t.TempDir()
+	if err := database.InitDB(filepath.Join(dir, "x-ui.db")); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() { database.CloseDB() })
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("Chdir to a foreign cwd: %v", err)
+	}
+
+	s := &ChainPortsService{}
+	ports, err := s.Ports()
+	if err != nil {
+		t.Fatalf("Ports() from a cwd with no bin/config.json of its own: %v", err)
+	}
+	if _, found := portByNumber(ports, 443); !found {
+		t.Errorf("Ports() = %+v, want the xray inbound on 443", ports)
 	}
 }
 
