@@ -65,6 +65,22 @@ func resetMonContactForTest() {
 	monContact.Unlock()
 }
 
+// ResetMonContactForTest clears the process-wide last-contact cache. The
+// cache is shared by every MonitoringService in the process (it backs the
+// STALE job across requests), so tests outside this package that exercise
+// checkMonAuth/TouchMonLastContact — e.g. web/controller's monitoring tests —
+// must call this in setup to avoid picking up a value left by another test
+// that ran earlier in the same binary (-shuffle=on reorders them).
+func ResetMonContactForTest() {
+	resetMonContactForTest()
+}
+
+// ResetMonStaleForTest is the STALE-flag counterpart of
+// ResetMonContactForTest, for the same reason.
+func ResetMonStaleForTest() {
+	resetMonStaleForTest()
+}
+
 // --- default probe link renderer ---------------------------------------------
 
 // The xray link renderer lives in package sub, which imports this package

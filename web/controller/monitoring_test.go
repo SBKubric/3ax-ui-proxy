@@ -26,6 +26,17 @@ func newMonRouter(t *testing.T) *gin.Engine {
 		t.Fatalf("InitDB: %v", err)
 	}
 	t.Cleanup(func() { database.CloseDB() })
+	// monLastContact (and the STALE flag) live in process-wide caches in
+	// package service, shared by every MonitoringService regardless of which
+	// test's temp DB backs it. Without a reset here, -shuffle=on can hand
+	// this test a nonzero monLastContact left behind by an earlier test in
+	// the same binary, even though this test's own DB starts empty.
+	service.ResetMonContactForTest()
+	service.ResetMonStaleForTest()
+	t.Cleanup(func() {
+		service.ResetMonContactForTest()
+		service.ResetMonStaleForTest()
+	})
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	controller.NewMonitoringController(r.Group("/"))
