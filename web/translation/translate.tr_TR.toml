@@ -815,6 +815,9 @@
 "chain.errors.active_edge_in_use" = "Choose another edge with \"Make active\" first, then delete this one."
 "chain.errors.duplicate_port" = "Two services claim the same port, so the relayed port list cannot be built."
 "chain.errors.internal" = "The panel could not complete this request. The details are in the panel log."
+"chain.clearActive" = "Turn override off"
+"chain.clearActiveTitle" = "Turn the override off?"
+"chain.clearActiveNote" = "No edge stays active until you choose one again; the panel publishes the real server's address in the meantime."
 
 [pages.xray]
 "title" = "Xray Yapılandırmaları"

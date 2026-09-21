@@ -28,9 +28,10 @@ import (
 // service owns the invariants and the revision (§2.7, §3.4); the controller
 // owns nothing but the envelope and the wording of a refusal.
 type ChainController struct {
-	chainService service.ChainService
-	portsService service.ChainPortsService
-	health       ChainHealthProvider
+	chainService   service.ChainService
+	settingService service.SettingService
+	portsService   service.ChainPortsService
+	health         ChainHealthProvider
 }
 
 // ChainHopHealth is one hop's health badge (§7.4): the name the editor keys its
@@ -75,6 +76,7 @@ func (a *ChainController) initRouter(g *gin.RouterGroup) {
 	g.POST("/update/:id", a.update)
 	g.POST("/del/:id", a.del)
 	g.POST("/setActive/:id", a.setActive)
+	g.POST("/clearActive", a.clearActive)
 	g.POST("/reissueToken/:id", a.reissueToken)
 	g.GET("/hops/health", a.hopsHealth)
 	g.GET("/ports", a.ports)
@@ -268,6 +270,19 @@ func (a *ChainController) setActive(c *gin.Context) {
 		return
 	}
 	if err := a.chainService.SetActive(id); err != nil {
+		a.fail(c, err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.settings.chain.saved"), nil)
+}
+
+// POST clearActive — the panel's own "/proxy off": no edge stays active and
+// the panel falls back to publishing the real server's address. It goes
+// through SettingService.DisableProxyOverride, the exact call the bot's
+// "/proxy off" makes, so the editor's button and the bot command can never
+// disagree about what turning the override off means.
+func (a *ChainController) clearActive(c *gin.Context) {
+	if err := a.settingService.DisableProxyOverride(); err != nil {
 		a.fail(c, err)
 		return
 	}

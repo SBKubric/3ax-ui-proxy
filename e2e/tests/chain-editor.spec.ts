@@ -145,6 +145,21 @@ test.describe('chain editor', () => {
     expect(deleted.success).toBe(true);
   });
 
+  test('clearActive answers success on an empty registry', async ({ authedRequest }) => {
+    // No box in this harness ever really joins the chain, so there is no
+    // active edge to switch off here — this asserts the shape of the route
+    // the editor's "Turn override off" button calls: it is the same
+    // DisableProxyOverride path the bot's "/proxy off" already exercises
+    // (web/service/setting_chain_override_test.go), and it is not an error to
+    // call it with nothing active, which is the only state this harness can
+    // reach.
+    const cleared = await (await authedRequest.post('/panel/api/chain/clearActive')).json();
+    expect(cleared.success).toBe(true);
+
+    const list = await (await authedRequest.get('/panel/api/chain/list')).json();
+    expect(list.obj.activeEdge).toBe('');
+  });
+
   test('the registry is invisible without a session', async ({ request }) => {
     const list = await request.get('/panel/api/chain/list');
     expect(list.status()).toBe(404);

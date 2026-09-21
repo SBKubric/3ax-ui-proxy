@@ -69,6 +69,9 @@
                     :title="lastSeenText(hop)">[[ freshnessText(hop) ]]</span>
                 <a-tag v-if="hop.isActive" color="green"
                     :data-testid="'chain-hop-' + hop.name + '-active-marker'">{{ i18n "pages.settings.chain.active"}}</a-tag>
+                <a-button v-if="hop.isActive" size="small" :style="{ marginInlineStart: '8px' }"
+                    @click="confirmClearActive()"
+                    data-testid="chain-clear-active">{{ i18n "pages.settings.chain.clearActive"}}</a-button>
                 <a-button v-if="canMakeActive(hop)" type="primary" size="small"
                     :style="{ marginInlineStart: '8px' }" @click="confirmMakeActive(hop)"
                     :data-testid="'chain-hop-' + hop.name + '-make-active'">{{ i18n "pages.settings.chain.makeActive"}}</a-button>
@@ -225,6 +228,9 @@
         deleteActiveRefusedTitle: '{{ i18n "pages.settings.chain.deleteActiveRefusedTitle" }}',
         deleteActiveRefused: '{{ i18n "pages.settings.chain.deleteActiveRefused" }}',
         deletePowerOff: '{{ i18n "pages.settings.chain.deletePowerOff" }}',
+        deletePowerOffNow: '{{ i18n "pages.settings.chain.deletePowerOffNow" }}',
+        clearActiveTitle: '{{ i18n "pages.settings.chain.clearActiveTitle" }}',
+        clearActiveNote: '{{ i18n "pages.settings.chain.clearActiveNote" }}',
         reissueTitle: '{{ i18n "pages.settings.chain.reissueTitle" }}',
         reissueNote: '{{ i18n "pages.settings.chain.reissueNote" }}',
         // The freshness marker is the one string with values in it. The bundle
@@ -377,6 +383,19 @@
                 this.addModal.visible = false;
                 await this.load();
             },
+            // The panel's own "/proxy off": next to the active edge because it
+            // undoes exactly what "Make active" did, not a whole-chain action
+            // buried in a menu somewhere else.
+            confirmClearActive() {
+                this.confirm({
+                    title: this.text.clearActiveTitle,
+                    content: this.text.clearActiveNote,
+                    onOk: async () => {
+                        const msg = await ChainApi.clearActive();
+                        if (msg.success) await this.load();
+                    },
+                });
+            },
             confirmMakeActive(hop) {
                 this.confirm({
                     title: this.text.makeActiveTitle,
@@ -413,6 +432,10 @@
                             // has taken the new revision.
                             this.$message.warning(
                                 this.text.deletePowerOff.replace('%s', wait.hop).replace('%s', wait.revision));
+                        } else {
+                            // Nothing hung off the deleted hop, so there is no
+                            // outer neighbour to wait for at all.
+                            this.$message.info(this.text.deletePowerOffNow);
                         }
                         this.$delete(this.tokens, hop.name);
                         await this.load();

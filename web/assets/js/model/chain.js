@@ -45,6 +45,10 @@ const ChainApi = {
     setActive(id) {
         return HttpUtil.postJson(ChainApi._base + "setActive/" + encodeURIComponent(id), {});
     },
+    /** The panel's own "/proxy off": no edge stays active. */
+    clearActive() {
+        return HttpUtil.postJson(ChainApi._base + "clearActive", {});
+    },
     reissueToken(id) {
         return HttpUtil.postJson(ChainApi._base + "reissueToken/" + encodeURIComponent(id), {});
     },

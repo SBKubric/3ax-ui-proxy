@@ -95,6 +95,7 @@ func TestChainRoutesNeedASession(t *testing.T) {
 		{http.MethodPost, "/panel/api/chain/update/1"},
 		{http.MethodPost, "/panel/api/chain/del/1"},
 		{http.MethodPost, "/panel/api/chain/setActive/1"},
+		{http.MethodPost, "/panel/api/chain/clearActive"},
 		{http.MethodPost, "/panel/api/chain/reissueToken/1"},
 	} {
 		var w *httptest.ResponseRecorder
@@ -418,5 +419,48 @@ func TestChainInternalFailureSaysNothingAboutTheInsides(t *testing.T) {
 		if strings.Contains(strings.ToLower(env.Msg), strings.ToLower(leak)) {
 			t.Errorf("msg %q leaks %q from the panel's insides", env.Msg, leak)
 		}
+	}
+}
+
+// TestChainClearActiveDisablesTheOverride: the editor's "Turn override off"
+// button, and the panel's own "/proxy off" — clearActive goes through
+// SettingService.DisableProxyOverride, the exact call the bot's "/proxy off"
+// makes (tgbot.go), so the two can never disagree about what turning the
+// override off means. It disables both halves: the registry's active edge and
+// the legacy proxyOverrideEnable flag DisableProxyOverride also turns off.
+func TestChainClearActiveDisablesTheOverride(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+	added := chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
+	if err := (&service.ChainService{}).MarkJoined(added.Hop.Id, "hash", ""); err != nil {
+		t.Fatalf("MarkJoined: %v", err)
+	}
+	if env := monUIDecode(t, chainPost(r, "/panel/api/chain/setActive/"+strconv.Itoa(added.Hop.Id), cookie, "{}")); !env.Success {
+		t.Fatalf("setActive: %s", env.Msg)
+	}
+	if _, ok := (&service.ChainService{}).ActiveEdgeHost(); !ok {
+		t.Fatal("setup: the edge should be active before clearActive is asked to turn it off")
+	}
+
+	env := monUIDecode(t, chainPost(r, "/panel/api/chain/clearActive", cookie, "{}"))
+	if !env.Success {
+		t.Fatalf("clearActive: %s", env.Msg)
+	}
+	if _, ok := (&service.ChainService{}).ActiveEdgeHost(); ok {
+		t.Error("clearActive left an edge active; want no active edge, the panel publishing the real server")
+	}
+	state, err := (&service.ChainService{}).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ActiveEdge != "" {
+		t.Errorf("activeEdge = %q after clearActive, want none", state.ActiveEdge)
+	}
+
+	// Calling it again with nothing active is not an error: it is exactly
+	// what "/proxy off" already means on a panel with no override.
+	env = monUIDecode(t, chainPost(r, "/panel/api/chain/clearActive", cookie, "{}"))
+	if !env.Success {
+		t.Fatalf("clearActive with nothing active: %s", env.Msg)
 	}
 }
