@@ -14,9 +14,10 @@ const (
 	ChainRoleInner = chain.RoleInner
 	ChainRoleEdge  = chain.RoleEdge
 
-	ChainStatePending = chain.StatePending
-	ChainStateJoined  = chain.StateJoined
-	ChainStateLegacy  = chain.StateLegacy
+	ChainStatePending  = chain.StatePending
+	ChainStateJoined   = chain.StateJoined
+	ChainStateLegacy   = chain.StateLegacy
+	ChainStateDraining = chain.StateDraining
 )
 
 // ChainHop is one hop of the chain registry. Times are int64 milliseconds UTC,
@@ -37,8 +38,18 @@ type ChainHop struct {
 	SubPort   int    `json:"subPort" gorm:"not null;default:2096"`       // port of the wave and of this hop's subscriptions
 	SubScheme string `json:"subScheme" gorm:"size:8;not null;default:https"`
 
-	State    string `json:"state" gorm:"size:8;not null;index:idx_chain_hops_role,priority:2"` // pending|joined|legacy
+	State    string `json:"state" gorm:"size:8;not null;index:idx_chain_hops_role,priority:2"` // pending|joined|legacy|draining
 	IsActive bool   `json:"isActive" gorm:"not null;default:false"`
+
+	// A hop on its way out (§4.5). These three are filled only while State is
+	// draining and only for as long as it lasts: the row disappears with them
+	// when the last former neighbour has re-chained, or when the deadline
+	// passes. DrainOuter is a JSON array of names, ["edge-a","edge-b"]; it
+	// stays out of the API answer because the editor reads the same names from
+	// the registry's own draining card (ChainState.Draining).
+	DrainRevision int64  `json:"drainRevision"` // the revision the departure started in
+	DrainUntil    int64  `json:"drainUntil"`    // deadline, ms UTC: start + chainDrainMinutes
+	DrainOuter    string `json:"-" gorm:"size:512"`
 
 	// Secrets are stored hashed only: the clear join token is shown to the
 	// owner once, the clear hop secret lives on the box (§2.2).

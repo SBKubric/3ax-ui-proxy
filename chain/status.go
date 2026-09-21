@@ -21,6 +21,12 @@ type Status struct {
 	Relay   StatusRelay   `json:"relay"`
 	NextHop StatusNextHop `json:"nextHop"`
 
+	// Draining is set while the registry has this hop on its way out (§4.5):
+	// it keeps relaying and keeps answering its neighbours, but hands them its
+	// own next hop instead of itself, and its row disappears once they have
+	// all re-chained.
+	Draining bool `json:"draining"`
+
 	// ObservedHostMismatch reports that the host the registry holds for this
 	// hop is not the address its neighbour sees it come from (§4.4). It is a
 	// hint for the owner, never a refusal.

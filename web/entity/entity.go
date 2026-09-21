@@ -100,6 +100,7 @@ type AllSetting struct {
 	ChainPollSeconds    int    `json:"chainPollSeconds" form:"chainPollSeconds"`
 	ChainStaleMinutes   int    `json:"chainStaleMinutes" form:"chainStaleMinutes"`
 	ChainJoinTokenHours int    `json:"chainJoinTokenHours" form:"chainJoinTokenHours"`
+	ChainDrainMinutes   int    `json:"chainDrainMinutes" form:"chainDrainMinutes"`
 
 	// Monitoring preferences (docs/spec/monitoring-panel.md §2.2). The
 	// monitoring state keys (monProbeSubId, monProbeLastEnsured,

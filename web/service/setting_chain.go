@@ -17,7 +17,7 @@ import (
 // needed.
 //
 // Two groups, as with monitoring. Preferences — chainExtraPorts,
-// chainPollSeconds, chainStaleMinutes, chainJoinTokenHours — are fields of
+// chainPollSeconds, chainStaleMinutes, chainJoinTokenHours, chainDrainMinutes — are fields of
 // entity.AllSetting and travel through the settings form. State —
 // chainRevision — is written by ChainService inside the same transaction as
 // the registry write and is deliberately absent from AllSetting: a form save
@@ -31,6 +31,7 @@ const (
 	chainPollSecondsKey    = "chainPollSeconds"
 	chainStaleMinutesKey   = "chainStaleMinutes"
 	chainJoinTokenHoursKey = "chainJoinTokenHours"
+	chainDrainMinutesKey   = "chainDrainMinutes"
 )
 
 // ChainExtraPort is one relayed port the panel cannot work out for itself:
@@ -217,6 +218,18 @@ func (s *SettingService) GetChainJoinTokenHours() (int, error) {
 
 func (s *SettingService) SetChainJoinTokenHours(value int) error {
 	return s.setInt(chainJoinTokenHoursKey, value)
+}
+
+// GetChainDrainMinutes is how long a deleted hop keeps serving its former
+// outer neighbours before its row is dropped (§4.5). Ten minutes is twenty
+// polls at the default interval: room for two or three missed polls and one
+// reboot of the box.
+func (s *SettingService) GetChainDrainMinutes() (int, error) {
+	return s.getInt(chainDrainMinutesKey)
+}
+
+func (s *SettingService) SetChainDrainMinutes(value int) error {
+	return s.setInt(chainDrainMinutesKey, value)
 }
 
 // chainActiveEdgeHost is the registry half of GetProxyOverride: the host of
