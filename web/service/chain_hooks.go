@@ -32,7 +32,7 @@ import (
 // both sources and kept for the banner; the revision stays where it is, so
 // the fronts keep relaying the last list that made sense.
 //
-// Any other failure — an xray config that cannot be read, say — still bumps:
+// Any other failure — a query of the inbounds table that fails, say — still bumps:
 // it is a fault of the panel's own state, likely momentary, and holding the
 // revision back would hide every real port change behind it.
 //
