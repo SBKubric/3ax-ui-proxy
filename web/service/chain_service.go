@@ -90,6 +90,10 @@ type ChainState struct {
 	ActiveEdge  string           `json:"activeEdge"`
 	PollSeconds int              `json:"pollSeconds"`
 	Hops        []model.ChainHop `json:"hops"`
+
+	// Draining is one card per departing hop (§4.5): the editor needs the
+	// names it is still waiting for, which the hop row itself does not carry.
+	Draining []DrainingHop `json:"draining"`
 }
 
 // AddHopInput describes a hop the owner is creating. Position only means
@@ -114,23 +118,6 @@ type UpdateHopInput struct {
 	SubScheme *string
 }
 
-// DeleteResult carries the hint of §4.5: the registry write is instant, but
-// the owner must wait for the deleted hop's outer neighbour to confirm the new
-// revision before powering the box off, or the traffic still on it is cut.
-// SafeToPowerOffWhen is nil when nothing hangs off the deleted hop: the outer
-// neighbour that would otherwise have to confirm a revision does not exist, so
-// there is nothing to wait for and the box may be powered off at once.
-type DeleteResult struct {
-	SafeToPowerOffWhen *SafeToPowerOff `json:"safeToPowerOffWhen"`
-}
-
-// SafeToPowerOff names the hop to watch and the revision to wait for. Hop is
-// empty when nothing hangs off the deleted hop — then the box can go at once.
-type SafeToPowerOff struct {
-	Hop      string `json:"hop"`
-	Revision int64  `json:"revision"`
-}
-
 // List returns the registry with the current revision and poll interval.
 func (s *ChainService) List() (*ChainState, error) {
 	revision, err := s.settingService.GetChainRevision()
@@ -145,7 +132,11 @@ func (s *ChainService) List() (*ChainState, error) {
 	if err != nil {
 		return nil, err
 	}
-	state := &ChainState{Revision: revision, PollSeconds: poll, Hops: hops}
+	draining, err := drainingCards(database.GetDB(), hops)
+	if err != nil {
+		return nil, err
+	}
+	state := &ChainState{Revision: revision, PollSeconds: poll, Hops: hops, Draining: draining}
 	for _, hop := range hops {
 		if hop.IsActive {
 			state.ActiveEdge = hop.Name
@@ -258,6 +249,9 @@ func (s *ChainService) Update(id int, in UpdateHopInput) error {
 		if err != nil {
 			return err
 		}
+		if err := refuseIfDraining(hop); err != nil {
+			return err
+		}
 		changed := false
 		if in.Name != nil {
 			name, err := validName(*in.Name)
@@ -308,7 +302,17 @@ func (s *ChainService) Update(id int, in UpdateHopInput) error {
 	})
 }
 
-// Delete removes a hop and re-chains around it (§4.5).
+// Delete takes a hop out of the chain (§4.5). Which of the two deletes it
+// performs depends on whether anything still hangs off that hop:
+//
+//   - nothing does, or skipDrain was asked for: the row and the hop secret go
+//     at once. That is every edge, every brand-new pending hop, every legacy
+//     hop and the last inner — there is nobody left to serve.
+//   - something does: the row stays as draining. The neighbours are re-chained
+//     past it in this transaction, but the hop keeps its host, its secret and
+//     its own next hop, because it is the only channel that can carry this
+//     very revision to them (§4.5.2). SweepDraining drops the row once they
+//     have confirmed it, or once chainDrainMinutes have passed.
 //
 // The active edge is refused unless force is set, and force is only allowed
 // when no other joined edge exists — that is decommissioning the chain, not
@@ -316,12 +320,35 @@ func (s *ChainService) Update(id int, in UpdateHopInput) error {
 // automatic failover, which is out of scope; disabling it quietly would
 // publish the real server's address, which is the one thing the whole
 // construction hides (§2.6.4).
-func (s *ChainService) Delete(id int, force bool) (*DeleteResult, error) {
+func (s *ChainService) Delete(id int, force, skipDrain bool) (*DeleteResult, error) {
 	result := &DeleteResult{}
+	// The setting is read before the transaction opens: this SQLite runs on a
+	// single connection, and a settings read inside would wait on itself.
+	minutes := s.drainMinutes()
 	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
 		hop, err := loadHop(tx, id)
 		if err != nil {
 			return err
+		}
+		result.Hop = hop.Name
+
+		// A second del on a hop that is already draining changes nothing and
+		// moves no revision: it answers with the card the first one returned,
+		// because extending a departure would make the deadline meaningless
+		// (§4.5.1). skipDrain is the exception the runbook uses — it ends the
+		// departure now, which is what an owner who needs the name back asks
+		// for.
+		if hop.State == chain.StateDraining {
+			if !skipDrain {
+				result.State = DeleteStateDraining
+				result.DrainRevision = hop.DrainRevision
+				result.DrainUntil = hop.DrainUntil
+				result.SafeToPowerOffWhen = SafeToPowerOff{
+					Hops:     drainOuterNames(hop.DrainOuter),
+					Revision: hop.DrainRevision,
+				}
+				return nil
+			}
 		}
 		if hop.IsActive {
 			var others int64
@@ -343,13 +370,23 @@ func (s *ChainService) Delete(id int, force bool) (*DeleteResult, error) {
 			}
 		}
 
-		// Whoever hung off this hop is the one that has to see the new
-		// revision before the box may be powered off. Nothing hangs off an
-		// edge, or off an inner nothing points at, so outer is "" there and
-		// SafeToPowerOffWhen stays nil: there is nothing to wait for.
-		outer, err := outerNeighbour(tx, hop.Id)
+		// Everything that still hangs off this hop and still has a box of its
+		// own is what the departure exists for.
+		outer, err := liveOuterNeighbours(tx, hop.Id)
 		if err != nil {
 			return err
+		}
+
+		if len(outer) > 0 && !skipDrain {
+			revision, until, names, err := startDrainingTx(tx, hop, outer, minutes)
+			if err != nil {
+				return err
+			}
+			result.State = DeleteStateDraining
+			result.DrainRevision = revision
+			result.DrainUntil = until
+			result.SafeToPowerOffWhen = SafeToPowerOff{Hops: names, Revision: revision}
+			return nil
 		}
 
 		if err := tx.Delete(&model.ChainHop{}, hop.Id).Error; err != nil {
@@ -365,14 +402,14 @@ func (s *ChainService) Delete(id int, force bool) (*DeleteResult, error) {
 		if err := bumpRevisionTx(tx); err != nil {
 			return err
 		}
-		if outer == "" {
-			return nil
-		}
 		revision, err := revisionTx(tx)
 		if err != nil {
 			return err
 		}
-		result.SafeToPowerOffWhen = &SafeToPowerOff{Hop: outer, Revision: revision}
+		// The secret died with the row, so there is nobody left to wait for:
+		// the answer says deleted, with no deadline and an empty list (§4.5.1).
+		result.State = DeleteStateDeleted
+		result.SafeToPowerOffWhen = SafeToPowerOff{Hops: []string{}, Revision: revision}
 		return nil
 	})
 	if err != nil {
@@ -388,6 +425,9 @@ func (s *ChainService) SetActive(id int) error {
 	return database.GetDB().Transaction(func(tx *gorm.DB) error {
 		hop, err := loadHop(tx, id)
 		if err != nil {
+			return err
+		}
+		if err := refuseIfDraining(hop); err != nil {
 			return err
 		}
 		if hop.Role != chain.RoleEdge {
@@ -450,6 +490,9 @@ func (s *ChainService) ReissueToken(id int) (string, int64, error) {
 	err = database.GetDB().Transaction(func(tx *gorm.DB) error {
 		hop, err := loadHop(tx, id)
 		if err != nil {
+			return err
+		}
+		if err := refuseIfDraining(hop); err != nil {
 			return err
 		}
 		hop.JoinTokenHash = chain.HashSecret(token)
@@ -627,12 +670,21 @@ func reconcileTopology(tx *gorm.DB) error {
 	}
 	var previousId *int
 	var lastEnteredId *int
+	position := 0
 	for index := range inners {
 		hop := &inners[index]
-		changed := false
-		if hop.Position != index {
-			hop.Position, changed = index, true
+		// A draining hop is not in the live path: it is nobody's next hop, it
+		// does not shift anyone's position and it does not count as the last
+		// inner an edge hangs off. It keeps its own position, next_hop_id and
+		// secret untouched until its row goes (§2.7 invariant 7).
+		if hop.State == chain.StateDraining {
+			continue
 		}
+		changed := false
+		if hop.Position != position {
+			hop.Position, changed = position, true
+		}
+		position++
 		if !sameId(hop.NextHopId, previousId) {
 			hop.NextHopId, changed = copyId(previousId), true
 		}
@@ -648,7 +700,8 @@ func reconcileTopology(tx *gorm.DB) error {
 	}
 
 	var edges []model.ChainHop
-	if err := tx.Where("role = ?", chain.RoleEdge).Order("id").Find(&edges).Error; err != nil {
+	if err := tx.Where("role = ? AND state <> ?", chain.RoleEdge, chain.StateDraining).
+		Order("id").Find(&edges).Error; err != nil {
 		return err
 	}
 	for index := range edges {
@@ -708,26 +761,15 @@ func orderedHops(tx *gorm.DB) ([]model.ChainHop, error) {
 	if tx == nil {
 		return hops, nil
 	}
+	// A draining inner keeps the position it had while the live inner outward
+	// of it compacts into that same number, so the tie is broken in favour of
+	// the departing hop: it still sits inward of the neighbours it serves, and
+	// the truncation of §3.2 depends on that order.
 	err := tx.Model(&model.ChainHop{}).
-		Order("CASE role WHEN '" + chain.RoleInner + "' THEN 0 ELSE 1 END, position, id").
+		Order("CASE role WHEN '" + chain.RoleInner + "' THEN 0 ELSE 1 END, position, " +
+			"CASE state WHEN '" + chain.StateDraining + "' THEN 0 ELSE 1 END, id").
 		Find(&hops).Error
 	return hops, err
-}
-
-// outerNeighbour names one hop that hangs off id, preferring an inner front:
-// when the last inner goes, every edge on it is re-chained, and the inner path
-// is the part the owner watches.
-func outerNeighbour(tx *gorm.DB, id int) (string, error) {
-	var neighbours []model.ChainHop
-	if err := tx.Where("next_hop_id = ?", id).
-		Order("CASE role WHEN '" + chain.RoleInner + "' THEN 0 ELSE 1 END, position, id").
-		Find(&neighbours).Error; err != nil {
-		return "", err
-	}
-	if len(neighbours) == 0 {
-		return "", nil
-	}
-	return neighbours[0].Name, nil
 }
 
 func nameIsFree(tx *gorm.DB, name string, exceptId int) error {

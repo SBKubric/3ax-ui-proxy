@@ -105,6 +105,7 @@ var defaultValueMap = map[string]string{
 	"chainPollSeconds":    "30",
 	"chainStaleMinutes":   "60",
 	"chainJoinTokenHours": "24",
+	"chainDrainMinutes":   "10",
 
 	// Monitoring (docs/spec/monitoring-panel.md §2.2). The first seven are
 	// preferences the settings form edits; the last four are state that

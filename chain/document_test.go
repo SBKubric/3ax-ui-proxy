@@ -104,7 +104,7 @@ func TestStatusFieldNames(t *testing.T) {
  "lastPoll":1758379990000,"lastOk":1758379990000,"stale":false,
  "relay":{"running":true,"ports":[443,8443],"restartedAt":1758300000000},
  "nextHop":{"host":"10.0.0.7","subPort":2096,"reachable":true},
- "observedHostMismatch":false}`
+ "draining":false,"observedHostMismatch":false}`
 
 	var st Status
 	if err := json.Unmarshal([]byte(example), &st); err != nil {

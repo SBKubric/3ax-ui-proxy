@@ -21,11 +21,14 @@ const (
 
 // Hop states. pending means the owner created the registry entry and handed
 // out a join token, but no box has entered yet; joined means it has; legacy is
-// the single hop imported from the old proxyOverrideHost setting (§2.3).
+// the single hop imported from the old proxyOverrideHost setting (§2.3);
+// draining means the owner deleted it and it is serving its former outer
+// neighbours until they have re-chained past it (§4.5).
 const (
-	StatePending = "pending"
-	StateJoined  = "joined"
-	StateLegacy  = "legacy"
+	StatePending  = "pending"
+	StateJoined   = "joined"
+	StateLegacy   = "legacy"
+	StateDraining = "draining"
 )
 
 // Networks a relayed port carries. "tcp,udp" is one value, not two: the relay
@@ -66,11 +69,21 @@ type Document struct {
 }
 
 // Self is how the registry names the hop reading this document.
+//
+// State is the one field the draining design added to the wire (§4.5.3): a hop
+// that reads draining here hands its own NextHop to its outer neighbours
+// instead of itself, so they re-chain past it while it is still serving them.
+// An absent State reads as joined — a box older than the panel simply does not
+// know how to drain.
 type Self struct {
-	Name string `json:"name"`
-	Role string `json:"role"`
-	Host string `json:"host"`
+	Name  string `json:"name"`
+	Role  string `json:"role"`
+	Host  string `json:"host"`
+	State string `json:"state,omitempty"`
 }
+
+// Draining reports whether this hop is on its way out of the chain (§4.5.3).
+func (s Self) Draining() bool { return s.State == StateDraining }
 
 // NextHop is the one address a hop knows towards the real server, plus the
 // subscription paths it must proxy. The paths travel in the document so

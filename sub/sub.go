@@ -397,6 +397,10 @@ func (s *Server) Start() (err error) {
 		s.httpServer.Serve(s.listener)
 	}()
 
+	// A hop on its way out has a deadline, and a chain where nobody polls any
+	// more would never reach it without a clock of its own (§4.5.4).
+	startChainDrainSweep(s.ctx)
+
 	return nil
 }
 

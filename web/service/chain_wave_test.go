@@ -201,3 +201,30 @@ func TestChainWaveClampsARevisionToTheRegistrys(t *testing.T) {
 		t.Fatalf("the acknowledged revision %d was not clamped to %d", edge.LastRevision, state.Revision)
 	}
 }
+
+// §3.3, §4.5.3 — a first-tier hop on its way out still authenticates. It has
+// to receive at least one more document — the one in which its own self.state
+// became draining — or it would go on naming itself to its neighbours, which
+// is exactly the freeze the stand (#86) ran into.
+func TestAuthenticateHopAdmitsADrainingFirstTierHop(t *testing.T) {
+	registry := newChainService(t)
+	wave := &ChainWaveService{}
+	hop, secret := joinedWithSecret(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
+	joinedWithSecret(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+
+	if _, err := registry.Delete(hop.Id, false, false); err != nil {
+		t.Fatalf("Delete(inner-1): %v", err)
+	}
+	draining := hopByName(t, registry, "inner-1")
+	if draining.State != chain.StateDraining {
+		t.Fatalf("inner-1 is %q, want draining", draining.State)
+	}
+
+	authenticated, ok := wave.AuthenticateHop(secret)
+	if !ok {
+		t.Fatal("a draining first-tier hop must still be let in")
+	}
+	if authenticated.Name != "inner-1" {
+		t.Errorf("authenticated %q, want inner-1", authenticated.Name)
+	}
+}

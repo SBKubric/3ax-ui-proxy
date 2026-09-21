@@ -97,6 +97,7 @@ class AllSetting {
         this.chainPollSeconds = 30;
         this.chainStaleMinutes = 60;
         this.chainJoinTokenHours = 24;
+        this.chainDrainMinutes = 10;
 
         if (data == null) {
             return;

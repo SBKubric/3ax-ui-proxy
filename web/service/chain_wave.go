@@ -8,6 +8,7 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
+	"github.com/coinman-dev/3ax-ui/v2/logger"
 
 	"gorm.io/gorm"
 )
@@ -40,9 +41,13 @@ func (s *ChainWaveService) AuthenticateHop(bearer string) (*model.ChainHop, bool
 	if db == nil {
 		return nil, false
 	}
+	// draining is in the list on purpose (§3.3, §4.5.3): a departing first-tier
+	// hop has to receive at least one more document — the one in which its own
+	// self.state became draining — or it would go on naming itself to its
+	// neighbours and the stand of #86 would repeat.
 	var candidates []model.ChainHop
 	err := db.Where("next_hop_id IS NULL AND secret_hash <> '' AND state IN ?",
-		[]string{chain.StateJoined, chain.StateLegacy}).Find(&candidates).Error
+		[]string{chain.StateJoined, chain.StateLegacy, chain.StateDraining}).Find(&candidates).Error
 	if err != nil {
 		return nil, false
 	}
@@ -98,7 +103,7 @@ func (s *ChainWaveService) RecordSeen(hopName string, seenRevision int64, outer 
 		}
 		return value
 	}
-	return db.Transaction(func(tx *gorm.DB) error {
+	err = db.Transaction(func(tx *gorm.DB) error {
 		if err := recordSeenTx(tx, hopName, clamp(seenRevision, revision), now); err != nil {
 			return err
 		}
@@ -113,6 +118,16 @@ func (s *ChainWaveService) RecordSeen(hopName string, seenRevision int64, outer 
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// Confirmations are exactly what a departure waits for, so the sweep runs
+	// where they land (§4.5.4). A sweep that fails is logged and not returned:
+	// the poll that carried the acknowledgement has done its job either way.
+	if err := (&ChainService{}).SweepDraining(); err != nil {
+		logger.Warning("chain: sweeping draining hops after a poll:", err)
+	}
+	return nil
 }
 
 // outwardOf names the hops a caller may speak for: exactly the ones in its own
@@ -129,7 +144,7 @@ func outwardOf(db *gorm.DB, hopName string) (map[string]struct{}, error) {
 	}
 	entered := make([]model.ChainHop, 0, len(hops))
 	for _, hop := range hops {
-		if hop.State != chain.StatePending {
+		if chainHopVisible(hop) {
 			entered = append(entered, hop)
 		}
 	}

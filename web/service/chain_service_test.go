@@ -269,19 +269,19 @@ func TestChainScenarioDeleteActiveEdge(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := s.Delete(edgeA.Id, false)
+	_, err := s.Delete(edgeA.Id, false, false)
 	wantCode(t, err, CodeActiveEdgeInUse)
 
 	// force is refused too while another joined edge exists: the owner is
 	// meant to switch over first, and an automatic hand-over would be a
 	// failover, which is out of scope.
-	_, err = s.Delete(edgeA.Id, true)
+	_, err = s.Delete(edgeA.Id, true, false)
 	wantCode(t, err, CodeActiveEdgeInUse)
 
-	if _, err := s.Delete(edgeB.Id, false); err != nil {
+	if _, err := s.Delete(edgeB.Id, false, false); err != nil {
 		t.Fatalf("deleting a standby edge: %v", err)
 	}
-	if _, err := s.Delete(edgeA.Id, true); err != nil {
+	if _, err := s.Delete(edgeA.Id, true, false); err != nil {
 		t.Fatalf("force-deleting the last edge: %v", err)
 	}
 	if _, ok := s.ActiveEdgeHost(); ok {
@@ -293,9 +293,10 @@ func TestChainScenarioDeleteActiveEdge(t *testing.T) {
 	}
 }
 
-// §4.5 — deleting a hop re-chains its outer neighbour onto its own next hop,
-// compacts the positions, and hands back the hop and revision the owner must
-// wait for before powering the box off.
+// §4.5 — deleting a hop re-chains its outer neighbour onto its own next hop
+// and compacts the positions. The deletes here carry skipDrain, which is the
+// immediate path of §4.5.1 step 3: the re-chaining is the same either way, and
+// the departure that keeps the row alive has its own tests (chain_drain_test).
 func TestChainDeleteRechainsAndCompacts(t *testing.T) {
 	s := newChainService(t)
 
@@ -305,15 +306,15 @@ func TestChainDeleteRechainsAndCompacts(t *testing.T) {
 	addJoined(t, s, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
 
 	before := revisionOf(t, s)
-	result, err := s.Delete(b.Id, false)
+	result, err := s.Delete(b.Id, false, true)
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if revisionOf(t, s) != before+1 {
 		t.Error("deleting a hop changes documents, so it must move the revision")
 	}
-	if result.SafeToPowerOffWhen.Hop != "c" || result.SafeToPowerOffWhen.Revision != before+1 {
-		t.Errorf("safeToPowerOffWhen = %+v, want {c %d}", result.SafeToPowerOffWhen, before+1)
+	if result.State != DeleteStateDeleted || result.SafeToPowerOffWhen.Revision != before+1 {
+		t.Errorf("delete = %+v, want a deleted row at revision %d", result, before+1)
 	}
 
 	if got := nextHopName(t, s, "c"); got != "a" {
@@ -328,7 +329,7 @@ func TestChainDeleteRechainsAndCompacts(t *testing.T) {
 
 	// Deleting the last inner re-chains every edge hanging off it.
 	c := hopByName(t, s, "c")
-	if _, err := s.Delete(c.Id, false); err != nil {
+	if _, err := s.Delete(c.Id, false, true); err != nil {
 		t.Fatalf("Delete c: %v", err)
 	}
 	if got := nextHopName(t, s, "edge-a"); got != "a" {
@@ -336,7 +337,7 @@ func TestChainDeleteRechainsAndCompacts(t *testing.T) {
 	}
 
 	a := hopByName(t, s, "a")
-	if _, err := s.Delete(a.Id, false); err != nil {
+	if _, err := s.Delete(a.Id, false, true); err != nil {
 		t.Fatalf("Delete a: %v", err)
 	}
 	if got := nextHopName(t, s, "edge-a"); got != "" {
@@ -385,7 +386,7 @@ func TestChainInvariants(t *testing.T) {
 	})
 	t.Run("unknown hop", func(t *testing.T) {
 		wantCode(t, s.SetActive(4242), CodeUnknownHop)
-		_, err := s.Delete(4242, false)
+		_, err := s.Delete(4242, false, false)
 		wantCode(t, err, CodeUnknownHop)
 		wantCode(t, s.Update(4242, UpdateHopInput{}), CodeUnknownHop)
 		_, _, err = s.ReissueToken(4242)
@@ -486,7 +487,7 @@ func TestChainRevisionBumpMatrix(t *testing.T) {
 		}, 0},
 		{"delete", func(t *testing.T, s *ChainService) {
 			hop := hopByName(t, s, "inner-1")
-			if _, err := s.Delete(hop.Id, false); err != nil {
+			if _, err := s.Delete(hop.Id, false, false); err != nil {
 				t.Fatal(err)
 			}
 		}, 1},
