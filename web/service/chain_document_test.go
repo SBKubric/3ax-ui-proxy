@@ -1,7 +1,6 @@
 package service
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -9,10 +8,6 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 )
-
-// oneInbound is the panel's xray config for these tests: the port composition
-// is not what they are about, but a document cannot be built without one.
-const oneInbound = `{"inbounds":[{"listen":"0.0.0.0","port":443,"protocol":"vless","tag":"inbound-443"}]}`
 
 func newChainDocuments(t *testing.T) (*ChainDocumentService, *ChainService) {
 	t.Helper()
@@ -22,11 +17,15 @@ func newChainDocuments(t *testing.T) (*ChainDocumentService, *ChainService) {
 	}
 	t.Cleanup(func() { database.CloseDB() })
 
-	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(oneInbound), 0o600); err != nil {
-		t.Fatalf("write xray config: %v", err)
+	// One ordinary inbound: the port composition is not what these tests are
+	// about, but a document with no port at all says little.
+	if err := database.GetDB().Create(&model.Inbound{
+		UserId: 1, Enable: true, Listen: "0.0.0.0", Port: 443,
+		Protocol: model.VLESS, Tag: "inbound-443", Remark: "vless", Settings: `{"clients":[]}`,
+	}).Error; err != nil {
+		t.Fatalf("create inbound: %v", err)
 	}
-	documents := &ChainDocumentService{portsService: ChainPortsService{xrayConfigPath: path}}
+	documents := &ChainDocumentService{}
 	if err := documents.settingService.SetChainPanelHost("198.51.100.1"); err != nil {
 		t.Fatalf("SetChainPanelHost: %v", err)
 	}

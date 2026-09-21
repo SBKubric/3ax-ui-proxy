@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"sync/atomic"
@@ -12,7 +11,6 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/chainports"
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
-	"github.com/coinman-dev/3ax-ui/v2/xray"
 
 	"gorm.io/gorm"
 )
@@ -39,10 +37,6 @@ type ChainPortsService struct {
 	// single connection: a query of our own there would wait for the
 	// connection that transaction is holding. Nil means the global handle.
 	db *gorm.DB
-
-	// xrayConfigPath overrides the running panel's config path. Only tests
-	// set it; the panel has exactly one config and it is the one xray runs.
-	xrayConfigPath string
 }
 
 // lastChainPortsProblem is the last composition refusal, kept for the editor's
@@ -59,9 +53,9 @@ func (s *ChainPortsService) LastProblem() *ChainError {
 }
 
 // recordPortsProblem remembers a refusal the banner can explain and forgets it
-// as soon as a build succeeds. An error that is not a ChainError — an
-// unreadable xray config, say — is a fault of the panel's own state rather
-// than of the port composition, so it clears the banner instead of filling it
+// as soon as a build succeeds. An error that is not a ChainError — a failed
+// query of the inbounds table, say — is a fault of the panel's own state
+// rather than of the port composition, so it clears the banner instead of filling it
 // with something the operator cannot act on in the chain editor.
 func recordPortsProblem(err error) {
 	var chainErr *ChainError
@@ -78,13 +72,6 @@ func (s *ChainPortsService) handle() *gorm.DB {
 		return s.db
 	}
 	return database.GetDB()
-}
-
-func (s *ChainPortsService) configPath() string {
-	if s.xrayConfigPath != "" {
-		return s.xrayConfigPath
-	}
-	return xray.GetConfigPath()
 }
 
 // Ports returns the relayed ports, sorted by port number so two builds of the
@@ -158,75 +145,70 @@ func (s *ChainPortsService) compose() ([]chain.Port, error) {
 	return ports, nil
 }
 
-// xrayPorts reads the config xray is running and keeps the inbounds a client
-// can actually reach, then puts the public port back where the nginx front end
-// took one away.
-func (s *ChainPortsService) xrayPorts() ([]chain.Port, error) {
-	raw, err := os.ReadFile(s.configPath())
-	if err != nil {
-		return nil, fmt.Errorf("chain ports: read the xray config %q: %w", s.configPath(), err)
-	}
-	ports, err := chainports.Build(raw)
-	if err != nil {
-		return nil, fmt.Errorf("chain ports: %w", err)
-	}
-	return s.publicPorts(ports)
-}
+// xrayServedProtocols are the inbound protocols xray never sees:
+// AmneziaWG/WireGuard are host listeners of their own and MTProto is served by
+// an mtg sidecar. XrayService.GetXrayConfig leaves exactly these three out of
+// the config it generates, and the ports of the ones that do listen are added
+// to the document by tunnelPorts and mtprotoPorts instead.
+var notXrayProtocols = []model.Protocol{model.AmneziaWG, model.NativeWG, model.MTProto}
 
-// publicPorts applies the nginx front end (web/service/inbound.go): an inbound
-// it moved listens on the loopback under a private port, and the port clients
-// — and therefore the fronts — must reach is PublicPort.
+// xrayPorts lists the ports of the inbounds xray serves, straight from the
+// panel's own table.
 //
-// The moved inbounds are invisible to chainports, which skips loopback binds,
-// so they are added here rather than substituted. Several inbounds share the
-// one public port behind nginx, so the result is deduplicated: 443 is relayed
-// once, whatever is multiplexed behind it.
-func (s *ChainPortsService) publicPorts(ports []chain.Port) ([]chain.Port, error) {
+// The table, not the generated bin/config.json: the panel rewrites that file
+// only when it restarts xray, which happens long after the write that changed
+// the ports has bumped the chain's revision. A front asking for the document
+// in between would cache the old list under the new revision and nothing would
+// ever bump it again (#96). The table is already right when the hook runs —
+// the hook shares the write's transaction — so the list is right at the moment
+// it is announced.
+//
+// Which rows land here mirrors XrayService.GetXrayConfig exactly: enabled
+// inbounds of a protocol xray serves. The api inbound lives in the config
+// template rather than in the table and never appears at all; chainports skips
+// it by tag regardless.
+func (s *ChainPortsService) xrayPorts() ([]chain.Port, error) {
 	db := s.handle()
 	if db == nil {
-		return ports, nil
+		return nil, nil
 	}
 	var inbounds []model.Inbound
 	err := db.Model(&model.Inbound{}).
-		Where("enable = ? AND public_port > 0 AND protocol <> ?", true, model.MTProto).
+		Where("enable = ? AND protocol NOT IN ?", true, notXrayProtocols).
 		Order("id").Find(&inbounds).Error
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("chain ports: read the inbounds: %w", err)
 	}
 
-	public := make(map[string]int, len(inbounds))
-	for _, inbound := range inbounds {
-		public[inbound.Tag] = inbound.PublicPort
+	served := make([]chainports.Inbound, 0, len(inbounds))
+	for index := range inbounds {
+		served = append(served, relayedInbound(&inbounds[index]))
 	}
-	known := make(map[string]bool, len(ports))
-	for index := range ports {
-		known[ports[index].Tag] = true
-		if port, moved := public[ports[index].Tag]; moved {
-			ports[index].Port = port
-		}
-	}
-	for _, inbound := range inbounds {
-		if known[inbound.Tag] {
-			continue
-		}
-		ports = append(ports, chain.Port{
-			Port:    inbound.PublicPort,
-			Network: chain.NetworkTCPUDP,
-			Tag:     inbound.Tag,
-			Source:  chain.SourceXray,
-		})
-	}
+	return chainports.Ports(served), nil
+}
 
-	deduped := make([]chain.Port, 0, len(ports))
-	seen := make(map[int]bool, len(ports))
-	for _, port := range ports {
-		if seen[port.Port] {
-			continue
-		}
-		seen[port.Port] = true
-		deduped = append(deduped, port)
+// relayedInbound states one stored inbound the way the skip rules see it, with
+// the nginx front end already applied: an inbound it moved listens on the
+// loopback under a private port, and the port clients — and therefore the
+// fronts — must reach is PublicPort, on whatever address nginx answers. Left
+// as stored, such an inbound would be dropped as a loopback bind and its
+// public port would never be relayed.
+//
+// Several inbounds can share the one public port behind nginx; chainports
+// lists a port once, so 443 is relayed once whatever is multiplexed there.
+func relayedInbound(inbound *model.Inbound) chainports.Inbound {
+	listen := inbound.Listen
+	if inbound.PublicPort > 0 {
+		listen = ""
 	}
-	return deduped, nil
+	return chainports.Inbound{
+		Listen:         listen,
+		Port:           inbound.LinkPort(),
+		Protocol:       string(inbound.Protocol),
+		Tag:            inbound.Tag,
+		Settings:       inbound.Settings,
+		StreamSettings: inbound.StreamSettings,
+	}
 }
 
 // tunnelPorts lists the UDP listeners of the enabled AmneziaWG / WireGuard

@@ -157,16 +157,15 @@ func TestBuildRelayConfigRefusesADuplicatePort(t *testing.T) {
 // relays, with no translation in between — the chain document is the only
 // carrier.
 func TestPortsComputedByThePanelReachTheRelay(t *testing.T) {
-	raw := `{"inbounds":[
-	  {"listen":"127.0.0.1","port":62789,"protocol":"tunnel","tag":"api"},
-	  {"listen":"0.0.0.0","port":443,"protocol":"vless","tag":"inbound-443","settings":{"clients":[{"id":"x"}]},
-	   "streamSettings":{"security":"reality","realitySettings":{"privateKey":"SECRET"}}},
-	  {"listen":"::","port":12345,"protocol":"dokodemo-door","tag":"awg-tproxy-in",
-	   "settings":{"followRedirect":true},"streamSettings":{"sockopt":{"tproxy":"tproxy"}}}]}`
-	computed, err := chainports.Build([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
+	computed := chainports.Ports([]chainports.Inbound{
+		{Listen: "127.0.0.1", Port: 62789, Protocol: "tunnel", Tag: "api"},
+		{Listen: "0.0.0.0", Port: 443, Protocol: "vless", Tag: "inbound-443",
+			Settings:       `{"clients":[{"id":"x"}]}`,
+			StreamSettings: `{"security":"reality","realitySettings":{"privateKey":"SECRET"}}`},
+		{Listen: "::", Port: 12345, Protocol: "dokodemo-door", Tag: "awg-tproxy-in",
+			Settings:       `{"followRedirect":true}`,
+			StreamSettings: `{"sockopt":{"tproxy":"tproxy"}}`},
+	})
 	// What the panel adds outside the xray config travels in the same list.
 	computed = append(computed, chain.Port{Port: 51820, Network: chain.NetworkUDP, Tag: "awg", Source: chain.SourceAwg})
 
