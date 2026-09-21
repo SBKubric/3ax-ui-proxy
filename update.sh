@@ -31,12 +31,14 @@ is_local_source_install() {
 }
 
 # Branch to fetch auxiliary files (x-ui.sh, service files) from.
-# --beta / --pre → dev branch; otherwise → main
-if [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
-    REPO_BRANCH="dev"
-else
-    REPO_BRANCH="main"
-fi
+#
+# Always `main`. `--beta`/`--pre` choose which *release* to install, not which
+# branch the helper files come from: this fork has no `dev` branch, so the old
+# mapping sent every --beta run to a 404 — and the wrapper fetch that 404'd sat
+# below the point where the service is stopped and its unit removed, which is
+# how a --beta update left a front on the stand with no service at all.
+# XUI_REPO_BRANCH overrides it for testing from a branch.
+REPO_BRANCH="${XUI_REPO_BRANCH:-main}"
 
 # GitHub repo (owner/name) to fetch the release binary, wrapper and service
 # files from. Override with XUI_REPO=owner/name to update from a fork.
@@ -61,6 +63,22 @@ _command_exists() {
 _fail() {
     local msg=${1}
     echo -e "${red}${msg}${plain}"
+    exit 2
+}
+
+# _fail_after_stop <msg> — a failure once the service has already been stopped
+# and its unit removed.
+#
+# Plain _fail is safe only while nothing has been touched. Past the stop it
+# leaves the box with no service at all: no unit, disabled, nothing for
+# systemctl or the next update to restart. So put the unit back first and then
+# report — a unit pointing at a half-installed folder is still recoverable,
+# a box with no unit needs someone to ssh in.
+_fail_after_stop() {
+    local msg=${1}
+    echo -e "${red}${msg}${plain}"
+    echo -e "${yellow}Reinstalling the service unit so this box keeps one...${plain}"
+    update_x-ui_install_service
     exit 2
 }
 
@@ -799,9 +817,12 @@ config_debug_mode_after_update() {
 
 config_after_update() {
     if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
-        echo -e "${green}Proxy-front mode — keeping /etc/x-ui/proxy.json unchanged.${plain}"
-        if grep -q '"xrayConfigPath"' /etc/x-ui/proxy.json 2>/dev/null; then
-            echo -e "${red}/etc/x-ui/proxy.json still uses \"xrayConfigPath\": this release reads a relay manifest instead (key \"relayManifestPath\", file /etc/x-ui/relay-manifest.json) and refuses the panel's raw config.json. Re-run the installer in proxy mode, or edit proxy.json and paste a manifest from the real panel (x-ui relay-manifest) — the service will not start until then.${plain}"
+        echo -e "${green}Proxy-front mode — keeping /etc/x-ui/proxy.json, /etc/x-ui/chain/ and the certificate unchanged.${plain}"
+        # Legacy configs never reach this point: proxy_config_gate stops the
+        # update before the binary is replaced (§5.7). What is left to say is
+        # the one thing a v2 box may still be missing.
+        if [[ "${proxy_not_joined:-0}" == "1" ]]; then
+            echo -e "${yellow}This box has not joined the chain yet — the join page is at: x-ui chain join-url${plain}"
         fi
         return
     fi
@@ -877,11 +898,18 @@ config_after_update() {
     else
         echo -e "${green}SSL certificate is already configured${plain}"
         # Show access URL with existing certificate. IP certificates are stored
-        # in /root/cert/ip, so the directory name is the literal "ip" — show the
-        # real detected server IP instead of printing "https://ip:...".
+        # in /root/cert/ip, so the directory name is the literal "ip"; a
+        # self-signed certificate (install.sh's generate_self_signed_cert)
+        # lives in /root/cert/self-signed regardless of which host it was
+        # actually issued for. Both directory names are placeholders, not
+        # hosts — printing them verbatim gave a live box's footer
+        # "Access URL: https://self-signed:PORT/...". install.sh's own
+        # footer never has this problem because it keeps SSL_HOST from the
+        # box's resolved address instead of round-tripping it through the
+        # cert path; do the same here.
         local cert_domain=$(basename "$(dirname "$existing_cert")")
         local access_host="$cert_domain"
-        if [[ "$cert_domain" == "ip" ]]; then
+        if [[ "$cert_domain" == "ip" || "$cert_domain" == "self-signed" ]]; then
             access_host="${server_ip:-$cert_domain}"
         fi
         echo ""
@@ -1504,27 +1532,44 @@ update_x-ui() {
     echo -e "${green}Downloading new x-ui version...${plain}"
 
     if [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
-        tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/${XUI_REPO}/releases" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
+        tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
         if [[ ! -n "$tag_version" ]]; then
-            echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-            tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
+            echo -e "${yellow}Retrying over dual-stack...${plain}"
+            tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
         fi
         echo -e "Got x-ui latest pre-release version: ${tag_version}, beginning the installation..."
+    elif [[ -n "$1" ]]; then
+        # An explicit tag, positional exactly as install.sh takes one — e.g.
+        # forwarded by check_existing_install() when it hands a non-TTY caller
+        # over to us rather than silently swapping in the latest release. Same
+        # floor as install.sh's tagged install: this fork's own releases start
+        # at v1.0.0, and the 2.3.5 floor inherited from upstream 3x-ui belongs to
+        # its numbering, not ours.
+        tag_version="$1"
+        tag_version_numeric=${tag_version#v}
+        local min_version="1.0.0"
+        if [[ "$(printf '%s\n' "$min_version" "$tag_version_numeric" | sort -V | head -n1)" != "$min_version" ]]; then
+            _fail "ERROR: Please use a newer version (at least v${min_version}). Exiting update."
+        fi
+        echo -e "Updating to the requested version: ${tag_version}..."
     else
-        tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$tag_version" ]]; then
-            echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-            tag_version=$(${curl_bin} -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            echo -e "${yellow}Retrying over dual-stack...${plain}"
+            tag_version=$(${curl_bin} -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         fi
         echo -e "Got x-ui latest version: ${tag_version}, beginning the installation..."
     fi
     if [[ ! -n "$tag_version" ]]; then
         _fail "ERROR: Failed to fetch x-ui version, it may be due to GitHub API restrictions, please try it later"
     fi
-    ${curl_bin} -fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
+    # IPv4 first, dual-stack second. On a box with no global IPv6 the dual-stack
+    # attempt burns curl's whole connect timeout before it falls back, and this
+    # order used to be the other way round.
+    ${curl_bin} -4fLRo ${xui_folder}-linux-$(arch).tar.gz "https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz" 2>/dev/null
     if [[ $? -ne 0 ]]; then
-        echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
-        ${curl_bin} -4fLRo ${xui_folder}-linux-$(arch).tar.gz https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz 2>/dev/null
+        echo -e "${yellow}Retrying over dual-stack...${plain}"
+        ${curl_bin} -fLRo ${xui_folder}-linux-$(arch).tar.gz "https://github.com/${XUI_REPO}/releases/download/${tag_version}/x-ui-linux-$(arch).tar.gz" 2>/dev/null
         if [[ $? -ne 0 ]]; then
             _fail "ERROR: Failed to download x-ui, please be sure that your server can access GitHub"
         fi
@@ -1542,6 +1587,24 @@ update_x-ui() {
     if ! tar -tzf x-ui-linux-$(arch).tar.gz 2>/dev/null | grep -qx "x-ui/x-ui"; then
         rm x-ui-linux-$(arch).tar.gz -f >/dev/null 2>&1
         _fail "ERROR: the downloaded archive does not contain the x-ui binary. Nothing has been changed."
+    fi
+
+    # Stage the management wrapper while the box is still whole. It ships in the
+    # tarball, so the usual update needs no second download at all; only a
+    # tarball that predates it falls back to the raw file, and that fetch has to
+    # happen here — below, the service is already stopped and its unit gone, and
+    # a 404 there is what cost the stand its front.
+    wrapper_staged=""
+    if ! tar -tzf "x-ui-linux-$(arch).tar.gz" 2>/dev/null | grep -qx "x-ui/x-ui.sh"; then
+        echo -e "${yellow}This release tarball ships no x-ui.sh — fetching the management wrapper from ${REPO_BRANCH}...${plain}"
+        wrapper_staged="/tmp/x-ui.sh.xui-update.$$"
+        ${curl_bin} -4fLRo "${wrapper_staged}" "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh" >/dev/null 2>&1 ||
+            ${curl_bin} -fLRo "${wrapper_staged}" "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh" >/dev/null 2>&1
+        if [[ ! -s "${wrapper_staged}" ]]; then
+            rm -f "${wrapper_staged}" >/dev/null 2>&1
+            rm -f "x-ui-linux-$(arch).tar.gz" >/dev/null 2>&1
+            _fail "ERROR: failed to download x-ui.sh from ${XUI_REPO}@${REPO_BRANCH}. Nothing has been changed — the box keeps running on the current version."
+        fi
     fi
 
     if [[ -e ${xui_folder}/ ]]; then
@@ -1605,10 +1668,10 @@ update_x-ui() {
     # Both steps are load-bearing and used to fail silently: the old version is
     # gone at this point, so anything that goes wrong here has to say so.
     if ! tar zxf x-ui-linux-$(arch).tar.gz >/dev/null 2>&1; then
-        _fail "ERROR: failed to unpack x-ui-linux-$(arch).tar.gz. The panel binary is missing — run the update again to restore it."
+        _fail_after_stop "ERROR: failed to unpack x-ui-linux-$(arch).tar.gz. The panel binary is missing — run the update again to restore it."
     fi
     rm x-ui-linux-$(arch).tar.gz -f >/dev/null 2>&1
-    cd x-ui || _fail "ERROR: the unpacked x-ui folder is missing. The panel binary is missing — run the update again to restore it."
+    cd x-ui || _fail_after_stop "ERROR: the unpacked x-ui folder is missing. The panel binary is missing — run the update again to restore it."
     chmod +x x-ui >/dev/null 2>&1
     
     # Check the system's architecture and rename the file accordingly
@@ -1635,15 +1698,18 @@ update_x-ui() {
         rm -f "$xray_backup" >/dev/null 2>&1
     fi
     
-    echo -e "${green}Downloading and installing x-ui.sh script...${plain}"
-    ${curl_bin} -fLRo /usr/bin/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh >/dev/null 2>&1
-    if [[ $? -ne 0 ]]; then
-        echo -e "${yellow}Trying to fetch x-ui with IPv4...${plain}"
-        ${curl_bin} -4fLRo /usr/bin/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh >/dev/null 2>&1
-        if [[ $? -ne 0 ]]; then
-            _fail "ERROR: Failed to download x-ui.sh script, please be sure that your server can access GitHub"
-        fi
+    echo -e "${green}Installing the x-ui.sh management script...${plain}"
+    # Whatever the tarball delivered wins — it is the wrapper that matches this
+    # binary. Otherwise the copy staged before the stop. Nothing is downloaded
+    # here: this side of the stop, a failed fetch must not end the run.
+    if [[ -s x-ui.sh ]]; then
+        cp -f x-ui.sh /usr/bin/x-ui >/dev/null 2>&1
+    elif [[ -n "${wrapper_staged}" && -s "${wrapper_staged}" ]]; then
+        cp -f "${wrapper_staged}" /usr/bin/x-ui >/dev/null 2>&1
+    else
+        echo -e "${yellow}WARNING: no x-ui.sh to install — the 'x-ui' command keeps its previous version. The service itself is unaffected.${plain}"
     fi
+    rm -f "${wrapper_staged}" >/dev/null 2>&1
     
     chmod +x ${xui_folder}/x-ui.sh >/dev/null 2>&1
     chmod +x /usr/bin/x-ui >/dev/null 2>&1
@@ -1722,9 +1788,9 @@ update_x-ui_install_service() {
         if [ -f "${xui_folder}/x-ui.rc" ]; then
             cp -f "${xui_folder}/x-ui.rc" /etc/init.d/x-ui >/dev/null 2>&1
         else
-            ${curl_bin} -fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc >/dev/null 2>&1
+            ${curl_bin} -4fLRo /etc/init.d/x-ui "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc" >/dev/null 2>&1
             if [[ $? -ne 0 ]]; then
-                ${curl_bin} -4fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc >/dev/null 2>&1
+                ${curl_bin} -fLRo /etc/init.d/x-ui "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc" >/dev/null 2>&1
                 [[ $? -ne 0 ]] && _fail "ERROR: Failed to download startup unit x-ui.rc"
             fi
         fi
@@ -1767,13 +1833,13 @@ update_x-ui_install_service() {
         echo -e "${yellow}Service files not found locally, downloading from GitHub...${plain}"
         case "${release}" in
             ubuntu | debian | armbian)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian" >/dev/null 2>&1
             ;;
             arch | manjaro | parch)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch" >/dev/null 2>&1
             ;;
             *)
-                ${curl_bin} -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel >/dev/null 2>&1
+                ${curl_bin} -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel" >/dev/null 2>&1
             ;;
         esac
         [[ $? -ne 0 ]] && _fail "ERROR: Failed to install x-ui.service from GitHub"
@@ -1975,12 +2041,41 @@ detect_debug_mode_from_existing_install() {
     fi
 }
 
+# Decides whether this release may touch the box at all (spec §5.7).
+#
+# A v1 proxy.json — one carrying a key from the manifest era, or lacking the v2
+# marker — belongs to a box that cannot run as a chain hop: its ports, its next
+# hop and its secret all used to come from places this release no longer reads.
+# The check lives here, before the binary is replaced, and not in
+# config_after_update where its ancestor sat: by then "we stopped" would mean a
+# dead relay restarting in a loop, whereas here it means the box keeps serving
+# its clients on the version it already runs until its owner reinstalls it.
+proxy_config_gate() {
+    local cfg="${1:-/etc/x-ui/proxy.json}" key
+    local hint="this release runs proxy fronts as chain hops. The box keeps running on the current binary. Re-install it as a chain hop: docs/runbooks/proxy-front.md §«Переустановка бокса»."
+    for key in upstreamHost relayManifestPath extraPorts upstreamBase subPath jsonPath; do
+        if grep -q "\"${key}\"" "${cfg}" 2>/dev/null; then
+            echo -e "${red}${cfg} is a v1 proxy-front config (key \"${key}\"): ${hint}${plain}"
+            exit 1
+        fi
+    done
+    if ! grep -Eq '"version"[[:space:]]*:[[:space:]]*2' "${cfg}" 2>/dev/null; then
+        echo -e "${red}${cfg} carries no \"version\": 2 marker, so it is a v1 proxy-front config: ${hint}${plain}"
+        exit 1
+    fi
+    # A v2 box with no hop secret is fine — it simply has not joined yet.
+    if ! grep -Eq '"hopSecret"[[:space:]]*:[[:space:]]*"[^"]+"' "${cfg}" 2>/dev/null; then
+        proxy_not_joined=1
+    fi
+}
+
 # Proxy-front boxes carry /etc/x-ui/proxy.json; update them in proxy mode
-# (replace the binary, keep proxy.json + the proxy unit) and skip the panel /
-# WireGuard steps.
+# (replace the binary, keep proxy.json, /etc/x-ui/chain/, the certificate and
+# the proxy unit) and skip the panel / WireGuard steps.
 if [[ -f /etc/x-ui/proxy.json ]]; then
     export XUI_PROXY_MODE=1
     echo -e "${yellow}Detected proxy-front install (/etc/x-ui/proxy.json) — updating in proxy mode.${plain}"
+    proxy_config_gate
 fi
 if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
     detect_debug_mode_from_existing_install

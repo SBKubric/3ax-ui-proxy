@@ -2492,6 +2492,7 @@ show_usage() {
 │  ${blue}x-ui status${plain}                - Current Status                   │
 │  ${blue}x-ui settings${plain}              - Current Settings                 │
 │  ${blue}x-ui mon-token${plain}             - Show monitoring status & token   │
+│  ${blue}x-ui chain <cmd>${plain}           - Proxy-chain commands (see below)  │
 │  ${blue}x-ui enable${plain}                - Enable Autostart on OS Startup   │
 │  ${blue}x-ui disable${plain}               - Disable Autostart on OS Startup  │
 │  ${blue}x-ui log${plain}                   - Check logs                       │
@@ -2502,6 +2503,10 @@ show_usage() {
 │  ${blue}x-ui install${plain}               - Install                          │
 │  ${blue}x-ui uninstall${plain}             - Uninstall                        │
 └────────────────────────────────────────────────────────────────┘"
+    echo -e "  ${blue}x-ui chain ports${plain}     - panel: the relayed ports of the chain document"
+    echo -e "  ${blue}x-ui chain join-url${plain}  - box: the pending join-page link"
+    echo -e "  ${blue}x-ui chain status${plain}    - box: this hop's place in the chain"
+    echo -e "  ${blue}x-ui chain rejoin${plain}    - box: point this hop at a new next hop with a fresh token"
 }
 
 show_menu() {
@@ -2661,6 +2666,14 @@ if [[ $# > 0 ]]; then
         ;;
     "mon-token")
         check_install 0 && show_mon_token
+        ;;
+    "chain")
+        # The chain subcommands live in the binary, and on a proxy front this
+        # script is the only `x-ui` on PATH — so pass them straight through
+        # instead of answering a documented command with the usage banner.
+        shift
+        "${xui_folder}/x-ui" chain "$@"
+        exit $?
         ;;
     "enable")
         check_install 0 && enable 0
