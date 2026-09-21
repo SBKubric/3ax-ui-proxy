@@ -1,21 +1,27 @@
-// Package chainports turns the panel's generated xray config into the xray
-// half of the chain document's relayed-port list (docs/spec/proxy-chain.md
-// §3.8, §5.9).
+// Package chainports decides which of the panel's inbounds is worth a relayed
+// port on a front, and turns the survivors into the xray half of the chain
+// document's port list (docs/spec/proxy-chain.md §3.8, §5.9).
 //
-// It is what is left of the old relaymanifest package: no manifest travels
-// any more — the panel computes the ports itself and the chain document
-// carries them — so only the part that decides which inbound is worth a port
-// on a front survives, and it survives unchanged. The other sources of ports
-// (AmneziaWG/WireGuard, MTProto, the operator's extra list) do not live in the
-// xray config and are added by web/service.
+// It is what is left of the old relay manifest: no manifest travels any more —
+// the panel computes the ports itself and the chain document carries them — so
+// only the rules that pick the reachable inbounds survive, and they survive
+// unchanged. The other sources of ports (AmneziaWG/WireGuard, MTProto, the
+// operator's extra list) are not inbounds at all and are added by web/service.
 //
-// Like package chain, this package knows nothing of the panel: it takes bytes
-// and returns wire types.
+// The inbounds come from the panel's own table rather than from the generated
+// bin/config.json: that file is rewritten only when xray restarts, which is
+// long after the revision that announces the change has been bumped, so a
+// front would cache yesterday's ports under today's revision and nothing would
+// ever bump again. The table is right at the moment of the bump.
+//
+// Like package chain, this package knows nothing of the panel: it takes plain
+// values and returns wire types. Which rows of the table become an Inbound —
+// enabled, and of a protocol xray actually serves — is web/service's business,
+// because only it knows how the xray config is generated.
 package chainports
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
@@ -26,47 +32,75 @@ import (
 // semantic braces below, since the tag is user-editable.
 const tproxyTagSuffix = "-tproxy-in"
 
-// inbound is the part of one xray inbound that decides whether it becomes a
-// relayed port. It is deliberately internal: nothing outside needs the xray
-// config's shape, only the ports that come out of it.
-type inbound struct {
-	Listen   string `json:"listen"`
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol"`
-	Tag      string `json:"tag"`
-	Settings struct {
+// Inbound is the part of one inbound that decides whether it becomes a relayed
+// port: the address it answers on and the two JSON blobs that can say it only
+// ever hears from the kernel. Settings and StreamSettings are the raw JSON the
+// panel stores (and writes into the xray config verbatim); an empty or
+// unparsable blob simply tells us nothing.
+type Inbound struct {
+	Listen         string
+	Port           int
+	Protocol       string
+	Tag            string
+	Settings       string
+	StreamSettings string
+}
+
+// followRedirect reports whether the inbound reads its destination from a
+// netfilter REDIRECT rather than from the client.
+func followRedirect(in Inbound) bool {
+	var parsed struct {
 		FollowRedirect bool `json:"followRedirect"`
-	} `json:"settings"`
-	StreamSettings struct {
+	}
+	if strings.TrimSpace(in.Settings) == "" {
+		return false
+	}
+	if err := json.Unmarshal([]byte(in.Settings), &parsed); err != nil {
+		return false
+	}
+	return parsed.FollowRedirect
+}
+
+// sockoptTproxy returns the inbound's streamSettings.sockopt.tproxy mode, or ""
+// when it has none.
+func sockoptTproxy(in Inbound) string {
+	var parsed struct {
 		Sockopt struct {
 			Tproxy string `json:"tproxy"`
 		} `json:"sockopt"`
-	} `json:"streamSettings"`
+	}
+	if strings.TrimSpace(in.StreamSettings) == "" {
+		return ""
+	}
+	if err := json.Unmarshal([]byte(in.StreamSettings), &parsed); err != nil {
+		return ""
+	}
+	return parsed.Sockopt.Tproxy
 }
 
 // transparent reports whether an inbound only receives traffic the kernel
 // redirects into it (TPROXY / REDIRECT). The panel adds one per tunnel whose
 // traffic is routed via Xray; nothing outside can dial it, so relaying it would
 // just open a dead port on the front.
-func transparent(in inbound) bool {
+func transparent(in Inbound) bool {
 	if in.Protocol == "dokodemo-door" {
-		switch strings.ToLower(in.StreamSettings.Sockopt.Tproxy) {
+		switch strings.ToLower(sockoptTproxy(in)) {
 		case "tproxy", "redirect":
 			return true
 		}
-		if in.Settings.FollowRedirect {
+		if followRedirect(in) {
 			return true
 		}
 	}
 	return strings.HasSuffix(in.Tag, tproxyTagSuffix)
 }
 
-// skipReason explains why an inbound gets no relayed port, or returns "" when
+// SkipReason explains why an inbound gets no relayed port, or returns "" when
 // it should have one. Only public-facing ports are relayed: the gRPC api
 // tunnel, loopback binds, unix-socket fallbacks and transparent-proxy inbounds
 // are skipped. These five rules are the one piece of the relay manifest that
 // the chain inherits verbatim (§5.9).
-func skipReason(in inbound) string {
+func SkipReason(in Inbound) string {
 	if in.Port <= 0 {
 		return "no port"
 	}
@@ -87,26 +121,18 @@ func skipReason(in inbound) string {
 	return ""
 }
 
-// Build extracts the relayed ports of a raw xray config (the panel's
-// bin/config.json — what xray actually runs, so a port that is there is a port
-// clients can reach). Every port carries both networks: the relay opens one
+// Ports keeps the inbounds a client can actually reach and states them in the
+// document's vocabulary. Every port carries both networks: the relay opens one
 // dokodemo-door for TCP and UDP alike, because the panel's own inbound may use
-// either and the front cannot tell from the config which one matters.
+// either and the front cannot tell which one matters.
 //
-// A port claimed twice inside one config is listed once: xray could not bind
-// it twice either.
-func Build(rawXrayConfig []byte) ([]chain.Port, error) {
-	var src struct {
-		Inbounds []inbound `json:"inbounds"`
-	}
-	if err := json.Unmarshal(rawXrayConfig, &src); err != nil {
-		return nil, fmt.Errorf("parse xray config: %w", err)
-	}
-
-	ports := make([]chain.Port, 0, len(src.Inbounds))
-	seen := make(map[int]bool, len(src.Inbounds))
-	for _, in := range src.Inbounds {
-		if skipReason(in) != "" {
+// A port claimed twice — several inbounds multiplexed behind one nginx front
+// end, say — is listed once: the front can only relay it once either.
+func Ports(inbounds []Inbound) []chain.Port {
+	ports := make([]chain.Port, 0, len(inbounds))
+	seen := make(map[int]bool, len(inbounds))
+	for _, in := range inbounds {
+		if SkipReason(in) != "" {
 			continue
 		}
 		if seen[in.Port] {
@@ -120,5 +146,5 @@ func Build(rawXrayConfig []byte) ([]chain.Port, error) {
 			Source:  chain.SourceXray,
 		})
 	}
-	return ports, nil
+	return ports
 }

@@ -112,6 +112,13 @@ func TestJoinPageWarnsOverPlainHTTP(t *testing.T) {
 	if want := "https://b.example.net:2096" + page.Path(); page.URL() != want {
 		t.Errorf("URL with TLS = %q, want %q", page.URL(), want)
 	}
+
+	// The scheme's default port must not appear: it adds nothing but a
+	// mismatch with what the owner will actually type (#98).
+	cfg.SubPort = 443
+	if want := "https://b.example.net" + page.Path(); page.URL() != want {
+		t.Errorf("URL with TLS and the default port = %q, want %q", page.URL(), want)
+	}
 }
 
 // TestJoinPageJoinsOnceAndGoesDark is the whole join flow of §5.4: the form

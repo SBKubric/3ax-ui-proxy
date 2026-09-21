@@ -109,12 +109,23 @@ func TestPublicURLAndProfileHeaderRewrite(t *testing.T) {
 	if got := s.publicURL(c, s.publicSubPath(), "abc"); got != "http://5.6.7.8:2096/sub/abc" {
 		t.Errorf("publicURL without domain = %q", got)
 	}
+	// A non-default sub port must survive into the domain-based URL, or
+	// clients built from it land on whatever else answers 443 — xray, on a
+	// box that terminates the sub port elsewhere (#98).
 	cfg.Domain = "proxy.example.com"
 	cfg.CertFile, cfg.KeyFile = "c", "k"
+	if got := s.publicURL(c, s.publicJsonPath(), "abc"); got != "https://proxy.example.com:2096/json/abc" {
+		t.Errorf("publicURL with domain+TLS+non-default port = %q", got)
+	}
+
+	// The scheme's default port is left off: it need not appear for the URL
+	// to reach the sub server.
+	cfg.SubPort = 443
 	if got := s.publicURL(c, s.publicJsonPath(), "abc"); got != "https://proxy.example.com/json/abc" {
-		t.Errorf("publicURL with domain+TLS = %q", got)
+		t.Errorf("publicURL with domain+TLS+default port = %q", got)
 	}
 	cfg.Domain, cfg.CertFile, cfg.KeyFile = "", "", ""
+	cfg.SubPort = DefaultSubPort
 
 	// The header copied from the panel names a hop deeper in; after
 	// copyHeaders + rewrite the client must see this hop instead.
@@ -187,7 +198,9 @@ func TestSubscriptionUpstreamComesFromTheDocument(t *testing.T) {
 	if len(asked) != 1 || asked[0] != "/s/abc" {
 		t.Fatalf("upstream was asked for %v, want the document's subPath", asked)
 	}
-	if got, want := w.Header().Get("Profile-Web-Page-Url"), "http://edge.example.com/s/abc"; got != want {
+	// cfg.SubPort defaults to 2096 here — not http's default 80 — so it must
+	// appear in the domain-based URL (#98).
+	if got, want := w.Header().Get("Profile-Web-Page-Url"), "http://edge.example.com:2096/s/abc"; got != want {
 		t.Errorf("Profile-Web-Page-Url = %q, want %q", got, want)
 	}
 

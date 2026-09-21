@@ -86,12 +86,13 @@ type OuterAck struct {
 // endpoint and the subscription server — goes through it, so there is one
 // answer to "what revision is this box on" instead of four.
 type State struct {
-	mu       sync.RWMutex
-	doc      *chain.Document
-	lastPoll int64
-	lastOk   int64
-	stale    bool
-	outer    map[string]OuterAck
+	mu         sync.RWMutex
+	doc        *chain.Document
+	lastPoll   int64
+	lastOk     int64
+	lastPollOK bool
+	stale      bool
+	outer      map[string]OuterAck
 }
 
 // NewState returns an empty state — a box that has not joined yet.
@@ -122,11 +123,14 @@ func (s *State) Revision() int64 {
 }
 
 // MarkPoll records that a poll was attempted; ok also records success and
-// clears staleness.
+// clears staleness. lastPollOK always reflects this call's outcome, so the
+// status endpoint's reachable flag tracks the last attempt rather than
+// lingering true from some earlier success (§3.6).
 func (s *State) MarkPoll(nowMilli int64, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastPoll = nowMilli
+	s.lastPollOK = ok
 	if ok {
 		s.lastOk = nowMilli
 		s.stale = false
@@ -183,6 +187,7 @@ func (s *State) OuterAcks() []OuterAck {
 func (s *State) Status(relay RelayController, cfg *Config) chain.Status {
 	s.mu.RLock()
 	doc := s.doc
+	lastPollOK := s.lastPollOK
 	status := chain.Status{
 		Version:  chain.DocumentVersion,
 		LastPoll: s.lastPoll,
@@ -204,9 +209,12 @@ func (s *State) Status(relay RelayController, cfg *Config) chain.Status {
 		status.ObservedHostMismatch = cfg.Domain != "" && doc.Self.Host != "" && doc.Self.Host != cfg.Domain
 	}
 	status.NextHop = chain.StatusNextHop{
-		Host:      nextHost,
-		SubPort:   nextPort,
-		Reachable: !status.Stale && status.LastOk > 0,
+		Host:    nextHost,
+		SubPort: nextPort,
+		// Reachable reflects the last poll attempt, not the history of ever
+		// having succeeded: a next hop that answered once and has refused
+		// every connection since must not still read as reachable (#98).
+		Reachable: !status.Stale && lastPollOK,
 	}
 	if relay != nil {
 		status.Relay = chain.StatusRelay{

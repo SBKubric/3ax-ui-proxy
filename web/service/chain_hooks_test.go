@@ -1,7 +1,6 @@
 package service
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -166,14 +165,15 @@ func TestAddingAnInboundOnAPanelWithoutAChain(t *testing.T) {
 	}
 }
 
-// withXrayConfig points the panel at a config of the test's own, so the hook
-// composes a real port list instead of failing to find one.
-func withXrayConfig(t *testing.T, body string) {
+// withInboundOn443 gives the panel an xray inbound of its own, so the hook
+// composes a real port list rather than an empty one.
+func withInboundOn443(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("XUI_BIN_FOLDER", dir)
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o600); err != nil {
-		t.Fatalf("write xray config: %v", err)
+	if err := database.GetDB().Create(&model.Inbound{
+		UserId: 1, Enable: true, Listen: "0.0.0.0", Port: 443,
+		Protocol: model.VLESS, Tag: "inbound-443", Remark: "vless", Settings: `{"clients":[]}`,
+	}).Error; err != nil {
+		t.Fatalf("create inbound: %v", err)
 	}
 }
 
@@ -185,7 +185,7 @@ func withXrayConfig(t *testing.T, body string) {
 // banner.
 func TestADuplicatePortDoesNotMoveTheRevision(t *testing.T) {
 	newPanel(t)
-	withXrayConfig(t, `{"inbounds":[{"listen":"0.0.0.0","port":443,"protocol":"vless","tag":"inbound-443"}]}`)
+	withInboundOn443(t)
 	joinedRegistry(t)
 
 	var setting SettingService

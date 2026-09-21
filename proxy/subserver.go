@@ -264,11 +264,12 @@ func (s *SubServer) publicJsonPath() string {
 // by — an address deeper in the chain — so every hop must replace that header
 // with its own identity, or subscription apps would carry a link inward.
 func (s *SubServer) publicURL(c *gin.Context, path, subid string) string {
-	host := s.cfg.Domain
-	if host == "" {
-		host = c.Request.Host
+	scheme := s.cfg.Scheme()
+	host := c.Request.Host
+	if s.cfg.Domain != "" {
+		host = PublicHostPort(scheme, s.cfg.Domain, s.cfg.SubPort)
 	}
-	return s.cfg.Scheme() + "://" + host + path + subid
+	return scheme + "://" + host + path + subid
 }
 
 // fetchUpstream GETs the raw subscription (not the HTML page) for the given

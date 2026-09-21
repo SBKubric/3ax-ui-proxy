@@ -1,7 +1,6 @@
 package chainports
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
@@ -13,71 +12,62 @@ import (
 func TestSkipRules(t *testing.T) {
 	tests := []struct {
 		name string
-		in   string
+		in   Inbound
 		skip bool
 	}{
-		{"plain vless inbound", `{"port":443,"protocol":"vless","tag":"inbound-443"}`, false},
-		{"port zero", `{"port":0,"protocol":"vless","tag":"inbound-0"}`, true},
-		{"negative port", `{"port":-1,"protocol":"vless","tag":"weird"}`, true},
-		{"api inbound", `{"port":62789,"protocol":"dokodemo-door","tag":"api"}`, true},
-		{"loopback ipv4", `{"listen":"127.0.0.1","port":10443,"protocol":"vless","tag":"relocated"}`, true},
-		{"loopback ipv6", `{"listen":"::1","port":10443,"protocol":"vless","tag":"relocated6"}`, true},
-		{"loopback by name", `{"listen":"localhost","port":10443,"protocol":"vless","tag":"named"}`, true},
-		{"unix socket fallback", `{"listen":"@fallback","port":1,"protocol":"vless","tag":"fallback"}`, true},
-		{"tproxy sockopt", `{"port":12345,"protocol":"dokodemo-door","tag":"awg-in","streamSettings":{"sockopt":{"tproxy":"tproxy"}}}`, true},
-		{"redirect sockopt", `{"port":12346,"protocol":"dokodemo-door","tag":"wg-in","streamSettings":{"sockopt":{"tproxy":"REDIRECT"}}}`, true},
-		{"followRedirect", `{"port":12347,"protocol":"dokodemo-door","tag":"dnat","settings":{"followRedirect":true}}`, true},
-		{"tproxy tag suffix", `{"port":12348,"protocol":"vless","tag":"awg-tproxy-in"}`, true},
-		{"port map is relayed", `{"port":8080,"protocol":"dokodemo-door","tag":"portmap"}`, false},
-		{"listen on any address", `{"listen":"0.0.0.0","port":8443,"protocol":"trojan","tag":"inbound-trojan"}`, false},
+		{"plain vless inbound", Inbound{Port: 443, Protocol: "vless", Tag: "inbound-443"}, false},
+		{"port zero", Inbound{Port: 0, Protocol: "vless", Tag: "inbound-0"}, true},
+		{"negative port", Inbound{Port: -1, Protocol: "vless", Tag: "weird"}, true},
+		{"api inbound", Inbound{Port: 62789, Protocol: "dokodemo-door", Tag: "api"}, true},
+		{"loopback ipv4", Inbound{Listen: "127.0.0.1", Port: 10443, Protocol: "vless", Tag: "relocated"}, true},
+		{"loopback ipv6", Inbound{Listen: "::1", Port: 10443, Protocol: "vless", Tag: "relocated6"}, true},
+		{"loopback by name", Inbound{Listen: "localhost", Port: 10443, Protocol: "vless", Tag: "named"}, true},
+		{"unix socket fallback", Inbound{Listen: "@fallback", Port: 1, Protocol: "vless", Tag: "fallback"}, true},
+		{"tproxy sockopt", Inbound{Port: 12345, Protocol: "dokodemo-door", Tag: "awg-in",
+			StreamSettings: `{"sockopt":{"tproxy":"tproxy"}}`}, true},
+		{"redirect sockopt", Inbound{Port: 12346, Protocol: "dokodemo-door", Tag: "wg-in",
+			StreamSettings: `{"sockopt":{"tproxy":"REDIRECT"}}`}, true},
+		{"followRedirect", Inbound{Port: 12347, Protocol: "dokodemo-door", Tag: "dnat",
+			Settings: `{"followRedirect":true}`}, true},
+		{"tproxy tag suffix", Inbound{Port: 12348, Protocol: "vless", Tag: "awg-tproxy-in"}, true},
+		{"port map is relayed", Inbound{Port: 8080, Protocol: "dokodemo-door", Tag: "portmap"}, false},
+		{"listen on any address", Inbound{Listen: "0.0.0.0", Port: 8443, Protocol: "trojan", Tag: "inbound-trojan"}, false},
+		{"unparsable stream settings are no reason to skip", Inbound{Port: 8444, Protocol: "vless",
+			Tag: "broken", StreamSettings: `{oops`}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			var in inbound
-			if err := json.Unmarshal([]byte(test.in), &in); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			reason := skipReason(in)
+			reason := SkipReason(test.in)
 			if test.skip && reason == "" {
-				t.Errorf("inbound %s was relayed, want it skipped", test.in)
+				t.Errorf("inbound %+v was relayed, want it skipped", test.in)
 			}
 			if !test.skip && reason != "" {
-				t.Errorf("inbound %s was skipped (%s), want it relayed", test.in, reason)
+				t.Errorf("inbound %+v was skipped (%s), want it relayed", test.in, reason)
 			}
 		})
 	}
 }
 
-const sampleConfig = `{
-  "log": {"loglevel": "warning"},
-  "inbounds": [
-    {"port": 443, "protocol": "vless", "tag": "inbound-443",
-     "settings": {"clients": [{"id": "secret-uuid"}]},
-     "streamSettings": {"realitySettings": {"privateKey": "do-not-copy-me"}}},
-    {"listen": "0.0.0.0", "port": 8443, "protocol": "trojan", "tag": "inbound-trojan"},
-    {"listen": "127.0.0.1", "port": 62789, "protocol": "dokodemo-door", "tag": "api"},
-    {"listen": "127.0.0.1", "port": 10443, "protocol": "vless", "tag": "behind-nginx"},
-    {"port": 12345, "protocol": "dokodemo-door", "tag": "awg-tproxy-in",
-     "streamSettings": {"sockopt": {"tproxy": "tproxy"}}},
-    {"port": 443, "protocol": "vless", "tag": "duplicate-443"}
-  ],
-  "outbounds": [{"protocol": "freedom"}]
-}`
-
-// TestBuildOnASampleConfig: the whole pipeline on one config — the ports that
-// survive, in config order, with the document's own vocabulary, and nothing
-// from the config's secrets anywhere near the result.
-func TestBuildOnASampleConfig(t *testing.T) {
-	ports, err := Build([]byte(sampleConfig))
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+// TestPortsOverASampleTable: the whole pipeline on one set of inbounds — the
+// ports that survive, in table order, with the document's own vocabulary.
+func TestPortsOverASampleTable(t *testing.T) {
+	ports := Ports([]Inbound{
+		{Port: 443, Protocol: "vless", Tag: "inbound-443",
+			Settings:       `{"clients":[{"id":"secret-uuid"}]}`,
+			StreamSettings: `{"realitySettings":{"privateKey":"do-not-copy-me"}}`},
+		{Listen: "0.0.0.0", Port: 8443, Protocol: "trojan", Tag: "inbound-trojan"},
+		{Listen: "127.0.0.1", Port: 62789, Protocol: "dokodemo-door", Tag: "api"},
+		{Listen: "127.0.0.1", Port: 10443, Protocol: "vless", Tag: "behind-nginx"},
+		{Port: 12345, Protocol: "dokodemo-door", Tag: "awg-tproxy-in",
+			StreamSettings: `{"sockopt":{"tproxy":"tproxy"}}`},
+		{Port: 443, Protocol: "vless", Tag: "duplicate-443"},
+	})
 	want := []chain.Port{
 		{Port: 443, Network: chain.NetworkTCPUDP, Tag: "inbound-443", Source: chain.SourceXray},
 		{Port: 8443, Network: chain.NetworkTCPUDP, Tag: "inbound-trojan", Source: chain.SourceXray},
 	}
 	if len(ports) != len(want) {
-		t.Fatalf("Build returned %+v, want %+v", ports, want)
+		t.Fatalf("Ports() = %+v, want %+v", ports, want)
 	}
 	for index, port := range ports {
 		if port != want[index] {
@@ -86,23 +76,14 @@ func TestBuildOnASampleConfig(t *testing.T) {
 	}
 }
 
-// TestBuildRefusesGarbage: a config that does not parse is an error, not an
-// empty port list — an empty list would quietly take the whole chain off the
-// air at the next revision.
-func TestBuildRefusesGarbage(t *testing.T) {
-	if _, err := Build([]byte("not json at all")); err == nil {
-		t.Fatal("Build accepted a config that is not JSON")
-	}
-}
-
-// TestBuildOnAConfigWithoutInbounds returns an empty list rather than nil, so
-// a caller can append to it without thinking about it.
-func TestBuildOnAConfigWithoutInbounds(t *testing.T) {
-	ports, err := Build([]byte(`{"log":{"loglevel":"warning"}}`))
-	if err != nil {
-		t.Fatalf("Build: %v", err)
+// TestPortsOfNothing: an empty table is an empty list, not a nil surprise for
+// the JSON the document carries.
+func TestPortsOfNothing(t *testing.T) {
+	ports := Ports(nil)
+	if ports == nil {
+		t.Fatal("Ports(nil) = nil, want an empty list")
 	}
 	if len(ports) != 0 {
-		t.Fatalf("Build returned %+v, want no ports", ports)
+		t.Fatalf("Ports(nil) = %+v, want an empty list", ports)
 	}
 }

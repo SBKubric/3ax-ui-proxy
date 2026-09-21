@@ -175,3 +175,30 @@ func TestSaveWritesAJoinablePrivateConfig(t *testing.T) {
 		t.Errorf("reloaded config = %+v", back)
 	}
 }
+
+// TestPublicHostPortOmitsOnlyTheSchemeDefault: every place that builds this
+// hop's own public URL from Domain must keep a non-default sub port, or
+// clients end up on whatever else answers the scheme's default port — xray,
+// on a box that terminates the sub port elsewhere (#98).
+func TestPublicHostPortOmitsOnlyTheSchemeDefault(t *testing.T) {
+	cases := []struct {
+		name   string
+		scheme string
+		host   string
+		port   int
+		want   string
+	}{
+		{"https non-default port", "https", "proxy.example.com", 2096, "proxy.example.com:2096"},
+		{"https default port", "https", "proxy.example.com", 443, "proxy.example.com"},
+		{"http non-default port", "http", "proxy.example.com", 2096, "proxy.example.com:2096"},
+		{"http default port", "http", "proxy.example.com", 80, "proxy.example.com"},
+		{"https default port does not match http", "https", "proxy.example.com", 80, "proxy.example.com:80"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PublicHostPort(tc.scheme, tc.host, tc.port); got != tc.want {
+				t.Errorf("PublicHostPort(%q, %q, %d) = %q, want %q", tc.scheme, tc.host, tc.port, got, tc.want)
+			}
+		})
+	}
+}

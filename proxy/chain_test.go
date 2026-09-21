@@ -376,6 +376,29 @@ func TestJustJoinedRetriesFast(t *testing.T) {
 	}
 }
 
+// TestReachableReflectsTheLastPoll: a next hop that answered once and then
+// refuses every connection must stop reading as reachable — reachable is the
+// last poll attempt's outcome, not "has this hop ever succeeded" (#98).
+func TestReachableReflectsTheLastPoll(t *testing.T) {
+	doc := testDocument(42)
+	poller, state, _, server := wavePoller(t, serveDocument(&doc, nil))
+
+	if err := poller.PollOnce(context.Background()); err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if !state.Status(nil, poller.cfg).NextHop.Reachable {
+		t.Fatal("reachable = false after a successful poll")
+	}
+
+	server.Close() // every later poll now fails with connection refused
+	if err := poller.PollOnce(context.Background()); err == nil {
+		t.Fatal("a poll against a closed server must fail")
+	}
+	if state.Status(nil, poller.cfg).NextHop.Reachable {
+		t.Error("reachable = true after the next hop started refusing connections")
+	}
+}
+
 // TestOuterAcksSurviveTheHeader: the acks are base64 JSON in a header, and the
 // freshest report per hop wins when several routes carry one.
 func TestOuterAcksSurviveTheHeader(t *testing.T) {
