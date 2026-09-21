@@ -1,6 +1,7 @@
 package sub
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
@@ -45,6 +47,12 @@ const (
 	// chainPanelRole is what the panel calls itself in its status: it is not a
 	// hop, it is the thing at the end of the chain.
 	chainPanelRole = "panel"
+
+	// chainDrainSweepInterval is how often a departure is checked for its
+	// deadline (§4.5.4). Confirmations already trigger a sweep where they
+	// land; the ticker is for the chain where nobody polls any more, so that a
+	// row cannot hang about forever.
+	chainDrainSweepInterval = 60 * time.Second
 )
 
 // ChainController serves the wave and the join on the panel's sub server.
@@ -298,6 +306,28 @@ func requestHost(c *gin.Context) string {
 		return stripped
 	}
 	return host
+}
+
+// startChainDrainSweep runs SweepDraining once a minute until ctx is done
+// (§4.5.4). It rides with the sub server because that is where the chain's own
+// traffic arrives: a panel whose subscription server is off serves no
+// documents, so no departure it could finish is under way either.
+func startChainDrainSweep(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(chainDrainSweepInterval)
+		defer ticker.Stop()
+		chainService := &service.ChainService{}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := chainService.SweepDraining(); err != nil {
+					logger.Warning("chain: sweeping draining hops:", err)
+				}
+			}
+		}
+	}()
 }
 
 // warnChainNeedsSubServer is the one thing the panel can do about a chain

@@ -68,11 +68,18 @@ func (s *ChainDocumentService) BuildWithPanelHost(forHopName, fallbackHost strin
 // set together is both cheaper and the only way the documents are guaranteed
 // to agree with each other.
 //
-// Pending hops appear nowhere: not as a document of their own, not in anyone's
-// hops list, and not as anyone's next hop (§2.6.3). The registry re-chains
-// next_hop_id onto a new inner the moment it is created, so a hop's next hop
-// here is found by walking inward past every pending hop — until one that has
-// entered, or the panel itself.
+// A brand-new pending hop appears nowhere: not as a document of its own, not
+// in anyone's hops list, and not as anyone's next hop (§2.6.3). The registry
+// re-chains next_hop_id onto a new inner the moment it is created, so a hop's
+// next hop here is found by walking inward past every such hop — until one
+// that is visible, or the panel itself.
+//
+// Two states are visible although they are not in the live path. A re-entering
+// hop (pending with a secret hash, §4.5.7) stays exactly where it was: its box
+// is alive and is still serving its neighbours until the new one enters. A
+// draining hop (§4.5.2) keeps its own document and stays in the hops[] of its
+// next hop — the single place its secret hash still lives, and what makes it
+// authenticable while it hands its neighbours over.
 func (s *ChainDocumentService) BuildAll() (map[string]*chain.Document, error) {
 	return s.BuildAllWithPanelHost("")
 }
@@ -100,7 +107,7 @@ func (s *ChainDocumentService) BuildAllWithPanelHost(fallbackHost string) (map[s
 	byId := make(map[int]model.ChainHop, len(hops))
 	for _, hop := range hops {
 		byId[hop.Id] = hop
-		if hop.State != chain.StatePending {
+		if chainHopVisible(hop) {
 			entered = append(entered, hop)
 		}
 	}
@@ -145,7 +152,7 @@ func (s *ChainDocumentService) BuildAllWithPanelHost(fallbackHost string) (map[s
 			Version:     chain.DocumentVersion,
 			Revision:    revision,
 			GeneratedAt: generatedAt,
-			Self:        chain.Self{Name: hop.Name, Role: hop.Role, Host: hop.Host},
+			Self:        chain.Self{Name: hop.Name, Role: hop.Role, Host: hop.Host, State: hop.State},
 			NextHop:     s.nextHopOf(hop, byId, panelHop),
 			Ports:       ports,
 		}
@@ -166,16 +173,19 @@ func (s *ChainDocumentService) BuildAllWithPanelHost(fallbackHost string) (map[s
 	return documents, nil
 }
 
-// nextHopOf resolves what the hop dials inward. A pending hop in between is
-// skipped rather than named: its box does not exist yet, and pointing a live
-// front at it would cut the chain until someone installed it (§2.6.3).
+// nextHopOf resolves what the hop dials inward. A brand-new pending hop in
+// between is skipped rather than named: its box does not exist yet, and
+// pointing a live front at it would cut the chain until someone installed it
+// (§2.6.3). A draining hop is skipped for the opposite reason: it is on its
+// way out, so the live path runs past it (§4.5.2) — the departing box hands
+// its neighbours this very address itself, out of its own document (§4.5.3).
 func (s *ChainDocumentService) nextHopOf(hop model.ChainHop, byId map[int]model.ChainHop, panelHop chain.NextHop) chain.NextHop {
 	for id := hop.NextHopId; id != nil; {
 		next, found := byId[*id]
 		if !found {
 			break
 		}
-		if next.State != chain.StatePending {
+		if chainHopVisible(next) && next.State != chain.StateDraining {
 			return chain.NextHop{
 				Host:      next.Host,
 				SubPort:   next.SubPort,
@@ -188,6 +198,15 @@ func (s *ChainDocumentService) nextHopOf(hop model.ChainHop, byId map[int]model.
 		id = next.NextHopId
 	}
 	return panelHop
+}
+
+// chainHopVisible reports whether a registry row takes part in the documents
+// at all. Everything does except a hop that was created and never entered:
+// that one has no box, so naming it anywhere would point a live front at
+// nothing (§2.6.3). A re-entering hop is told apart by its secret hash, which
+// only a hop that has already entered can have (§4.5.7).
+func chainHopVisible(hop model.ChainHop) bool {
+	return hop.State != chain.StatePending || hop.SecretHash != ""
 }
 
 // panelAsNextHop is what the innermost hop dials: the panel itself. The host

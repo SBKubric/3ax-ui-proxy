@@ -94,7 +94,7 @@ func TestTheThreeViewpointsOfTheExample(t *testing.T) {
 	if inner1.Version != chain.DocumentVersion {
 		t.Errorf("version = %d, want %d", inner1.Version, chain.DocumentVersion)
 	}
-	if inner1.Self != (chain.Self{Name: "inner-1", Role: chain.RoleInner, Host: "10.0.0.7"}) {
+	if inner1.Self != (chain.Self{Name: "inner-1", Role: chain.RoleInner, Host: "10.0.0.7", State: chain.StateJoined}) {
 		t.Errorf("inner-1 self = %+v", inner1.Self)
 	}
 	if inner1.NextHop.Host != "198.51.100.1" {
@@ -335,5 +335,104 @@ func TestAnEmptyRegistryBuildsNothing(t *testing.T) {
 func TestETagIsTheQuotedRevision(t *testing.T) {
 	if got := ETag(42); got != `"42"` {
 		t.Errorf("ETag(42) = %s, want %q", got, `"42"`)
+	}
+}
+
+// §4.5.2 — the documents while a hop drains. The example is the spec's:
+// real ← inner-1 ← inner-2 ← {edge-a, edge-b}, with inner-2 deleted.
+//
+//   - inner-2 keeps a document of its own, with self.state draining, its old
+//     next hop and its former neighbours (and everything outward of them) in
+//     hops[]: truncating it down to its direct neighbours would strip them of
+//     the hashes they need to admit their own outer neighbours.
+//   - inner-1, its next hop, keeps it in hops[] with state draining — the one
+//     place its secret hash still lives, which is what keeps it authenticable.
+//   - the neighbours' documents do not mention it at all and point past it.
+func TestADrainingHopKeepsItsDocumentAndLeavesTheLivePath(t *testing.T) {
+	documents, registry := exampleChain(t)
+
+	inner2 := hopByName(t, registry, "inner-2")
+	if _, err := registry.Delete(inner2.Id, false, false); err != nil {
+		t.Fatalf("Delete(inner-2): %v", err)
+	}
+
+	own, err := documents.Build("inner-2")
+	if err != nil {
+		t.Fatalf("Build(inner-2): %v", err)
+	}
+	if own.Self.State != chain.StateDraining {
+		t.Errorf("inner-2 self.state = %q, want draining", own.Self.State)
+	}
+	if own.NextHop.Host != "10.0.0.7" {
+		t.Errorf("a draining hop keeps dialling %q, want inner-1", own.NextHop.Host)
+	}
+	if !sameNames(own.Hops, "inner-2", "edge-a", "edge-b") {
+		t.Errorf("inner-2 hops = %v, want itself and everything that was outward", hopNames(own.Hops))
+	}
+
+	inner1, err := documents.Build("inner-1")
+	if err != nil {
+		t.Fatalf("Build(inner-1): %v", err)
+	}
+	if !sameNames(inner1.Hops, "inner-1", "inner-2", "edge-a", "edge-b") {
+		t.Errorf("inner-1 hops = %v, want the draining hop still listed", hopNames(inner1.Hops))
+	}
+	for _, listed := range inner1.Hops {
+		if listed.Name != "inner-2" {
+			continue
+		}
+		if listed.State != chain.StateDraining {
+			t.Errorf("inner-1 lists inner-2 as %q, want draining", listed.State)
+		}
+		if listed.SecretHash == "" {
+			t.Error("the draining hop's secret hash must survive in its next hop's document")
+		}
+	}
+
+	for _, name := range []string{"edge-a", "edge-b"} {
+		edge, err := documents.Build(name)
+		if err != nil {
+			t.Fatalf("Build(%s): %v", name, err)
+		}
+		if edge.NextHop.Host != "10.0.0.7" {
+			t.Errorf("%s polls %q, want the re-chained inner-1", name, edge.NextHop.Host)
+		}
+		if !sameNames(edge.Hops, name) {
+			t.Errorf("%s hops = %v, want itself only", name, hopNames(edge.Hops))
+		}
+	}
+}
+
+// §4.5.7 — a hop that is re-entering (pending with a secret hash) stays in the
+// documents and stays its neighbours' next hop, unlike a hop that has never
+// entered. Otherwise the panel would re-chain a neighbour past a living box
+// over a channel that runs through that very box.
+func TestAReEnteringHopStaysVisible(t *testing.T) {
+	documents, registry := exampleChain(t)
+
+	inner2 := hopByName(t, registry, "inner-2")
+	if _, _, err := registry.ReissueToken(inner2.Id); err != nil {
+		t.Fatalf("ReissueToken(inner-2): %v", err)
+	}
+
+	edge, err := documents.Build("edge-a")
+	if err != nil {
+		t.Fatalf("Build(edge-a): %v", err)
+	}
+	if edge.NextHop.Host != "203.0.113.9" {
+		t.Errorf("edge-a polls %q, want the still-living inner-2", edge.NextHop.Host)
+	}
+
+	inner1, err := documents.Build("inner-1")
+	if err != nil {
+		t.Fatalf("Build(inner-1): %v", err)
+	}
+	if !sameNames(inner1.Hops, "inner-1", "inner-2", "edge-a", "edge-b") {
+		t.Errorf("inner-1 hops = %v, want the re-entering hop still listed", hopNames(inner1.Hops))
+	}
+	for _, listed := range inner1.Hops {
+		if listed.Name == "inner-2" && listed.State != chain.StatePending {
+			t.Errorf("inner-1 lists inner-2 as %q, want pending", listed.State)
+		}
 	}
 }

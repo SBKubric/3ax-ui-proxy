@@ -98,6 +98,8 @@ func (s *ChainJoinService) Join(in JoinRequest) (*JoinResponse, error) {
 			return err
 		}
 		if hop.State != chain.StatePending {
+			// A draining hop is included here by its state: its departure is
+			// terminal, and its token was spent when it entered (§4.5.5).
 			return joinRejected("hop %q is %s, not %s", hop.Name, hop.State, chain.StatePending)
 		}
 		if hop.JoinTokenExpires <= time.Now().UnixMilli() {
