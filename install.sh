@@ -246,6 +246,39 @@ gen_random_string() {
     echo "$random_string"
 }
 
+# acme_ip_flags prints the flags that pin acme.sh to one IP family.
+#
+# Both legs of an ACME run can hang on a box with no global IPv6: the standalone
+# listener, and — the one that actually bit on the stand — acme.sh's own HTTPS
+# calls to the CA. A cold dual-stack connect to acme-v02.api.letsencrypt.org
+# costs curl its full 10 s connect timeout before falling back to IPv4, and
+# acme.sh gives up after that with `Cannot init API`; the same request with
+# `curl -4` answers in half a second.
+#
+# So IPv4 is the default and IPv6 is opt-in (PROXY_TLS_IPV6=1 / XUI_TLS_IPV6=1),
+# rather than the other way round with autodetection: a box that has a global
+# IPv6 address still has no guarantee of a working IPv6 path to the CA, which is
+# exactly the case autodetection would get wrong and send back into the 10 s
+# timeout.
+#
+# The two flags are real acme.sh flags, not a curl shim:
+#   --listen-v4   → Le_Listen_V4, the standalone listener's family
+#                   (persisted per domain, acme.sh:6391)
+#   --request-v4  → ACME_USE_IPV4_REQUESTS=1, which _inithttp turns into
+#                   `curl --ipv4` / `wget --inet4-only` (acme.sh:2164, 2196)
+#                   and saves to the account conf (acme.sh:8792), so renewals
+#                   from cron inherit it.
+# acme.sh exposes no knob for `_initAPI`'s retry budget — MAX_API_RETRY_TIMES,
+# the 10 s sleep and the 10 s connect timeout are local variables (acme.sh:3401
+# -3406) — so the retry that matters is the one the caller does around --issue.
+acme_ip_flags() {
+    if [[ "${PROXY_TLS_IPV6:-${XUI_TLS_IPV6:-}}" == "1" ]]; then
+        echo "--listen-v6"
+        return
+    fi
+    echo "--listen-v4 --request-v4"
+}
+
 install_acme() {
     echo -e "${green}Installing acme.sh for SSL certificate management...${plain}"
     (cd ~ && curl -s https://get.acme.sh | sh >/dev/null 2>&1)
@@ -413,10 +446,12 @@ setup_ip_certificate() {
     echo -e "${green}Issuing IP certificate for ${ipv4}...${plain}"
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
 
+    # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
     ~/.acme.sh/acme.sh --issue \
         ${domain_args} \
         --standalone \
         --server letsencrypt \
+        $(acme_ip_flags) \
         --certificate-profile shortlived \
         --days 6 \
         --httpport ${WebPort} \
@@ -2470,7 +2505,7 @@ install_x-ui() {
 
     # Download resources
     if [ $# == 0 ]; then
-        tag_version=$(curl -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        tag_version=$(curl -4Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$tag_version" ]]; then
             echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
             tag_version=$(curl -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
@@ -2487,7 +2522,7 @@ install_x-ui() {
         fi
     elif [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
         echo -e "${yellow}Installing latest pre-release version...${plain}"
-        tag_version=$(curl -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
+        tag_version=$(curl -4Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
         if [[ ! -n "$tag_version" ]]; then
             echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
             tag_version=$(curl -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
@@ -2876,10 +2911,24 @@ proxy_setup_tls() {
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
     # --days 3 and not the acme.sh default of 60: a six-day certificate has to be
     # replaced around its half-life, or the daily cron wakes up past its expiry.
-    if ! ~/.acme.sh/acme.sh --issue -d "${__ip}" --standalone --server letsencrypt \
-        --certificate-profile shortlived --days 3 --httpport 80 --force; then
-        echo -e "${yellow}WARN: could not issue an IP certificate for ${__ip} (port 80 unreachable from outside, CA down, or the box is behind NAT).${plain}"
-        echo -e "${yellow}      The box starts without TLS and the join page answers over plain HTTP; re-issue later and put the paths into /etc/x-ui/proxy.json.${plain}"
+    #
+    # Two attempts, because acme.sh's own retry budget is not reachable from
+    # here and a single slow answer from the CA ends the run.
+    local __acme_ok=0 __try
+    # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
+    for __try in 1 2; do
+        if ~/.acme.sh/acme.sh --issue -d "${__ip}" --standalone --server letsencrypt \
+            $(acme_ip_flags) --certificate-profile shortlived --days 3 --httpport 80 --force; then
+            __acme_ok=1
+            break
+        fi
+        [[ ${__try} -eq 1 ]] && echo -e "${yellow}The CA did not answer — retrying once...${plain}"
+    done
+    if [[ ${__acme_ok} -ne 1 ]]; then
+        echo -e "${yellow}WARN: could not issue an IP certificate for ${__ip} — CA unreachable or slow (no IPv6?), port 80 unreachable from outside, or the box is behind NAT.${plain}"
+        echo -e "${yellow}      The box starts without TLS and the join page answers over plain HTTP. Retry the certificate alone, without reinstalling:${plain}"
+        echo -e "${yellow}        ~/.acme.sh/acme.sh --issue -d ${__ip} --standalone --server letsencrypt $(acme_ip_flags) --certificate-profile shortlived --days 3 --httpport 80 --force${plain}"
+        echo -e "${yellow}      then put the resulting paths into \"cert\"/\"key\" of /etc/x-ui/proxy.json and restart x-ui. Full procedure: docs/runbooks/proxy-front.md §3.3.${plain}"
         PROXY_CERT=""
         PROXY_KEY=""
         return 0
