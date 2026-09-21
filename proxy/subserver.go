@@ -23,6 +23,14 @@ import (
 //go:embed subpage.html
 var subpageHTML string
 
+// Fallback subscription paths, used only to tell "the client asked for a
+// subscription while this hop has no document" (503) from "this is not a
+// route at all" (404). The real paths always come from the document.
+const (
+	fallbackSubPath  = "/sub/"
+	fallbackJsonPath = "/json/"
+)
+
 // app is one recommended client app shown on the proxy subscription page.
 type app struct {
 	Name     string
@@ -38,54 +46,79 @@ var recommendedApps = []app{
 	{Name: "SongBird", Platform: "Windows", URL: "https://github.com/o3ku/SongBird/releases/"},
 }
 
-// headers copied through from the real panel to subscription clients.
+// headers copied through from the next hop to subscription clients.
 var passthroughHeaders = []string{
 	"Subscription-Userinfo", "Profile-Update-Interval", "Profile-Title",
 	"Profile-Web-Page-Url", "Support-Url", "Announce", "Routing-Enable", "Routing",
 }
 
-// SubServer is the proxy's subscription endpoint. It serves /sub and /json by
-// fetching them from the real panel (UpstreamBase) and, for browsers, renders a
-// custom info page with recommended apps and a copy-VLESS-JSON action.
+// SubServer is the hop's sub port: subscriptions proxied from the next hop,
+// the wave endpoints, and — until this box has joined — the join page. One
+// port carries all three (§3.3): the hop is open to the world anyway, the
+// wave is bearer-protected, and a second port would mean another field in the
+// registry, the document and the installer.
+//
+// Which upstream it fetches from and under which paths is not configuration:
+// both come from the current chain document, so a revision that moves them
+// takes effect without a restart (§3.5).
 type SubServer struct {
-	cfg        *Config
+	cfg   *Config
+	state *State
+	chain *ChainHandler
+	join  *JoinPage
+
 	tmpl       *template.Template
 	client     *http.Client
 	httpServer *http.Server
 }
 
-// NewSubServer builds the proxy subscription server (does not start it).
-func NewSubServer(cfg *Config) (*SubServer, error) {
+// NewSubServer builds the hop's sub server (does not start it). join may be
+// nil for a box that has already joined.
+func NewSubServer(cfg *Config, state *State, chainHandler *ChainHandler, join *JoinPage) (*SubServer, error) {
 	tmpl, err := template.New("subpage").Parse(subpageHTML)
 	if err != nil {
 		return nil, fmt.Errorf("parse proxy subpage template: %w", err)
 	}
 	return &SubServer{
-		cfg:  cfg,
-		tmpl: tmpl,
+		cfg:   cfg,
+		state: state,
+		chain: chainHandler,
+		join:  join,
+		tmpl:  tmpl,
 		client: &http.Client{
 			Timeout: 15 * time.Second,
-			// The proxy reaches the real panel by its hidden address (often a bare
-			// IP and/or a self-signed cert), so TLS verification is skipped for this
-			// server-to-server hop; trust is established out of band.
+			// A hop reaches its next hop by a hidden address (often a bare
+			// IP and/or a self-signed cert), so TLS verification is skipped
+			// for this hop-to-hop leg; trust rests on the hop secret.
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 		},
 	}, nil
 }
 
-// Start binds and serves the subscription endpoint in a background goroutine.
-func (s *SubServer) Start() error {
+// Handler is the whole sub port, exposed for tests.
+func (s *SubServer) Handler() http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
-	engine.GET(s.cfg.SubPath+":subid", s.handleSub)
-	engine.GET(s.cfg.JsonPath+":subid", s.handleJson)
+	if s.chain != nil {
+		engine.Any(ChainPathPrefix+"/*endpoint", gin.WrapH(s.chain.Handler()))
+	}
+	if s.join != nil {
+		engine.Any("/join/*token", gin.WrapH(s.join.Handler()))
+	}
+	// Subscription paths travel in the document and can change under a
+	// running server, so they are matched per request rather than registered.
+	engine.NoRoute(s.route)
+	return engine
+}
 
+// Start binds and serves the sub port in a background goroutine.
+func (s *SubServer) Start() error {
 	addr := net.JoinHostPort(s.cfg.SubListen, strconv.Itoa(s.cfg.SubPort))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("proxy sub server listen %s: %w", addr, err)
 	}
-	s.httpServer = &http.Server{Handler: engine}
+	s.httpServer = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
 	go func() {
 		var serr error
@@ -99,11 +132,11 @@ func (s *SubServer) Start() error {
 		}
 	}()
 
-	logger.Infof("proxy-front: subscription server on %s%s (upstream %s)", addr, s.cfg.SubPath, s.cfg.UpstreamBase)
+	logger.Infof("proxy-front: sub port %s (subscriptions, %s/*, join page)", addr, ChainPathPrefix)
 	return nil
 }
 
-// Stop shuts the subscription server down.
+// Stop shuts the sub server down.
 func (s *SubServer) Stop() error {
 	if s.httpServer != nil {
 		return s.httpServer.Close()
@@ -111,57 +144,137 @@ func (s *SubServer) Stop() error {
 	return nil
 }
 
+// nextHop is where subscriptions are fetched from and under which paths: the
+// document's next hop, falling back to proxy.json before the first document.
+func (s *SubServer) nextHop() (base string, sub string, json string) {
+	doc := s.state.Document()
+	base, sub, json = s.cfg.NextHopBase(), fallbackSubPath, fallbackJsonPath
+	if doc == nil {
+		return base, sub, json
+	}
+	if doc.NextHop.Host != "" {
+		scheme := doc.NextHop.SubScheme
+		if scheme == "" {
+			scheme = DefaultSubScheme
+		}
+		port := doc.NextHop.SubPort
+		if port == 0 {
+			port = DefaultSubPort
+		}
+		base = scheme + "://" + net.JoinHostPort(doc.NextHop.Host, strconv.Itoa(port))
+	}
+	if doc.NextHop.SubPath != "" {
+		sub = doc.NextHop.SubPath
+	}
+	if doc.NextHop.JsonPath != "" {
+		json = doc.NextHop.JsonPath
+	}
+	return base, sub, json
+}
+
+// route dispatches a request against the paths of the current document. While
+// this hop has no document it knows neither its upstream nor its paths, so a
+// subscription request is a 503 — a hop that answered 404 would look like a
+// wrong link instead of a box still waiting for the wave (§5.4).
+func (s *SubServer) route(c *gin.Context) {
+	path := c.Request.URL.Path
+	_, subPath, jsonPath := s.nextHop()
+	doc := s.state.Document()
+
+	if id, ok := subscriptionID(path, subPath, fallbackSubPath); ok {
+		if doc == nil {
+			c.String(http.StatusServiceUnavailable, "this box has not joined the chain yet")
+			return
+		}
+		s.handleSub(c, id)
+		return
+	}
+	if id, ok := subscriptionID(path, jsonPath, fallbackJsonPath); ok {
+		if doc == nil {
+			c.String(http.StatusServiceUnavailable, "this box has not joined the chain yet")
+			return
+		}
+		s.handleJson(c, id)
+		return
+	}
+	c.Status(http.StatusNotFound)
+}
+
+// subscriptionID matches a request path against the document's path and the
+// built-in fallback, returning the subscription id.
+func subscriptionID(path, documentPath, fallback string) (string, bool) {
+	for _, prefix := range []string{documentPath, fallback} {
+		if prefix == "" {
+			continue
+		}
+		if id, found := strings.CutPrefix(path, prefix); found && id != "" && !strings.Contains(id, "/") {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // handleSub serves the raw subscription to apps and the custom page to browsers.
-func (s *SubServer) handleSub(c *gin.Context) {
-	body, header, status, err := s.fetchUpstream(s.cfg.SubPath, c.Param("subid"))
+func (s *SubServer) handleSub(c *gin.Context, subid string) {
+	base, subPath, _ := s.nextHop()
+	body, header, status, err := s.fetchUpstream(base, subPath, subid)
 	if err != nil || status != http.StatusOK || len(body) == 0 {
-		logger.Warningf("proxy-front: upstream sub fetch failed (status %d): %v", status, err)
+		logger.Warningf("proxy-front: next hop sub fetch failed (status %d): %v", status, err)
 		c.String(http.StatusBadGateway, "subscription unavailable")
 		return
 	}
 	if wantsHTML(c) {
-		s.renderPage(c, c.Param("subid"), body, header)
+		s.renderPage(c, subid, body, header)
 		return
 	}
 	copyHeaders(c, header)
-	c.Header("Profile-Web-Page-Url", s.publicURL(c, s.cfg.SubPath, c.Param("subid")))
+	c.Header("Profile-Web-Page-Url", s.publicURL(c, s.publicSubPath(), subid))
 	c.String(http.StatusOK, string(body))
 }
 
 // handleJson proxies the JSON subscription straight through (the copy-JSON action).
-func (s *SubServer) handleJson(c *gin.Context) {
-	body, header, status, err := s.fetchUpstream(s.cfg.JsonPath, c.Param("subid"))
+func (s *SubServer) handleJson(c *gin.Context, subid string) {
+	base, _, jsonPath := s.nextHop()
+	body, header, status, err := s.fetchUpstream(base, jsonPath, subid)
 	if err != nil || status != http.StatusOK || len(body) == 0 {
 		c.String(http.StatusBadGateway, "subscription unavailable")
 		return
 	}
 	copyHeaders(c, header)
-	c.Header("Profile-Web-Page-Url", s.publicURL(c, s.cfg.SubPath, c.Param("subid")))
+	c.Header("Profile-Web-Page-Url", s.publicURL(c, s.publicSubPath(), subid))
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 
-// publicURL is the address of this proxy's own subscription endpoint as a
-// client outside sees it: the configured Domain, else the Host the request
-// came in on. The panel builds its Profile-Web-Page-Url from the Host it was
-// fetched by — the real server's address — so the proxy must replace that
-// header with its own identity, or every subscription app would carry a link
-// to the hidden server.
+// publicSubPath is the path clients use on this hop — the same one it fetches
+// under, because the chain forwards subscriptions one to one.
+func (s *SubServer) publicSubPath() string {
+	_, subPath, _ := s.nextHop()
+	return subPath
+}
+
+// publicJsonPath is the JSON subscription path on this hop.
+func (s *SubServer) publicJsonPath() string {
+	_, _, jsonPath := s.nextHop()
+	return jsonPath
+}
+
+// publicURL is the address of this hop's own subscription endpoint as a client
+// outside sees it: the configured Domain, else the Host the request came in
+// on. The panel builds its Profile-Web-Page-Url from the Host it was fetched
+// by — an address deeper in the chain — so every hop must replace that header
+// with its own identity, or subscription apps would carry a link inward.
 func (s *SubServer) publicURL(c *gin.Context, path, subid string) string {
-	scheme := "http"
-	if s.cfg.TLS() {
-		scheme = "https"
-	}
 	host := s.cfg.Domain
 	if host == "" {
 		host = c.Request.Host
 	}
-	return scheme + "://" + host + path + subid
+	return s.cfg.Scheme() + "://" + host + path + subid
 }
 
-// fetchUpstream GETs the raw subscription (not the panel's HTML page) for the
-// given path+id from the real panel.
-func (s *SubServer) fetchUpstream(path, subid string) ([]byte, http.Header, int, error) {
-	req, err := http.NewRequest(http.MethodGet, s.cfg.UpstreamBase+path+subid, nil)
+// fetchUpstream GETs the raw subscription (not the HTML page) for the given
+// path+id from the next hop.
+func (s *SubServer) fetchUpstream(base, path, subid string) ([]byte, http.Header, int, error) {
+	req, err := http.NewRequest(http.MethodGet, base+path+subid, nil)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -204,8 +317,8 @@ type pageData struct {
 }
 
 func (s *SubServer) renderPage(c *gin.Context, subid string, body []byte, header http.Header) {
-	subURL := s.publicURL(c, s.cfg.SubPath, subid)
-	jsonURL := s.publicURL(c, s.cfg.JsonPath, subid)
+	subURL := s.publicURL(c, s.publicSubPath(), subid)
+	jsonURL := s.publicURL(c, s.publicJsonPath(), subid)
 
 	used, total, expire := parseUserinfo(header.Get("Subscription-Userinfo"))
 

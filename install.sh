@@ -37,12 +37,14 @@ is_local_source_install() {
 }
 
 # Branch to fetch auxiliary files (x-ui.sh, service files) from.
-# --beta / --pre → dev branch; otherwise → main
-if [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
-    REPO_BRANCH="dev"
-else
-    REPO_BRANCH="main"
-fi
+#
+# Always `main`. `--beta`/`--pre` choose which *release* to install, not which
+# branch the helper files come from: this fork has no `dev` branch, so the old
+# mapping made every --beta run fetch raw files from a 404 — which on update.sh
+# meant the wrapper download failed after the service had already been stopped
+# and its unit removed, and the box was left with no service at all.
+# XUI_REPO_BRANCH overrides it for testing from a branch.
+REPO_BRANCH="${XUI_REPO_BRANCH:-main}"
 
 # GitHub repo (owner/name) to fetch the release binary, wrapper and service
 # files from. Override with XUI_REPO=owner/name to install from a fork.
@@ -244,6 +246,63 @@ gen_random_string() {
     echo "$random_string"
 }
 
+# acme_ip_flags prints the flags that pin acme.sh to one IP family.
+#
+# Both legs of an ACME run can hang on a box with no global IPv6: the standalone
+# listener, and — the one that actually bit on the stand — acme.sh's own HTTPS
+# calls to the CA. A cold dual-stack connect to acme-v02.api.letsencrypt.org
+# costs curl its full 10 s connect timeout before falling back to IPv4, and
+# acme.sh gives up after that with `Cannot init API`; the same request with
+# `curl -4` answers in half a second.
+#
+# So IPv4 is the default and IPv6 is opt-in, rather than the other way round
+# with autodetection: a box that has a global
+# IPv6 address still has no guarantee of a working IPv6 path to the CA, which is
+# exactly the case autodetection would get wrong and send back into the 10 s
+# timeout.
+#
+# The two flags are real acme.sh flags, not a curl shim:
+#   --listen-v4   → Le_Listen_V4, the standalone listener's family
+#                   (persisted per domain, acme.sh:6391)
+#   --request-v4  → ACME_USE_IPV4_REQUESTS=1, which _inithttp turns into
+#                   `curl --ipv4` / `wget --inet4-only` (acme.sh:2164, 2196)
+#                   and saves to the account conf (acme.sh:8792), so renewals
+#                   from cron inherit it.
+# acme.sh exposes no knob for `_initAPI`'s retry budget — MAX_API_RETRY_TIMES,
+# the 10 s sleep and the 10 s connect timeout are local variables (acme.sh:3401
+# -3406) — so the retry that matters is the one the caller does around --issue.
+#
+# The opt-in is XUI_TLS_IPV6=1; PROXY_TLS_IPV6=1 is the same switch spelled for
+# proxy mode, where every other knob is PROXY_*. This governs every certificate
+# the installer issues — the box's IP certificate and the panel's domain one
+# alike, because the leg that hangs is the CA request, not the identifier.
+acme_ip_flags() {
+    if [[ "${PROXY_TLS_IPV6:-${XUI_TLS_IPV6:-}}" == "1" ]]; then
+        echo "--listen-v6"
+        return
+    fi
+    echo "--listen-v4 --request-v4"
+}
+
+# panel_base_path prints the web base path the way the panel actually serves it.
+#
+# The installer generates a bare random string, but SettingService.GetBasePath
+# wraps it in slashes before anything is routed (web/service/setting.go), so the
+# panel lives at /<path>/ and not at <path>. Printing the raw value gave an
+# Access URL one slash short of working, which is indistinguishable from a
+# broken install to whoever is reading the footer. Read the stored value back
+# and normalise it the same way, falling back to the argument when the binary
+# cannot be asked.
+panel_base_path() {
+    local __p
+    __p=$("${xui_folder}/x-ui" setting -show true 2>/dev/null | grep -Eo 'webBasePath: .+' | awk '{print $2}' | tr -d '[:space:]')
+    [[ -z "${__p}" ]] && __p="${1:-}"
+    [[ -z "${__p}" ]] && { echo "/"; return; }
+    [[ "${__p#/}" == "${__p}" ]] && __p="/${__p}"
+    [[ "${__p%/}" == "${__p}" ]] && __p="${__p}/"
+    echo "${__p}"
+}
+
 install_acme() {
     echo -e "${green}Installing acme.sh for SSL certificate management...${plain}"
     (cd ~ && curl -s https://get.acme.sh | sh >/dev/null 2>&1)
@@ -282,7 +341,8 @@ setup_ssl_certificate() {
     echo -e "${yellow}Note: Port 80 must be open and accessible from the internet${plain}"
 
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
-    ~/.acme.sh/acme.sh --issue -d ${domain} --listen-v6 --standalone --httpport 80 --force
+    # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
+    ~/.acme.sh/acme.sh --issue -d ${domain} $(acme_ip_flags) --standalone --httpport 80 --force
 
     if [ $? -ne 0 ]; then
         echo -e "${yellow}Failed to issue certificate for ${domain}${plain}"
@@ -362,9 +422,15 @@ setup_ip_certificate() {
     # Set reload command for auto-renewal (add || true so it doesn't fail during first install)
     local reloadCmd="systemctl restart x-ui 2>/dev/null || rc-service x-ui restart 2>/dev/null || true"
 
-    # Choose port for HTTP-01 listener (default 80, prompt override)
+    # Choose port for HTTP-01 listener (default 80, prompt override).
+    # Only ask when there is someone to answer: an unattended install (a proxy
+    # front, a scripted panel) has no TTY, and a `read` there returns instantly
+    # with nothing, which is fine — but asking anyway printed a question into a
+    # log that nobody could act on.
     local WebPort=""
-    read -rp "Port to use for ACME HTTP-01 listener (default 80): " WebPort
+    if [[ -t 0 ]]; then
+        read -rp "Port to use for ACME HTTP-01 listener (default 80): " WebPort
+    fi
     WebPort="${WebPort:-80}"
     if ! [[ "${WebPort}" =~ ^[0-9]+$ ]] || ((WebPort < 1 || WebPort > 65535)); then
         echo -e "${red}Invalid port provided. Falling back to 80.${plain}"
@@ -381,7 +447,9 @@ setup_ip_certificate() {
             echo -e "${yellow}Port ${WebPort} is in use.${plain}"
 
             local alt_port=""
-            read -rp "Enter another port for acme.sh standalone listener (leave empty to abort): " alt_port
+            if [[ -t 0 ]]; then
+                read -rp "Enter another port for acme.sh standalone listener (leave empty to abort): " alt_port
+            fi
             alt_port="${alt_port// /}"
             if [[ -z "${alt_port}" ]]; then
                 echo -e "${red}Port ${WebPort} is busy; cannot proceed.${plain}"
@@ -403,10 +471,12 @@ setup_ip_certificate() {
     echo -e "${green}Issuing IP certificate for ${ipv4}...${plain}"
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
 
+    # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
     ~/.acme.sh/acme.sh --issue \
         ${domain_args} \
         --standalone \
         --server letsencrypt \
+        $(acme_ip_flags) \
         --certificate-profile shortlived \
         --days 6 \
         --httpport ${WebPort} \
@@ -576,7 +646,8 @@ ssl_cert_issue() {
 
     # issue the certificate
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force
-    ~/.acme.sh/acme.sh --issue -d ${domain} --listen-v6 --standalone --httpport ${WebPort} --force
+    # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
+    ~/.acme.sh/acme.sh --issue -d ${domain} $(acme_ip_flags) --standalone --httpport ${WebPort} --force
     if [ $? -ne 0 ]; then
         echo -e "${red}Issuing certificate failed, please check logs.${plain}"
         rm -rf ~/.acme.sh/${domain}
@@ -857,17 +928,19 @@ config_debug_mode() {
     else
         echo -e "${yellow}Username/password unchanged from previous install.${plain}"
     fi
+    local base_path
+    base_path=$(panel_base_path "${config_webBasePath}")
     echo -e "${green}Port:        ${config_port}${plain}"
-    echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
+    echo -e "${green}WebBasePath: ${base_path}${plain}"
     if [[ "${config_listen}" == "127.0.0.1" || "${config_listen}" == "::1" ]]; then
         echo -e "${green}Listen:      ${config_listen} (loopback only)${plain}"
-        echo -e "${green}Access URL:  http://127.0.0.1:${config_port}/${config_webBasePath}${plain}"
-        echo -e "${green}             http://localhost:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}Access URL:  http://127.0.0.1:${config_port}${base_path}${plain}"
+        echo -e "${green}             http://localhost:${config_port}${base_path}${plain}"
         echo -e "${green}═══════════════════════════════════════════${plain}"
         echo -e "${yellow}⚠ Plain HTTP, no certificate, no remote access. For local diagnostics only.${plain}"
     else
         echo -e "${yellow}Listen:      ${config_listen} (exposed on the network)${plain}"
-        echo -e "${green}Access URL:  http://<this-host-ip>:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}Access URL:  http://<this-host-ip>:${config_port}${base_path}${plain}"
         echo -e "${green}═══════════════════════════════════════════${plain}"
         echo -e "${red}⚠ Plain HTTP with NO certificate, exposed on ${config_listen}. Intranet testing only — never on a public network.${plain}"
     fi
@@ -945,13 +1018,15 @@ config_after_install() {
             echo -e "${green}═══════════════════════════════════════════${plain}"
             echo -e "${green}Username:    ${config_username}${plain}"
             echo -e "${green}Password:    ${config_password}${plain}"
+            local base_path
+            base_path=$(panel_base_path "${config_webBasePath}")
             echo -e "${green}Port:        ${config_port}${plain}"
-            echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
+            echo -e "${green}WebBasePath: ${base_path}${plain}"
             if [[ -n "$server_ipv6" ]]; then
-                echo -e "${green}Access URL IPv4: https://${SSL_HOST}:${config_port}/${config_webBasePath}${plain}"
-                echo -e "${green}Access URL IPv6: https://[${server_ipv6}]:${config_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL IPv4: https://${SSL_HOST}:${config_port}${base_path}${plain}"
+                echo -e "${green}Access URL IPv6: https://[${server_ipv6}]:${config_port}${base_path}${plain}"
             else
-                echo -e "${green}Access URL:  https://${SSL_HOST}:${config_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL:  https://${SSL_HOST}:${config_port}${base_path}${plain}"
             fi
             echo -e "${green}═══════════════════════════════════════════${plain}"
             echo -e "${yellow}⚠ IMPORTANT: Save these credentials securely!${plain}"
@@ -960,7 +1035,9 @@ config_after_install() {
             local config_webBasePath=$(gen_random_string 18)
             echo -e "${yellow}WebBasePath is missing or too short. Generating a new one...${plain}"
             ${xui_folder}/x-ui setting -webBasePath "${config_webBasePath}"
-            echo -e "${green}New WebBasePath: ${config_webBasePath}${plain}"
+            local base_path
+            base_path=$(panel_base_path "${config_webBasePath}")
+            echo -e "${green}New WebBasePath: ${base_path}${plain}"
 
             # If the panel is already installed but no certificate is configured, prompt for SSL now
             if [[ -z "${existing_cert}" ]]; then
@@ -971,10 +1048,10 @@ config_after_install() {
                 echo -e "${yellow}Let's Encrypt now supports both domains and IP addresses!${plain}"
                 echo ""
                 prompt_and_setup_ssl "${existing_port}" "${config_webBasePath}" "${server_ip}"
-                echo -e "${green}Access URL:  https://${SSL_HOST}:${existing_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL:  https://${SSL_HOST}:${existing_port}${base_path}${plain}"
             else
                 # If a cert already exists, just show the access URL
-                echo -e "${green}Access URL: https://${server_ip}:${existing_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL: https://${server_ip}:${existing_port}${base_path}${plain}"
             fi
         fi
     else
@@ -2289,6 +2366,13 @@ install_x-ui_finalize() {
     # local-source build path which only fetches xray). Never fatal.
     install_mtg "bin"
 
+    # The wrapper the tarball (or the local source tree) just delivered wins
+    # over anything staged earlier: it is the one that matches this binary.
+    [[ -f x-ui.sh ]] && cp -f x-ui.sh /usr/bin/x-ui-temp
+    if [[ ! -s /usr/bin/x-ui-temp ]]; then
+        echo -e "${red}No x-ui.sh to install as /usr/bin/x-ui — the panel is installed but the 'x-ui' command will not work. Re-run the installer.${plain}"
+        exit 1
+    fi
     mv -f /usr/bin/x-ui-temp /usr/bin/x-ui
     chmod +x /usr/bin/x-ui
     mkdir -p /var/log/x-ui
@@ -2296,7 +2380,9 @@ install_x-ui_finalize() {
     # Proxy-front install: write proxy.json + a `x-ui proxy` service unit and skip
     # all panel / AmneziaWG / WireGuard configuration.
     if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
+        proxy_setup_tls
         config_proxy_mode
+        proxy_join_now
         install_x-ui_proxy_service_unit
         print_proxy_footer
         return
@@ -2332,7 +2418,7 @@ install_x-ui_service_unit() {
         if [ -f "${xui_folder}/x-ui.rc" ]; then
             cp -f "${xui_folder}/x-ui.rc" /etc/init.d/x-ui
         else
-            curl -4fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc
+            curl -4fLRo /etc/init.d/x-ui "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.rc"
             if [[ $? -ne 0 ]]; then
                 echo -e "${red}Failed to download x-ui.rc${plain}"
                 exit 1
@@ -2380,13 +2466,13 @@ install_x-ui_service_unit() {
         echo -e "${yellow}Service files not found locally, downloading from GitHub...${plain}"
         case "${release}" in
             ubuntu | debian | armbian)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.debian" >/dev/null 2>&1
             ;;
             arch | manjaro | parch)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.arch" >/dev/null 2>&1
             ;;
             *)
-                curl -4fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel >/dev/null 2>&1
+                curl -4fLRo ${xui_service}/x-ui.service "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.service.rhel" >/dev/null 2>&1
             ;;
         esac
         if [[ $? -ne 0 ]]; then
@@ -2451,7 +2537,7 @@ install_x-ui() {
 
     # Download resources
     if [ $# == 0 ]; then
-        tag_version=$(curl -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        tag_version=$(curl -4Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$tag_version" ]]; then
             echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
             tag_version=$(curl -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
@@ -2468,7 +2554,7 @@ install_x-ui() {
         fi
     elif [[ "$1" == "--beta" || "$1" == "--pre" ]]; then
         echo -e "${yellow}Installing latest pre-release version...${plain}"
-        tag_version=$(curl -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
+        tag_version=$(curl -4Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
         if [[ ! -n "$tag_version" ]]; then
             echo -e "${yellow}Trying to fetch version with IPv4...${plain}"
             tag_version=$(curl -4 -Ls "https://api.github.com/repos/${XUI_REPO}/releases" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | head -1)
@@ -2504,12 +2590,6 @@ install_x-ui() {
             exit 1
         fi
     fi
-    curl -4fLRo /usr/bin/x-ui-temp https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh
-    if [[ $? -ne 0 ]]; then
-        echo -e "${red}Failed to download x-ui.sh${plain}"
-        exit 1
-    fi
-
     # Verify the archive BEFORE the old install is removed: an interrupted
     # download would otherwise leave the machine with neither version, which is
     # exactly what happened on a live panel.
@@ -2522,6 +2602,19 @@ install_x-ui() {
         rm x-ui-linux-$(arch).tar.gz -f
         echo -e "${red}The downloaded archive does not contain the x-ui binary. Nothing has been changed.${plain}"
         exit 1
+    fi
+
+    # The management wrapper ships inside the tarball, so the usual install
+    # needs no second download at all — install_x-ui_finalize copies it out of
+    # the unpacked folder. Only a tarball that predates it falls back to the raw
+    # file, and that fetch happens here, while nothing has been removed yet.
+    if ! tar -tzf "x-ui-linux-$(arch).tar.gz" 2>/dev/null | grep -qx "x-ui/x-ui.sh"; then
+        echo -e "${yellow}This release tarball ships no x-ui.sh — fetching the management wrapper from ${REPO_BRANCH}.${plain}"
+        if ! curl -4fLRo /usr/bin/x-ui-temp "https://raw.githubusercontent.com/${XUI_REPO}/${REPO_BRANCH}/x-ui.sh"; then
+            rm -f "x-ui-linux-$(arch).tar.gz"
+            echo -e "${red}Failed to download x-ui.sh. Nothing has been changed — run the install again.${plain}"
+            exit 1
+        fi
     fi
 
     # Remove old install before extracting fresh tarball.
@@ -2622,28 +2715,33 @@ check_existing_install() {
 }
 
 # --- Proxy-front install mode -------------------------------------------------
-# Installs this host as a sacrificial "proxy front": it runs `x-ui proxy` — a
-# dokodemo-door relay to the real (hidden) server plus a subscription server that
-# proxies the real panel — instead of the web panel. No DB, no AmneziaWG/WireGuard,
-# no panel web UI. Activated by XUI_PROXY_MODE=1 (or the interactive prompt below);
-# parameters come from PROXY_* env vars, with prompts for missing required ones on
-# a TTY. The relay learns its ports from a relay manifest exported on the real
-# panel (`x-ui relay-manifest`): pass its path in PROXY_RELAY_MANIFEST for a
-# scripted install, or leave it unset and paste the manifest into the one-time
-# setup page the proxy front serves after start (link printed at the end). A raw
-# panel config.json is refused either way.
+# Installs this host as one hop of the proxy chain (docs/spec/proxy-chain.md §5):
+# it runs `x-ui proxy` — a dokodemo-door relay towards its next hop plus a
+# subscription server that proxies that same next hop — instead of the web panel.
+# No DB, no AmneziaWG/WireGuard, no panel web UI. Activated by XUI_PROXY_MODE=1
+# (or the interactive prompt below); parameters come from PROXY_* env vars, with
+# prompts for the missing required ones on a TTY.
+#
+# A hop knows exactly two things before it joins: the address of its next hop
+# (PROXY_NEXT_HOP — an inner front, or the real server for the innermost hop) and
+# a one-time join token issued by the panel's chain registry. With
+# PROXY_JOIN_TOKEN the installer joins the chain before the service starts;
+# without it the box comes up in bootstrap mode and serves a one-time join page
+# whose link the footer prints (`x-ui chain join-url`). The hop's name, its role
+# and the ports it relays all arrive later in the chain document — none of them
+# is configured here.
 prompt_proxy_mode() {
     if [[ "${XUI_PROXY_MODE:-}" != "1" ]]; then
         if [[ -t 0 && "${XUI_DEBUG_MODE:-}" != "1" ]]; then
             echo ""
-            echo -e "${yellow}Install this host as a PROXY FRONT (traffic relay + subscription proxy, no web panel)? [y/N]${plain}"
+            echo -e "${yellow}Install this host as a CHAIN HOP / proxy front (traffic relay + subscription proxy, no web panel)? [y/N]${plain}"
             read -rp "Proxy mode? [y/N]: " __proxy_choice
             case "${__proxy_choice,,}" in
-                y | yes) export XUI_PROXY_MODE=1 ;;
-                *)
-                    export XUI_PROXY_MODE=0
-                    return
-                    ;;
+            y | yes) export XUI_PROXY_MODE=1 ;;
+            *)
+                export XUI_PROXY_MODE=0
+                return
+                ;;
             esac
         else
             export XUI_PROXY_MODE=0
@@ -2651,103 +2749,309 @@ prompt_proxy_mode() {
         fi
     fi
 
-    echo -e "${green}Proxy-front mode enabled.${plain}"
+    echo -e "${green}Proxy-front mode enabled — this host becomes a chain hop.${plain}"
 
-    if [[ -z "${PROXY_UPSTREAM_HOST:-}" && -t 0 ]]; then
-        echo -en "${yellow}Real (hidden) server address to relay traffic to: ${plain}"
-        read -r PROXY_UPSTREAM_HOST
+    # Variables that died with the relay manifest (ADR 0003, spec §5.6). This is
+    # a fresh box: a silently ignored PROXY_EXTRA_PORTS would give a front with
+    # half its ports, and that only shows up on a client. So: error, not warning.
+    local __retired
+    local __retired_vars=(
+        PROXY_UPSTREAM_HOST PROXY_UPSTREAM_BASE PROXY_EXTRA_PORTS
+        PROXY_RELAY_MANIFEST PROXY_SUB_PATH PROXY_JSON_PATH PROXY_XRAY_CONFIG
+    )
+    for __retired in "${__retired_vars[@]}"; do
+        if [[ -n "${!__retired:-}" ]]; then
+            echo -e "${red}${__retired} is gone: a proxy front is now a chain hop. Pass PROXY_NEXT_HOP (and PROXY_JOIN_TOKEN, or use the join page). See docs/runbooks/proxy-front.md.${plain}"
+            exit 1
+        fi
+    done
+
+    if [[ -z "${PROXY_NEXT_HOP:-}" && -t 0 ]]; then
+        echo -en "${yellow}Next hop address (inner front or the real server): ${plain}"
+        read -r PROXY_NEXT_HOP
     fi
-    if [[ -z "${PROXY_UPSTREAM_BASE:-}" && -t 0 ]]; then
-        echo -en "${yellow}Real panel subscription base URL (e.g. https://1.2.3.4:2096), blank = no sub server: ${plain}"
-        read -r PROXY_UPSTREAM_BASE
+    if [[ -z "${PROXY_JOIN_TOKEN:-}" && -t 0 ]]; then
+        echo -en "${yellow}Join token from the panel's chain registry (blank = leave the join page up): ${plain}"
+        read -r PROXY_JOIN_TOKEN
     fi
     if [[ -z "${PROXY_DOMAIN:-}" && -t 0 ]]; then
-        echo -en "${yellow}Proxy public domain advertised in sub URLs (optional): ${plain}"
+        echo -en "${yellow}Public host of this box, used in subscription links and the join-page URL (optional): ${plain}"
         read -r PROXY_DOMAIN
     fi
-    if [[ -z "${PROXY_EXTRA_PORTS:-}" && -t 0 ]]; then
-        echo -en "${yellow}Extra ports served outside xray on the real server (AmneziaWG/WireGuard/MTProto), e.g. 51820/udp,51821/udp — blank = none: ${plain}"
-        read -r PROXY_EXTRA_PORTS
-    fi
 
+    : "${PROXY_NEXT_HOP_SUB_PORT:=2096}"
+    : "${PROXY_NEXT_HOP_SCHEME:=https}"
     : "${PROXY_SUB_PORT:=2096}"
-    : "${PROXY_SUB_PATH:=/sub/}"
-    : "${PROXY_JSON_PATH:=/json/}"
-    export PROXY_UPSTREAM_HOST PROXY_RELAY_MANIFEST PROXY_UPSTREAM_BASE PROXY_DOMAIN PROXY_EXTRA_PORTS
-    export PROXY_SUB_PORT PROXY_SUB_PATH PROXY_JSON_PATH PROXY_CERT PROXY_KEY
+    : "${PROXY_SUB_LISTEN:=}"
+    : "${PROXY_RELAY_LISTEN:=::}"
+    : "${PROXY_TLS:=letsencrypt-ip}"
 
-    if [[ -z "${PROXY_UPSTREAM_HOST}" ]]; then
-        echo -e "${red}Proxy mode requires PROXY_UPSTREAM_HOST (env var or prompt).${plain}"
+    if [[ -z "${PROXY_NEXT_HOP}" ]]; then
+        echo -e "${red}Proxy mode requires PROXY_NEXT_HOP (env var or prompt): the address this hop relays to and polls the chain document from.${plain}"
         exit 1
     fi
-    if [[ -n "${PROXY_XRAY_CONFIG:-}" ]]; then
-        echo -e "${red}PROXY_XRAY_CONFIG is gone: the proxy front no longer takes the panel's config.json. Export a relay manifest on the real panel (x-ui relay-manifest) and pass it as PROXY_RELAY_MANIFEST, or leave it unset and paste it into the setup page.${plain}"
+    # Ports are checked by proxy_validate_config_values below, and a bad one is
+    # an error rather than a silent fallback to 2096: the old fallback quietly
+    # moved the sub port of a box whose owner had asked for another one, and it
+    # would have swallowed a value crafted to end up inside proxy.json unquoted.
+    case "${PROXY_NEXT_HOP_SCHEME}" in
+    http | https) ;;
+    *)
+        echo -e "${yellow}PROXY_NEXT_HOP_SCHEME '${PROXY_NEXT_HOP_SCHEME}' is neither http nor https — defaulting to https.${plain}"
+        PROXY_NEXT_HOP_SCHEME=https
+        ;;
+    esac
+    case "${PROXY_TLS}" in
+    letsencrypt-ip | none | manual) ;;
+    *)
+        echo -e "${red}PROXY_TLS '${PROXY_TLS}' is not one of letsencrypt-ip|none|manual.${plain}"
+        exit 1
+        ;;
+    esac
+    if [[ "${PROXY_TLS}" == "manual" && (-z "${PROXY_CERT:-}" || -z "${PROXY_KEY:-}") ]]; then
+        echo -e "${yellow}PROXY_TLS=manual without PROXY_CERT/PROXY_KEY — the sub port and the join page will answer over plain HTTP.${plain}"
+    fi
+    if [[ "${PROXY_TLS}" != "manual" && (-n "${PROXY_CERT:-}" || -n "${PROXY_KEY:-}") ]]; then
+        echo -e "${yellow}PROXY_CERT/PROXY_KEY only mean something with PROXY_TLS=manual — ignoring them.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+    fi
+
+    proxy_validate_config_values
+
+    export PROXY_NEXT_HOP PROXY_NEXT_HOP_SUB_PORT PROXY_NEXT_HOP_SCHEME PROXY_JOIN_TOKEN
+    export PROXY_DOMAIN PROXY_SUB_PORT PROXY_SUB_LISTEN PROXY_RELAY_LISTEN PROXY_TLS
+    export PROXY_CERT PROXY_KEY
+}
+
+# proxy_json_value_ok <name> <value> <alphabet-regex> — refuses a value that has
+# no business inside proxy.json.
+#
+# config_proxy_mode interpolates these straight into a JSON heredoc, so a value
+# carrying a double quote does not merely break the file: it appends keys of the
+# supplier's choosing to the config a hop proves itself with — a `hopSecret`, a
+# `nextHop`, a `stateDir`. The alphabets below are deliberately narrower than
+# what a shell would swallow: a next hop is a host, an IP or a bracketed IPv6, a
+# cert is a path, and none of them has any business carrying a quote, a
+# backslash, a space or a control character.
+proxy_json_value_ok() {
+    local name="$1" value="$2" pattern="$3"
+    [[ -z "${value}" ]] && return 0
+    if [[ ! "${value}" =~ ${pattern} ]]; then
+        echo -e "${red}${name}='${value}' contains characters that must not reach /etc/x-ui/proxy.json. Allowed: ${pattern}${plain}"
         exit 1
     fi
-    if [[ -n "${PROXY_RELAY_MANIFEST:-}" ]]; then
-        if [[ ! -f "${PROXY_RELAY_MANIFEST}" ]]; then
-            echo -e "${red}PROXY_RELAY_MANIFEST '${PROXY_RELAY_MANIFEST}' not found.${plain}"
-            exit 1
-        fi
-        if ! grep -q '"relayManifest"' "${PROXY_RELAY_MANIFEST}"; then
-            echo -e "${red}'${PROXY_RELAY_MANIFEST}' is not a relay manifest (no \"relayManifest\" marker) — it looks like a raw xray config, which must not be copied to this box. Generate the manifest on the real panel: x-ui relay-manifest${plain}"
-            exit 1
-        fi
-    fi
-    if ! [[ "${PROXY_SUB_PORT}" =~ ^[0-9]+$ ]]; then
-        echo -e "${yellow}PROXY_SUB_PORT '${PROXY_SUB_PORT}' is not numeric — defaulting to 2096.${plain}"
-        PROXY_SUB_PORT=2096
-    fi
-    local __ep
-    for __ep in ${PROXY_EXTRA_PORTS//,/ }; do
-        if ! [[ "${__ep}" =~ ^[0-9]+/(tcp|udp|tcp\+udp)$ ]]; then
-            echo -e "${red}PROXY_EXTRA_PORTS entry '${__ep}' is invalid — use <port>/tcp, <port>/udp or <port>/tcp+udp.${plain}"
-            exit 1
-        fi
-    done
 }
 
-# Renders PROXY_EXTRA_PORTS ("51820/udp,8443/tcp") as a JSON string array.
-proxy_extra_ports_json() {
-    local out="" __ep
-    for __ep in ${PROXY_EXTRA_PORTS//,/ }; do
-        out+="${out:+, }\"${__ep}\""
-    done
-    echo "[${out}]"
+# proxy_json_port_ok <name> <value> — a port is a number, and it goes into the
+# JSON unquoted, so anything else is both a broken file and an injection point.
+proxy_json_port_ok() {
+    local name="$1" value="$2"
+    if ! [[ "${value}" =~ ^[0-9]+$ ]] || ((value < 1 || value > 65535)); then
+        echo -e "${red}${name}='${value}' must be an integer between 1 and 65535.${plain}"
+        exit 1
+    fi
 }
 
-# Writes /etc/x-ui/proxy.json (and stages the relay manifest when one was
-# given) from the PROXY_* values gathered by prompt_proxy_mode.
+# Checks every PROXY_* value that ends up in proxy.json. Called once on the
+# values the owner supplied and again just before the file is written, because
+# proxy_setup_tls fills in cert and key in between.
+proxy_validate_config_values() {
+    # `]` leads the bracket expression and `-` closes it, so both are literal.
+    local host_re='^[]A-Za-z0-9.:[-]+$'
+    local path_re='^[A-Za-z0-9._/@-]+$'
+
+    proxy_json_value_ok PROXY_NEXT_HOP "${PROXY_NEXT_HOP:-}" "${host_re}"
+    proxy_json_value_ok PROXY_DOMAIN "${PROXY_DOMAIN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_SUB_LISTEN "${PROXY_SUB_LISTEN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_RELAY_LISTEN "${PROXY_RELAY_LISTEN:-}" "${host_re}"
+    proxy_json_value_ok PROXY_CERT "${PROXY_CERT:-}" "${path_re}"
+    proxy_json_value_ok PROXY_KEY "${PROXY_KEY:-}" "${path_re}"
+    proxy_json_port_ok PROXY_SUB_PORT "${PROXY_SUB_PORT:-}"
+    proxy_json_port_ok PROXY_NEXT_HOP_SUB_PORT "${PROXY_NEXT_HOP_SUB_PORT:-}"
+}
+
+# Public IPv4 of this box — the subject of the Let's Encrypt IP certificate and
+# the address the footer shows. Same probe list as the panel install path.
+proxy_public_ipv4() {
+    local __url __response __code __ip
+    for __url in "https://api4.ipify.org" "https://ipv4.icanhazip.com" "https://4.ident.me" "https://ipv4.myexternalip.com/raw"; do
+        __response=$(curl -4 -s -w "\n%{http_code}" --max-time 3 "${__url}" 2>/dev/null)
+        __code=$(echo "${__response}" | tail -n1)
+        __ip=$(echo "${__response}" | head -n-1 | tr -d '[:space:]')
+        if [[ "${__code}" == "200" ]] && is_ipv4 "${__ip}"; then
+            echo "${__ip}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Gives the box the TLS it serves its sub port — and therefore its join page —
+# with, and leaves the paths in PROXY_CERT/PROXY_KEY for config_proxy_mode.
+#
+# Never fatal. A hop without a certificate still relays and still shows its join
+# page, only over plain HTTP and with the warning banner of §5.4; during the
+# install of a disposable front that page is often the one channel its owner has.
+proxy_setup_tls() {
+    proxy_tls_ip=""
+    case "${PROXY_TLS}" in
+    none)
+        PROXY_CERT=""
+        PROXY_KEY=""
+        echo -e "${yellow}PROXY_TLS=none — the sub port and the join page answer over plain HTTP.${plain}"
+        return 0
+        ;;
+    manual)
+        if [[ -n "${PROXY_CERT:-}" && -n "${PROXY_KEY:-}" ]]; then
+            echo -e "${green}PROXY_TLS=manual — using ${PROXY_CERT} / ${PROXY_KEY}; this box will not renew them.${plain}"
+        fi
+        return 0
+        ;;
+    esac
+
+    # letsencrypt-ip: a certificate for the box's own IP address. A fresh
+    # disposable front has no domain, and Let's Encrypt issues IP certificates
+    # only under the `shortlived` profile (~6 days) — which suits a box meant to
+    # be thrown away, as long as it renews itself.
+    local __ip
+    __ip=$(proxy_public_ipv4) || __ip=""
+    if [[ -z "${__ip}" ]]; then
+        echo -e "${yellow}WARN: could not detect this box's public IPv4 — skipping the Let's Encrypt IP certificate; the join page will be served over plain HTTP.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+        return 0
+    fi
+    if is_port_in_use 80; then
+        echo -e "${yellow}WARN: port 80 is busy — the ACME standalone challenge cannot bind it. Skipping the IP certificate; free port 80 and re-issue later, or install with PROXY_TLS=manual.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+        return 0
+    fi
+    if ! command -v ~/.acme.sh/acme.sh &>/dev/null; then
+        if ! install_acme; then
+            echo -e "${yellow}WARN: acme.sh is unavailable — skipping the Let's Encrypt IP certificate.${plain}"
+            PROXY_CERT=""
+            PROXY_KEY=""
+            return 0
+        fi
+    fi
+
+    local __certDir="/root/cert/ip"
+    mkdir -p "${__certDir}"
+    echo -e "${green}Issuing a Let's Encrypt IP certificate for ${__ip} (shortlived profile, ~6 days, auto-renewed)...${plain}"
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
+    # --days 3 and not the acme.sh default of 60: a six-day certificate has to be
+    # replaced around its half-life, or the daily cron wakes up past its expiry.
+    #
+    # Two attempts, because acme.sh's own retry budget is not reachable from
+    # here and a single slow answer from the CA ends the run.
+    local __acme_ok=0 __try
+    # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
+    for __try in 1 2; do
+        if ~/.acme.sh/acme.sh --issue -d "${__ip}" --standalone --server letsencrypt \
+            $(acme_ip_flags) --certificate-profile shortlived --days 3 --httpport 80 --force; then
+            __acme_ok=1
+            break
+        fi
+        [[ ${__try} -eq 1 ]] && echo -e "${yellow}The CA did not answer — retrying once...${plain}"
+    done
+    if [[ ${__acme_ok} -ne 1 ]]; then
+        echo -e "${yellow}WARN: could not issue an IP certificate for ${__ip} — CA unreachable or slow (no IPv6?), port 80 unreachable from outside, or the box is behind NAT.${plain}"
+        echo -e "${yellow}      The box starts without TLS and the join page answers over plain HTTP. Retry the certificate alone, without reinstalling:${plain}"
+        echo -e "${yellow}        ~/.acme.sh/acme.sh --issue -d ${__ip} --standalone --server letsencrypt $(acme_ip_flags) --certificate-profile shortlived --days 3 --httpport 80 --force${plain}"
+        echo -e "${yellow}      then put the resulting paths into \"cert\"/\"key\" of /etc/x-ui/proxy.json and restart x-ui. Full procedure: docs/runbooks/proxy-front.md §3.3.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+        return 0
+    fi
+    # acme.sh exits non-zero when reloadcmd fails, so check the files, not $?.
+    ~/.acme.sh/acme.sh --installcert -d "${__ip}" \
+        --key-file "${__certDir}/privkey.pem" \
+        --fullchain-file "${__certDir}/fullchain.pem" \
+        --reloadcmd "systemctl restart x-ui 2>/dev/null || rc-service x-ui restart 2>/dev/null || true" >/dev/null 2>&1 || true
+    if [[ ! -s "${__certDir}/fullchain.pem" || ! -s "${__certDir}/privkey.pem" ]]; then
+        echo -e "${yellow}WARN: the IP certificate was issued but not installed — continuing without TLS.${plain}"
+        PROXY_CERT=""
+        PROXY_KEY=""
+        return 0
+    fi
+    chmod 600 "${__certDir}/privkey.pem" 2>/dev/null
+    chmod 644 "${__certDir}/fullchain.pem" 2>/dev/null
+    ~/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
+    PROXY_CERT="${__certDir}/fullchain.pem"
+    PROXY_KEY="${__certDir}/privkey.pem"
+    proxy_tls_ip="${__ip}"
+    echo -e "${green}IP certificate installed → ${PROXY_CERT}${plain}"
+    echo -e "${yellow}acme.sh renews it from cron and restarts x-ui. Renewal needs port 80 free, so do not let the chain relay port 80 through this box.${plain}"
+    return 0
+}
+
+# Writes /etc/x-ui/proxy.json v2 (§5.1, 0600) and the chain state directory from
+# the PROXY_* values gathered by prompt_proxy_mode.
+#
+# No `hopSecret`: the panel issues it at join and the box writes it itself. No
+# manifest is copied anywhere — the ports this hop relays arrive in the chain
+# document from its next hop.
 config_proxy_mode() {
+    # Before anything is created or removed: a bad value here means no file.
+    proxy_validate_config_values
+
     mkdir -p /etc/x-ui
-    local manifest="/etc/x-ui/relay-manifest.json"
-    if [[ -n "${PROXY_RELAY_MANIFEST:-}" ]]; then
-        cp -f "${PROXY_RELAY_MANIFEST}" "${manifest}"
-        chmod 600 "${manifest}"
-        echo -e "${green}Installed relay manifest → ${manifest}${plain}"
-    else
-        rm -f "${manifest}"
-        echo -e "${yellow}No relay manifest given — the proxy front will start in bootstrap mode and wait for one on its setup page.${plain}"
-    fi
+    # Leftovers of a v1 box being reinstalled as a hop: a stale manifest would be
+    # ignored, a stale setup-page URL would send its owner to a dead link.
+    rm -f /etc/x-ui/relay-manifest.json /etc/x-ui/proxy-setup.url
 
     cat >/etc/x-ui/proxy.json <<EOF
 {
-  "upstreamHost": "${PROXY_UPSTREAM_HOST}",
-  "relayManifestPath": "${manifest}",
-  "relayListen": "${PROXY_RELAY_LISTEN:-::}",
-  "extraPorts": $(proxy_extra_ports_json),
-  "upstreamBase": "${PROXY_UPSTREAM_BASE}",
-  "domain": "${PROXY_DOMAIN}",
-  "subListen": "",
+  "version": 2,
+  "nextHop": {
+    "host": "${PROXY_NEXT_HOP}",
+    "subPort": ${PROXY_NEXT_HOP_SUB_PORT},
+    "subScheme": "${PROXY_NEXT_HOP_SCHEME}"
+  },
+  "subListen": "${PROXY_SUB_LISTEN:-}",
   "subPort": ${PROXY_SUB_PORT},
-  "subPath": "${PROXY_SUB_PATH}",
-  "jsonPath": "${PROXY_JSON_PATH}",
+  "relayListen": "${PROXY_RELAY_LISTEN:-::}",
+  "domain": "${PROXY_DOMAIN:-}",
   "cert": "${PROXY_CERT:-}",
-  "key": "${PROXY_KEY:-}"
+  "key": "${PROXY_KEY:-}",
+  "stateDir": "/etc/x-ui/chain"
 }
 EOF
     chmod 600 /etc/x-ui/proxy.json
-    echo -e "${green}Wrote /etc/x-ui/proxy.json${plain}"
+    mkdir -p /etc/x-ui/chain
+    chmod 700 /etc/x-ui/chain
+    echo -e "${green}Wrote /etc/x-ui/proxy.json (v2) and the chain state dir /etc/x-ui/chain/${plain}"
+}
+
+# Joins the chain before the service starts, when the owner passed a token.
+#
+# `x-ui chain rejoin` writes the hop secret and the first chain document to disk
+# itself, so the service that comes up next is already a full hop and no join
+# page is ever served. A failed join is not fatal: the box then starts in
+# bootstrap mode and its owner fixes the host or the token on the join page.
+proxy_join_now() {
+    proxy_joined=0
+    proxy_join_output=""
+    [[ -z "${PROXY_JOIN_TOKEN:-}" ]] && return 0
+
+    echo -e "${green}Joining the chain with the supplied join token...${plain}"
+    if proxy_join_output=$("${xui_folder}/x-ui" chain rejoin \
+        -c /etc/x-ui/proxy.json \
+        --next-hop "${PROXY_NEXT_HOP}" \
+        --sub-port "${PROXY_NEXT_HOP_SUB_PORT}" \
+        --scheme "${PROXY_NEXT_HOP_SCHEME}" \
+        --token "${PROXY_JOIN_TOKEN}" 2>&1); then
+        proxy_joined=1
+        echo -e "${green}${proxy_join_output}${plain}"
+    else
+        echo -e "${yellow}WARN: the join did not go through:${plain}"
+        echo -e "${yellow}  ${proxy_join_output}${plain}"
+        echo -e "${yellow}  A bare 404 from the next hop means the token is unknown, expired or already spent — reissue it in the panel's chain registry.${plain}"
+        echo -e "${yellow}  The box starts in bootstrap mode and serves its join page instead.${plain}"
+    fi
+    return 0
 }
 
 # Installs a service unit whose ExecStart runs `x-ui proxy` instead of the panel.
@@ -2794,40 +3098,60 @@ EOF
     chown root:root ${xui_service}/x-ui.service >/dev/null 2>&1
     chmod 644 ${xui_service}/x-ui.service >/dev/null 2>&1
     systemctl daemon-reload
-    systemctl enable x-ui
-    systemctl start x-ui
+    systemctl enable --now x-ui
 }
 
 print_proxy_footer() {
-    echo -e "${green}x-ui ${tag_version}${plain} installed as a PROXY FRONT — running now."
+    echo -e "${green}x-ui ${tag_version}${plain} installed as a CHAIN HOP (proxy front) — running now."
     echo -e ""
-    echo -e "  Relay target (real server): ${blue}${PROXY_UPSTREAM_HOST}${plain}"
-    echo -e "  Subscription upstream:      ${blue}${PROXY_UPSTREAM_BASE:-<disabled>}${plain}"
-    echo -e "  Proxy config:               ${blue}/etc/x-ui/proxy.json${plain}"
-    echo -e "  Relay manifest:             ${blue}/etc/x-ui/relay-manifest.json${plain}"
-    if [[ -z "${PROXY_RELAY_MANIFEST:-}" ]]; then
-        local __setup_url="" __i
+    echo -e "  Next hop:      ${blue}${PROXY_NEXT_HOP_SCHEME}://${PROXY_NEXT_HOP}:${PROXY_NEXT_HOP_SUB_PORT}${plain}"
+    echo -e "  Proxy config:  ${blue}/etc/x-ui/proxy.json${plain}"
+    echo -e "  Chain state:   ${blue}/etc/x-ui/chain/${plain}"
+    if [[ -n "${proxy_tls_ip:-}" ]]; then
+        echo -e "  Sub port TLS:  ${blue}Let's Encrypt certificate for ${proxy_tls_ip} (~6 days, renewed by acme.sh)${plain}"
+    elif [[ -n "${PROXY_CERT:-}" ]]; then
+        echo -e "  Sub port TLS:  ${blue}${PROXY_CERT}${plain}"
+    else
+        echo -e "  Sub port TLS:  ${yellow}none — the sub port and the join page answer over plain HTTP${plain}"
+    fi
+    echo -e ""
+    if [[ "${proxy_joined:-0}" == "1" ]]; then
+        local __status=""
+        if __status=$("${xui_folder}/x-ui" chain status -c /etc/x-ui/proxy.json 2>&1); then
+            echo -e "  ${green}Joined the chain:${plain}"
+            # shellcheck disable=SC2001 # a per-line prefix is not a ${v//a/b} job
+            echo "${__status}" | sed 's/^/    /'
+        else
+            echo -e "  ${green}Joined the chain. Check it with: x-ui chain status${plain}"
+        fi
+    else
+        local __join_url="" __i
         for __i in 1 2 3 4 5 6 7 8 9 10; do
-            [[ -s /etc/x-ui/proxy-setup.url ]] && { __setup_url=$(cat /etc/x-ui/proxy-setup.url); break; }
+            [[ -s /etc/x-ui/chain-join.url ]] && { __join_url=$(cat /etc/x-ui/chain-join.url); break; }
             sleep 1
         done
-        echo -e ""
-        if [[ -n "${__setup_url}" ]]; then
-            echo -e "  ${yellow}No relay manifest yet. On the REAL panel run 'x-ui relay-manifest' (or Settings →${plain}"
-            echo -e "  ${yellow}Subscription → Show manifest) and paste the result at this one-time link:${plain}"
+        if [[ -n "${__join_url}" ]]; then
+            echo -e "  ${yellow}This box has not joined the chain yet. Create the hop on the REAL panel${plain}"
+            echo -e "  ${yellow}(Settings → Subscription → Chain), take its one-time join token and enter${plain}"
+            echo -e "  ${yellow}it at this one-time link:${plain}"
             echo -e ""
-            echo -e "      ${green}${__setup_url}${plain}"
+            echo -e "      ${green}${__join_url}${plain}"
             echo -e ""
-            echo -e "  ${yellow}The relay starts as soon as it is accepted. Show the link again: x-ui proxy-setup-url${plain}"
+            if [[ -z "${PROXY_CERT:-}" ]]; then
+                echo -e "  ${yellow}The link is plain HTTP: the join token would travel in clear text. Prefer${plain}"
+                echo -e "  ${yellow}re-running the installer with PROXY_JOIN_TOKEN over ssh.${plain}"
+                echo -e ""
+            fi
+            echo -e "  ${yellow}The relay starts as soon as the join is accepted. Show the link again: x-ui chain join-url${plain}"
         else
-            echo -e "  ${red}The setup page did not come up — check: x-ui log${plain}"
+            echo -e "  ${red}The join page did not come up — check: x-ui log${plain}"
         fi
     fi
     echo -e ""
-    echo -e "  ${yellow}On the REAL panel, enable the host override (GUI → subscription settings, or${plain}"
-    echo -e "  ${yellow}'/proxy <this-host>' in the Telegram bot) so client configs point here.${plain}"
+    echo -e "  ${yellow}On the REAL panel, mark this hop the active edge when it should face clients:${plain}"
+    echo -e "  ${yellow}Settings → Subscription → Chain, or '/proxy <hop-name>' in the Telegram bot.${plain}"
     echo -e ""
-    echo -e "  ${blue}x-ui status${plain}   ${blue}x-ui log${plain}   ${blue}systemctl restart x-ui${plain}"
+    echo -e "  ${blue}x-ui chain status${plain}   ${blue}x-ui status${plain}   ${blue}x-ui log${plain}   ${blue}systemctl restart x-ui${plain}"
 }
 
 echo -e "${green}Running...${plain}"

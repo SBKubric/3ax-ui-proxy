@@ -2,8 +2,6 @@ package proxy
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,49 +69,23 @@ func TestBuildRelayConfigNoPorts(t *testing.T) {
 	}
 }
 
-// writePorts stores a port list the way `x-ui chain ports` prints it.
-func writePorts(t *testing.T, ports []chain.Port) string {
-	t.Helper()
-	data, err := json.Marshal(ports)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "chain-ports.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-// TestLoadRelayPortsRefusesARawPanelConfig: the panel's bin/config.json, keys
-// and all, must never be what the front reads — only the computed port list
-// is, and the refusal says where to get one.
-func TestLoadRelayPortsRefusesARawPanelConfig(t *testing.T) {
-	raw := `{"log":{"loglevel":"warning"},"inbounds":[{"port":443,"protocol":"vless","tag":"inbound-443",
-	  "settings":{"clients":[{"id":"x"}],"decryption":"none"},
-	  "streamSettings":{"security":"reality","realitySettings":{"privateKey":"SECRET"}}}],
-	  "outbounds":[{"protocol":"freedom"}]}`
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := LoadRelayPorts(path)
-	if err == nil {
-		t.Fatal("a raw panel config was accepted as the front's port list")
-	}
-	for _, want := range []string{"not a chain port list", "x-ui chain ports"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q lacks %q", err, want)
-		}
-	}
-}
-
-// TestLoadRelayPortsRefusesAnUnknownNetwork: the network names the listeners
-// the relay opens, so a value it does not know would open none.
-func TestLoadRelayPortsRefusesAnUnknownNetwork(t *testing.T) {
-	path := writePorts(t, []chain.Port{{Port: 443, Network: "quic", Tag: "inbound-443", Source: chain.SourceXray}})
-	if _, err := LoadRelayPorts(path); err == nil {
+// TestBuildRelayConfigRefusesAnUnknownNetwork: the network names the listeners
+// the relay opens, so a value it does not know would open none. The document
+// comes from the panel, but a hop that trusted it blindly would relay nothing
+// and say nothing.
+func TestBuildRelayConfigRefusesAnUnknownNetwork(t *testing.T) {
+	ports := []chain.Port{{Port: 443, Network: "quic", Tag: "inbound-443", Source: chain.SourceXray}}
+	if _, _, err := BuildRelayConfig(ports, "1.2.3.4", "::"); err == nil {
 		t.Fatal("a port with an unknown network was accepted")
+	}
+}
+
+// TestBuildRelayConfigRefusesAPortOutOfRange: same reasoning — a port xray
+// cannot bind is a dead listener.
+func TestBuildRelayConfigRefusesAPortOutOfRange(t *testing.T) {
+	ports := []chain.Port{{Port: 70000, Network: chain.NetworkTCP, Tag: "x", Source: chain.SourceExtra}}
+	if _, _, err := BuildRelayConfig(ports, "1.2.3.4", "::"); err == nil {
+		t.Fatal("a port out of range was accepted")
 	}
 }
 
@@ -181,8 +153,9 @@ func TestBuildRelayConfigRefusesADuplicatePort(t *testing.T) {
 }
 
 // TestPortsComputedByThePanelReachTheRelay pins the contract between the two
-// halves of §3.8: what chainports computes on the panel is what the front
-// relays, with no translation in between.
+// halves of §3.8: what chainports computes on the panel is what the hop
+// relays, with no translation in between — the chain document is the only
+// carrier.
 func TestPortsComputedByThePanelReachTheRelay(t *testing.T) {
 	raw := `{"inbounds":[
 	  {"listen":"127.0.0.1","port":62789,"protocol":"tunnel","tag":"api"},
@@ -194,14 +167,10 @@ func TestPortsComputedByThePanelReachTheRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := writePorts(t, computed)
+	// What the panel adds outside the xray config travels in the same list.
+	computed = append(computed, chain.Port{Port: 51820, Network: chain.NetworkUDP, Tag: "awg", Source: chain.SourceAwg})
 
-	ports, err := LoadRelayPorts(path)
-	if err != nil {
-		t.Fatalf("LoadRelayPorts: %v", err)
-	}
-	ports = append(ports, extraRelayPorts([]ExtraPort{{Port: 51820, Network: "udp"}})...)
-	_, relayed, err := BuildRelayConfig(ports, "203.0.113.1", "0.0.0.0")
+	_, relayed, err := BuildRelayConfig(computed, "203.0.113.1", "0.0.0.0")
 	if err != nil {
 		t.Fatalf("BuildRelayConfig over a computed port list: %v", err)
 	}
