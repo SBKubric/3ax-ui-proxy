@@ -224,7 +224,19 @@ func (s *ChainService) Add(in AddHopInput) (*model.ChainHop, string, int64, erro
 		if err := tx.Create(hop).Error; err != nil {
 			return err
 		}
-		return reconcileTopology(tx)
+		if err := reconcileTopology(tx); err != nil {
+			return err
+		}
+		// reconcileTopology writes next_hop_id through its own copies of the
+		// rows, not through hop, so hop is reloaded to pick up whatever it
+		// computed — the same value list would show for this hop right away,
+		// and add's own answer must not lag one call behind it.
+		reloaded, err := loadHop(tx, hop.Id)
+		if err != nil {
+			return err
+		}
+		hop = reloaded
+		return nil
 	})
 	if err != nil {
 		return nil, "", 0, err

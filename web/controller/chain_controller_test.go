@@ -464,3 +464,33 @@ func TestChainClearActiveDisablesTheOverride(t *testing.T) {
 		t.Fatalf("clearActive with nothing active: %s", env.Msg)
 	}
 }
+
+// TestChainAddReturnsTheComputedNextHopId: add's own answer must carry the
+// same next_hop_id list already computes, not the pre-reconcile nil the row
+// held the instant it was created.
+func TestChainAddReturnsTheComputedNextHopId(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+
+	first := chainAdd(t, r, cookie, `{"name":"inner-1","host":"i1.example.net","role":"inner"}`)
+	if first.Hop.NextHopId != nil {
+		t.Fatalf("first inner's nextHopId = %v, want nil (chained onto the real server)", first.Hop.NextHopId)
+	}
+
+	second := chainAdd(t, r, cookie, `{"name":"inner-2","host":"i2.example.net","role":"inner","position":1}`)
+	if second.Hop.NextHopId == nil || *second.Hop.NextHopId != first.Hop.Id {
+		t.Fatalf("second inner's nextHopId in the add response = %v, want %d (inner-1)",
+			second.Hop.NextHopId, first.Hop.Id)
+	}
+
+	// list, which already computes it correctly, must agree.
+	state, err := (&service.ChainService{}).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hop := range state.Hops {
+		if hop.Id == second.Hop.Id && (hop.NextHopId == nil || *hop.NextHopId != first.Hop.Id) {
+			t.Errorf("list's nextHopId = %v, want %d to match add's own answer", hop.NextHopId, first.Hop.Id)
+		}
+	}
+}
