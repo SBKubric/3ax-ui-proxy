@@ -279,6 +279,25 @@ acme_ip_flags() {
     echo "--listen-v4 --request-v4"
 }
 
+# panel_base_path prints the web base path the way the panel actually serves it.
+#
+# The installer generates a bare random string, but SettingService.GetBasePath
+# wraps it in slashes before anything is routed (web/service/setting.go), so the
+# panel lives at /<path>/ and not at <path>. Printing the raw value gave an
+# Access URL one slash short of working, which is indistinguishable from a
+# broken install to whoever is reading the footer. Read the stored value back
+# and normalise it the same way, falling back to the argument when the binary
+# cannot be asked.
+panel_base_path() {
+    local __p
+    __p=$("${xui_folder}/x-ui" setting -show true 2>/dev/null | grep -Eo 'webBasePath: .+' | awk '{print $2}' | tr -d '[:space:]')
+    [[ -z "${__p}" ]] && __p="${1:-}"
+    [[ -z "${__p}" ]] && { echo "/"; return; }
+    [[ "${__p#/}" == "${__p}" ]] && __p="/${__p}"
+    [[ "${__p%/}" == "${__p}" ]] && __p="${__p}/"
+    echo "${__p}"
+}
+
 install_acme() {
     echo -e "${green}Installing acme.sh for SSL certificate management...${plain}"
     (cd ~ && curl -s https://get.acme.sh | sh >/dev/null 2>&1)
@@ -902,17 +921,19 @@ config_debug_mode() {
     else
         echo -e "${yellow}Username/password unchanged from previous install.${plain}"
     fi
+    local base_path
+    base_path=$(panel_base_path "${config_webBasePath}")
     echo -e "${green}Port:        ${config_port}${plain}"
-    echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
+    echo -e "${green}WebBasePath: ${base_path}${plain}"
     if [[ "${config_listen}" == "127.0.0.1" || "${config_listen}" == "::1" ]]; then
         echo -e "${green}Listen:      ${config_listen} (loopback only)${plain}"
-        echo -e "${green}Access URL:  http://127.0.0.1:${config_port}/${config_webBasePath}${plain}"
-        echo -e "${green}             http://localhost:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}Access URL:  http://127.0.0.1:${config_port}${base_path}${plain}"
+        echo -e "${green}             http://localhost:${config_port}${base_path}${plain}"
         echo -e "${green}═══════════════════════════════════════════${plain}"
         echo -e "${yellow}⚠ Plain HTTP, no certificate, no remote access. For local diagnostics only.${plain}"
     else
         echo -e "${yellow}Listen:      ${config_listen} (exposed on the network)${plain}"
-        echo -e "${green}Access URL:  http://<this-host-ip>:${config_port}/${config_webBasePath}${plain}"
+        echo -e "${green}Access URL:  http://<this-host-ip>:${config_port}${base_path}${plain}"
         echo -e "${green}═══════════════════════════════════════════${plain}"
         echo -e "${red}⚠ Plain HTTP with NO certificate, exposed on ${config_listen}. Intranet testing only — never on a public network.${plain}"
     fi
@@ -990,13 +1011,15 @@ config_after_install() {
             echo -e "${green}═══════════════════════════════════════════${plain}"
             echo -e "${green}Username:    ${config_username}${plain}"
             echo -e "${green}Password:    ${config_password}${plain}"
+            local base_path
+            base_path=$(panel_base_path "${config_webBasePath}")
             echo -e "${green}Port:        ${config_port}${plain}"
-            echo -e "${green}WebBasePath: ${config_webBasePath}${plain}"
+            echo -e "${green}WebBasePath: ${base_path}${plain}"
             if [[ -n "$server_ipv6" ]]; then
-                echo -e "${green}Access URL IPv4: https://${SSL_HOST}:${config_port}/${config_webBasePath}${plain}"
-                echo -e "${green}Access URL IPv6: https://[${server_ipv6}]:${config_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL IPv4: https://${SSL_HOST}:${config_port}${base_path}${plain}"
+                echo -e "${green}Access URL IPv6: https://[${server_ipv6}]:${config_port}${base_path}${plain}"
             else
-                echo -e "${green}Access URL:  https://${SSL_HOST}:${config_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL:  https://${SSL_HOST}:${config_port}${base_path}${plain}"
             fi
             echo -e "${green}═══════════════════════════════════════════${plain}"
             echo -e "${yellow}⚠ IMPORTANT: Save these credentials securely!${plain}"
@@ -1005,7 +1028,9 @@ config_after_install() {
             local config_webBasePath=$(gen_random_string 18)
             echo -e "${yellow}WebBasePath is missing or too short. Generating a new one...${plain}"
             ${xui_folder}/x-ui setting -webBasePath "${config_webBasePath}"
-            echo -e "${green}New WebBasePath: ${config_webBasePath}${plain}"
+            local base_path
+            base_path=$(panel_base_path "${config_webBasePath}")
+            echo -e "${green}New WebBasePath: ${base_path}${plain}"
 
             # If the panel is already installed but no certificate is configured, prompt for SSL now
             if [[ -z "${existing_cert}" ]]; then
@@ -1016,10 +1041,10 @@ config_after_install() {
                 echo -e "${yellow}Let's Encrypt now supports both domains and IP addresses!${plain}"
                 echo ""
                 prompt_and_setup_ssl "${existing_port}" "${config_webBasePath}" "${server_ip}"
-                echo -e "${green}Access URL:  https://${SSL_HOST}:${existing_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL:  https://${SSL_HOST}:${existing_port}${base_path}${plain}"
             else
                 # If a cert already exists, just show the access URL
-                echo -e "${green}Access URL: https://${server_ip}:${existing_port}/${config_webBasePath}${plain}"
+                echo -e "${green}Access URL: https://${server_ip}:${existing_port}${base_path}${plain}"
             fi
         fi
     else
