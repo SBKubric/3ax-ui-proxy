@@ -29,8 +29,10 @@
 
 ```bash
 ssh real 'bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/install.sh)'
-x-ui settings          # порт, webBasePath, креды (без TTY они случайные)
+x-ui settings          # порт, webBasePath, сертификат и Access URL
 ```
+
+`x-ui settings` (он же `/usr/local/x-ui/x-ui setting -show true`) **паролей не печатает** — только порт, `webBasePath`, пути к сертификату и Access URL. Без TTY установщик генерирует случайные креды и печатает их **один раз, в конце установки**; если вывод потерян, их не «показывают», а задают заново: `/usr/local/x-ui/x-ui setting -username <u> -password <p>`.
 
 Грабли:
 - **Let's Encrypt для IP проигрывает гонку за порт 80** апстримному `install_nginx`: панель откатывается на self-signed (`/root/cert/self-signed/`). Для стенда достаточно; звено ходит к панели с `InsecureSkipVerify`.
@@ -137,6 +139,8 @@ ssh bridge 'grep -rIl "privateKey\|PrivateKey" /etc/x-ui /usr/local/x-ui; ls -la
 Следующее звено снаружи ставится тем же порядком, с `PROXY_NEXT_HOP` = адрес только что введённого звена.
 
 ## 4. Host override: активное edge
+
+Если на панели уже был включён старый host override, миграция реестра заводит одно звено **с именем `legacy`** (роль `edge`, хост — прежний адрес прокси) и делает его активным: подписки продолжают указывать туда же, куда и до обновления, а цепочки за ним ещё нет. Это имя, а не роль: звено так и называется `legacy`, пока владелец его не переименует или не удалит. По §10 оно удаляется после того, как настоящее edge вошло в цепочку и стало активным.
 
 Активный edge выбирается **в реестре цепочки**, а не отдельным переключателем: Settings → Subscription → *Chain* → отметить звено активным, либо `/proxy <name>` в Telegram-боте (`/proxy` — список звеньев с ролями и состоянием, `/proxy off` — выключить override). После этого подписки, JSON и AWG-конфиги (`Endpoint = <edge-ip>:51820`) указывают на активное edge; заголовок `Profile-Web-Page-Url` звено переписывает на себя.
 
