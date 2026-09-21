@@ -117,8 +117,11 @@ type UpdateHopInput struct {
 // DeleteResult carries the hint of §4.5: the registry write is instant, but
 // the owner must wait for the deleted hop's outer neighbour to confirm the new
 // revision before powering the box off, or the traffic still on it is cut.
+// SafeToPowerOffWhen is nil when nothing hangs off the deleted hop: the outer
+// neighbour that would otherwise have to confirm a revision does not exist, so
+// there is nothing to wait for and the box may be powered off at once.
 type DeleteResult struct {
-	SafeToPowerOffWhen SafeToPowerOff `json:"safeToPowerOffWhen"`
+	SafeToPowerOffWhen *SafeToPowerOff `json:"safeToPowerOffWhen"`
 }
 
 // SafeToPowerOff names the hop to watch and the revision to wait for. Hop is
@@ -341,12 +344,13 @@ func (s *ChainService) Delete(id int, force bool) (*DeleteResult, error) {
 		}
 
 		// Whoever hung off this hop is the one that has to see the new
-		// revision before the box may be powered off.
+		// revision before the box may be powered off. Nothing hangs off an
+		// edge, or off an inner nothing points at, so outer is "" there and
+		// SafeToPowerOffWhen stays nil: there is nothing to wait for.
 		outer, err := outerNeighbour(tx, hop.Id)
 		if err != nil {
 			return err
 		}
-		result.SafeToPowerOffWhen.Hop = outer
 
 		if err := tx.Delete(&model.ChainHop{}, hop.Id).Error; err != nil {
 			return err
@@ -361,11 +365,14 @@ func (s *ChainService) Delete(id int, force bool) (*DeleteResult, error) {
 		if err := bumpRevisionTx(tx); err != nil {
 			return err
 		}
+		if outer == "" {
+			return nil
+		}
 		revision, err := revisionTx(tx)
 		if err != nil {
 			return err
 		}
-		result.SafeToPowerOffWhen.Revision = revision
+		result.SafeToPowerOffWhen = &SafeToPowerOff{Hop: outer, Revision: revision}
 		return nil
 	})
 	if err != nil {

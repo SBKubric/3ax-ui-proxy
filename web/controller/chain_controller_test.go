@@ -233,12 +233,15 @@ func TestChainDeleteOfTheActiveEdgeIsRefused(t *testing.T) {
 	if !env.Success {
 		t.Fatalf("deleting a standby edge: %s", env.Msg)
 	}
+	// Nothing hangs off a standalone edge — the outer neighbour that would
+	// otherwise have to confirm a revision does not exist — so the answer is
+	// safeToPowerOffWhen:null, not an object with an empty hop.
 	var result service.DeleteResult
 	if err := json.Unmarshal(env.Obj, &result); err != nil {
 		t.Fatalf("delete obj: %v (%s)", err, env.Obj)
 	}
-	if result.SafeToPowerOffWhen.Revision == 0 {
-		t.Errorf("delete = %+v, want the revision to wait for", result)
+	if result.SafeToPowerOffWhen != nil {
+		t.Errorf("delete = %+v, want safeToPowerOffWhen:null — the box is safe to power off now", result)
 	}
 }
 
@@ -536,5 +539,47 @@ func TestChainUpdateRefusesAnImmutableField(t *testing.T) {
 	}
 	if state.Hops[0].Role != "edge" {
 		t.Errorf("role = %q after refused updates, want unchanged", state.Hops[0].Role)
+	}
+}
+
+// TestChainDeleteSafeToPowerOffIsNullWithNoOuterNeighbour: an edge is always a
+// leaf of the chain — nothing ever hangs off one — so deleting it never has
+// anything to wait for.
+func TestChainDeleteSafeToPowerOffIsNullWithNoOuterNeighbour(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+	added := chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
+
+	env := monUIDecode(t, chainPost(r, "/panel/api/chain/del/"+strconv.Itoa(added.Hop.Id), cookie, "{}"))
+	if !env.Success {
+		t.Fatalf("del: %s", env.Msg)
+	}
+	if strings.TrimSpace(string(env.Obj)) != `{"safeToPowerOffWhen":null}` {
+		t.Errorf("del obj = %s, want safeToPowerOffWhen:null", env.Obj)
+	}
+}
+
+// TestChainDeleteSafeToPowerOffNamesTheOuterNeighbour: deleting an inner front
+// something else has chained onto hands back that neighbour's name and the
+// revision it must confirm before its box may be powered off.
+func TestChainDeleteSafeToPowerOffNamesTheOuterNeighbour(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+	inner := chainAdd(t, r, cookie, `{"name":"inner-1","host":"i1.example.net","role":"inner"}`)
+	chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
+	if err := (&service.ChainService{}).MarkJoined(inner.Hop.Id, "hash", ""); err != nil {
+		t.Fatalf("MarkJoined: %v", err)
+	}
+
+	env := monUIDecode(t, chainPost(r, "/panel/api/chain/del/"+strconv.Itoa(inner.Hop.Id), cookie, "{}"))
+	if !env.Success {
+		t.Fatalf("del: %s", env.Msg)
+	}
+	var result service.DeleteResult
+	if err := json.Unmarshal(env.Obj, &result); err != nil {
+		t.Fatalf("delete obj: %v (%s)", err, env.Obj)
+	}
+	if result.SafeToPowerOffWhen == nil || result.SafeToPowerOffWhen.Hop != "edge-a" || result.SafeToPowerOffWhen.Revision == 0 {
+		t.Errorf("safeToPowerOffWhen = %+v, want edge-a and a revision to wait for", result.SafeToPowerOffWhen)
 	}
 }
