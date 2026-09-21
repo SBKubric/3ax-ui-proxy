@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/coinman-dev/3ax-ui/v2/relaymanifest"
+	"github.com/coinman-dev/3ax-ui/v2/chain"
 )
 
-const testManifest = `{"relayManifest":{"version":1},"inbounds":[{"listen":"0.0.0.0","port":443,"protocol":"vless","tag":"inbound-443"}]}`
+const testManifest = `[{"port":443,"network":"tcp,udp","tag":"inbound-443","source":"xray"}]`
 
 func newTestSetup(t *testing.T) (*SetupServer, *Config) {
 	t.Helper()
@@ -60,7 +60,7 @@ func TestSetupPageRefusesARawPanelConfig(t *testing.T) {
 	s, cfg := newTestSetup(t)
 	raw := `{"inbounds":[{"port":443,"protocol":"vless","streamSettings":{"realitySettings":{"privateKey":"SECRET"}}}]}`
 	w := do(s, http.MethodPost, "/setup/"+s.Token(), "application/json", raw)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "not a relay manifest") {
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "not a chain port list") {
 		t.Fatalf("raw config: status %d body %q", w.Code, w.Body.String())
 	}
 	if _, err := os.Stat(cfg.RelayManifestPath); err == nil {
@@ -77,12 +77,12 @@ func TestSetupPageRefusesARawPanelConfig(t *testing.T) {
 	}
 }
 
-func TestSetupPageAcceptsAManifestOnceAndGoesDark(t *testing.T) {
+func TestSetupPageAcceptsAPortListOnceAndGoesDark(t *testing.T) {
 	s, cfg := newTestSetup(t)
 	form := url.Values{"manifest": {testManifest}}.Encode()
 	w := do(s, http.MethodPost, "/setup/"+s.Token(), "application/x-www-form-urlencoded", form)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "443") {
-		t.Fatalf("valid manifest: status %d body %q", w.Code, w.Body.String())
+		t.Fatalf("valid port list: status %d body %q", w.Code, w.Body.String())
 	}
 	select {
 	case <-s.Accepted():
@@ -91,13 +91,17 @@ func TestSetupPageAcceptsAManifestOnceAndGoesDark(t *testing.T) {
 	}
 	data, err := os.ReadFile(cfg.RelayManifestPath)
 	if err != nil {
-		t.Fatalf("manifest not written: %v", err)
+		t.Fatalf("port list not written: %v", err)
 	}
-	if _, err := relaymanifest.Validate(data); err != nil {
-		t.Fatalf("written file is not a valid manifest: %v", err)
+	ports, err := ParseRelayPorts(data)
+	if err != nil {
+		t.Fatalf("written file is not a valid port list: %v", err)
+	}
+	if len(ports) != 1 || ports[0].Port != 443 || ports[0].Network != chain.NetworkTCPUDP {
+		t.Fatalf("written port list = %+v, want the pasted one", ports)
 	}
 	if st, _ := os.Stat(cfg.RelayManifestPath); st.Mode().Perm() != 0o600 {
-		t.Errorf("manifest mode = %o, want 600", st.Mode().Perm())
+		t.Errorf("port list mode = %o, want 600", st.Mode().Perm())
 	}
 	// One-shot: the token is spent.
 	if w := do(s, http.MethodGet, "/setup/"+s.Token(), "", ""); w.Code != http.StatusNotFound {

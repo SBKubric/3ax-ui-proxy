@@ -71,28 +71,14 @@
             </template>
         </a-setting-list-item>
         <a-divider>{{ i18n "pages.settings.proxyOverride"}}</a-divider>
-        <a-setting-list-item paddings="small">
-            <template #title>{{ i18n "pages.settings.proxyOverrideEnable"}}</template>
-            <template #description>{{ i18n "pages.settings.proxyOverrideEnableDesc"}}</template>
+        <!-- chain: the host handed out in links is the active edge of the chain
+             registry, not a field of this form any more (§2.3). The two old
+             inputs are gone; the legacy keys they wrote are still read when the
+             registry is empty, so a downgrade keeps working. -->
+        <a-setting-list-item paddings="small" data-testid="chain-override-readonly">
+            <template #title>{{ i18n "pages.settings.proxyOverride"}}</template>
             <template #control>
-                <a-switch v-model="allSetting.proxyOverrideEnable"></a-switch>
-            </template>
-        </a-setting-list-item>
-        <a-setting-list-item paddings="small">
-            <template #title>{{ i18n "pages.settings.proxyOverrideHost"}}</template>
-            <template #description>{{ i18n "pages.settings.proxyOverrideHostDesc"}}</template>
-            <template #control>
-                <a-input type="text" v-model="allSetting.proxyOverrideHost"
-                    placeholder="proxy.example.com"></a-input>
-            </template>
-        </a-setting-list-item>
-        <a-setting-list-item paddings="small">
-            <template #title>{{ i18n "pages.settings.relayManifest"}}</template>
-            <template #description>{{ i18n "pages.settings.relayManifestDesc"}}</template>
-            <template #control>
-                <a-button type="primary" icon="file-text" @click="showRelayManifest()">
-                    {{ i18n "pages.settings.relayManifestShow"}}
-                </a-button>
+                <chain-override-readonly :all-setting="allSetting"></chain-override-readonly>
             </template>
         </a-setting-list-item>
     </a-collapse-panel>

@@ -1,0 +1,515 @@
+{{define "settings/panel/subscription/chainEditorMarkup"}}
+<!-- One root element: this markup is a component's template, and Vue compiles
+     it in the browser, where two roots are a compile error rather than a page
+     that merely looks wrong. -->
+<div>
+<a-collapse default-active-key="1" data-testid="chain-editor">
+    <a-collapse-panel key="1" header='{{ i18n "pages.settings.chain.title"}}'>
+        <p class="mon-muted" :style="{ marginBottom: '12px' }">{{ i18n "pages.settings.chain.desc"}}</p>
+
+        <!-- The port composition refused, so the revision cannot move (§3.8).
+             The editor is the only page where the operator can act on it. -->
+        <a-alert v-if="portsProblem" type="error" show-icon :style="{ marginBottom: '12px' }"
+            data-testid="chain-ports-problem" :message="text.portsProblem"
+            :description="portsProblem.message"></a-alert>
+
+        <!-- A legacy hop is the imported host override: it has no hop secret,
+             gets no document and relays no new port, so the banner stays until
+             its box is re-installed as a real hop (§2.3). -->
+        <a-alert v-if="legacyNames" type="warning" show-icon :style="{ marginBottom: '12px' }"
+            data-testid="chain-legacy-banner" :message="legacyNames"
+            :description="text.legacyReinstall"></a-alert>
+
+        <div data-testid="chain-real-server" :style="{ marginBottom: '8px' }">
+            <b>real-server</b>
+            <a-tag color="default" :style="{ marginInlineStart: '6px' }">{{ i18n "pages.settings.chain.realServer"}}</a-tag>
+            <span class="mon-muted">rev [[ revision ]]</span>
+        </div>
+
+        <a-divider orientation="left">{{ i18n "pages.settings.chain.innerHops"}}</a-divider>
+        <div data-testid="chain-inner-list">
+            <div v-for="hop in innerHops" :key="hop.id" :data-testid="'chain-hop-' + hop.name"
+                :style="{ padding: '6px 0' }">
+                <b>[[ hop.name ]]</b>
+                <a-tag color="geekblue" :style="{ marginInlineStart: '6px' }">{{ i18n "pages.settings.chain.roleInner"}}</a-tag>
+                <a-tag :color="stateColor(hop.state)">[[ stateLabel(hop.state) ]]</a-tag>
+                <span :class="healthClass(hop)" :title="healthOf(hop)"
+                    :data-testid="'chain-hop-' + hop.name + '-health'">[[ healthOf(hop) ]]</span>
+                <span class="mon-muted" :data-testid="'chain-hop-' + hop.name + '-freshness'"
+                    :title="lastSeenText(hop)">[[ freshnessText(hop) ]]</span>
+                <a-button size="small" icon="delete" :style="{ marginInlineStart: '8px' }"
+                    @click="confirmDelete(hop)"
+                    :data-testid="'chain-hop-' + hop.name + '-delete'">{{ i18n "pages.settings.chain.delete"}}</a-button>
+                <div v-if="tokenOf(hop)" :data-testid="'chain-hop-' + hop.name + '-token'"
+                    :style="{ marginTop: '4px' }">
+                    <span class="mon-mono">[[ tokenOf(hop) ]]</span>
+                    <a-button size="small" icon="copy" @click="copyToken(hop)"
+                        :data-testid="'chain-hop-' + hop.name + '-token-copy'"></a-button>
+                    <span class="mon-muted">[[ text.tokenOnce ]]</span>
+                </div>
+                <div v-else-if="isPending(hop)" :data-testid="'chain-hop-' + hop.name + '-token'"
+                    :style="{ marginTop: '4px' }">
+                    <span class="mon-muted">[[ text.tokenExpires ]] [[ stamp(hop.joinTokenExpires) ]]</span>
+                    <a-button size="small" icon="reload" @click="confirmReissue(hop)"
+                        :data-testid="'chain-hop-' + hop.name + '-reissue'">{{ i18n "pages.settings.chain.reissue"}}</a-button>
+                </div>
+            </div>
+        </div>
+
+        <a-divider orientation="left">{{ i18n "pages.settings.chain.edges"}}</a-divider>
+        <div data-testid="chain-edge-list" :style="{ marginInlineStart: '24px' }">
+            <div v-for="hop in edgeHops" :key="hop.id" :data-testid="'chain-hop-' + hop.name"
+                :style="{ padding: '6px 0' }">
+                <b>[[ hop.name ]]</b>
+                <a-tag color="purple" :style="{ marginInlineStart: '6px' }">{{ i18n "pages.settings.chain.roleEdge"}}</a-tag>
+                <a-tag :color="stateColor(hop.state)">[[ stateLabel(hop.state) ]]</a-tag>
+                <span :class="healthClass(hop)" :title="healthOf(hop)"
+                    :data-testid="'chain-hop-' + hop.name + '-health'">[[ healthOf(hop) ]]</span>
+                <span class="mon-muted" :data-testid="'chain-hop-' + hop.name + '-freshness'"
+                    :title="lastSeenText(hop)">[[ freshnessText(hop) ]]</span>
+                <a-tag v-if="hop.isActive" color="green"
+                    :data-testid="'chain-hop-' + hop.name + '-active-marker'">{{ i18n "pages.settings.chain.active"}}</a-tag>
+                <a-button v-if="hop.isActive" size="small" :style="{ marginInlineStart: '8px' }"
+                    @click="confirmClearActive()"
+                    data-testid="chain-clear-active">{{ i18n "pages.settings.chain.clearActive"}}</a-button>
+                <a-button v-if="canMakeActive(hop)" type="primary" size="small"
+                    :style="{ marginInlineStart: '8px' }" @click="confirmMakeActive(hop)"
+                    :data-testid="'chain-hop-' + hop.name + '-make-active'">{{ i18n "pages.settings.chain.makeActive"}}</a-button>
+                <a-button size="small" icon="delete" :style="{ marginInlineStart: '8px' }"
+                    @click="confirmDelete(hop)"
+                    :data-testid="'chain-hop-' + hop.name + '-delete'">{{ i18n "pages.settings.chain.delete"}}</a-button>
+                <div v-if="tokenOf(hop)" :data-testid="'chain-hop-' + hop.name + '-token'"
+                    :style="{ marginTop: '4px' }">
+                    <span class="mon-mono">[[ tokenOf(hop) ]]</span>
+                    <a-button size="small" icon="copy" @click="copyToken(hop)"
+                        :data-testid="'chain-hop-' + hop.name + '-token-copy'"></a-button>
+                    <span class="mon-muted">[[ text.tokenOnce ]]</span>
+                </div>
+                <div v-else-if="isPending(hop)" :data-testid="'chain-hop-' + hop.name + '-token'"
+                    :style="{ marginTop: '4px' }">
+                    <span class="mon-muted">[[ text.tokenExpires ]] [[ stamp(hop.joinTokenExpires) ]]</span>
+                    <a-button size="small" icon="reload" @click="confirmReissue(hop)"
+                        :data-testid="'chain-hop-' + hop.name + '-reissue'">{{ i18n "pages.settings.chain.reissue"}}</a-button>
+                </div>
+            </div>
+        </div>
+
+        <p v-if="!hops.length" class="mon-muted" data-testid="chain-empty">[[ text.empty ]]</p>
+
+        <a-space :style="{ marginTop: '12px' }">
+            <a-button type="dashed" icon="plus" @click="openAdd()"
+                data-testid="chain-add-hop">{{ i18n "pages.settings.chain.addHop"}}</a-button>
+            <a-button icon="unordered-list" @click="showPorts()"
+                data-testid="chain-show-ports">{{ i18n "pages.settings.chain.showPorts"}}</a-button>
+        </a-space>
+
+        <a-divider></a-divider>
+        <!-- The one field here that is an AllSetting value and rides the page's
+             common Save, which is why allSetting comes in as a prop. -->
+        <div :style="{ marginBottom: '12px' }">
+            <b>{{ i18n "pages.settings.chain.panelHost"}}</b>
+            <p class="mon-muted" :style="{ margin: '2px 0 6px' }">{{ i18n "pages.settings.chain.panelHostDesc"}}</p>
+            <a-input type="text" v-model="allSetting.chainPanelHost" placeholder="panel.example.com:2096"
+                data-testid="chain-panel-host"></a-input>
+        </div>
+
+        <p class="mon-muted" data-testid="chain-override-note">{{ i18n "pages.settings.chain.overrideNote"}}</p>
+    </a-collapse-panel>
+</a-collapse>
+
+<a-modal v-model="addModal.visible" title='{{ i18n "pages.settings.chain.addHopTitle"}}' @ok="submitAdd()"
+    :confirm-loading="busy" data-testid="chain-add-hop-modal">
+    <a-form layout="vertical">
+        <a-form-item label='{{ i18n "pages.settings.chain.hopName"}}'>
+            <a-input v-model="addModal.form.name" placeholder="edge-b" data-testid="chain-add-hop-name"></a-input>
+        </a-form-item>
+        <a-form-item label='{{ i18n "pages.settings.chain.hopHost"}}'>
+            <a-input v-model="addModal.form.host" placeholder="b.example.net" data-testid="chain-add-hop-host"></a-input>
+        </a-form-item>
+        <a-form-item label='{{ i18n "pages.settings.chain.hopRole"}}'>
+            <a-select v-model="addModal.form.role" data-testid="chain-add-hop-role">
+                <a-select-option value="inner">{{ i18n "pages.settings.chain.roleInner"}}</a-select-option>
+                <a-select-option value="edge">{{ i18n "pages.settings.chain.roleEdge"}}</a-select-option>
+            </a-select>
+        </a-form-item>
+        <!-- Position is an inner front's business only: every edge hangs off
+             the last inner, which the panel works out itself (invariant 2). -->
+        <a-form-item v-if="addModal.form.role === 'inner'" label='{{ i18n "pages.settings.chain.hopPosition"}}'>
+            <a-select v-model="addModal.form.position" data-testid="chain-add-hop-position">
+                <a-select-option :value="0">real-server</a-select-option>
+                <a-select-option v-for="(hop, index) in innerHops" :key="hop.id"
+                    :value="index + 1">[[ hop.name ]]</a-select-option>
+            </a-select>
+        </a-form-item>
+        <a-form-item label='{{ i18n "pages.settings.chain.hopNextHop"}}'>
+            <!-- Derived, not chosen: next_hop_id is the panel's to compute, so
+                 this says what the hop will be chained onto and nothing else. -->
+            <a-input readonly :value="nextHopPreview" data-testid="chain-add-hop-next"></a-input>
+        </a-form-item>
+        <a-form-item label='{{ i18n "pages.settings.chain.hopSubPort"}}'>
+            <a-input-number v-model="addModal.form.subPort" :min="1" :max="65535"
+                :style="{ width: '100%' }" data-testid="chain-add-hop-sub-port"></a-input-number>
+        </a-form-item>
+    </a-form>
+</a-modal>
+
+<a-modal v-model="portsModal.visible" title='{{ i18n "pages.settings.chain.ports"}}' :footer="null"
+    data-testid="chain-ports-modal">
+    <pre class="mon-mono" data-testid="chain-ports-json">[[ portsModal.text ]]</pre>
+</a-modal>
+</div>
+{{end}}
+
+{{define "settings/panel/subscription/chainOverrideMarkup"}}
+<div>
+    <!-- An empty registry is a panel that was upgraded and has no chain yet:
+         the two legacy fields stay editable and keep working exactly as before,
+         because there is no active edge for the host to come from (§2.3). The
+         moment the first hop exists the registry owns the override, and these
+         become the read-only row. -->
+    <div v-if="empty" data-testid="chain-override-legacy">
+        <div>
+            <span>{{ i18n "pages.settings.proxyOverrideEnable"}}</span>
+            <a-switch v-model="allSetting.proxyOverrideEnable" :style="{ marginInlineStart: '8px' }"
+                data-testid="chain-override-enable"></a-switch>
+        </div>
+        <div :style="{ marginTop: '6px' }">
+            <span>{{ i18n "pages.settings.proxyOverrideHost"}}</span>
+            <a-input type="text" v-model="allSetting.proxyOverrideHost" placeholder="proxy.example.com"
+                data-testid="chain-override-host"></a-input>
+        </div>
+        <p class="mon-muted" :style="{ margin: '4px 0 0' }">{{ i18n "pages.settings.proxyOverrideHostDesc"}}</p>
+    </div>
+    <div v-else>
+        <a-tag color="blue" data-testid="chain-override-active">[[ activeEdge ]]</a-tag>
+        <p class="mon-muted" :style="{ margin: '4px 0 0' }">{{ i18n "pages.settings.chain.overrideNote"}}</p>
+    </div>
+</div>
+{{end}}
+
+{{define "settings/panel/subscription/chain"}}
+<chain-editor :all-setting="allSetting"></chain-editor>
+{{end}}
+
+{{define "settings/panel/subscription/chainEditor"}}
+<script src="{{ .base_path }}assets/js/model/chain.js?{{ .cur_ver }}"></script>
+<script>
+    // The chain editor of Settings -> Subscription (docs/spec/proxy-chain.md
+    // §7.1, §7.2). It is a component rather than a block of methods on the
+    // settings page so that settings.html gains a tag and an include and
+    // nothing else: the registry is not part of AllSetting and does not ride
+    // the page's common Save — every action here is one call to
+    // /panel/api/chain and takes effect at once.
+    //
+    // The one exception is chainPanelHost, which IS an AllSetting field: it is
+    // bound straight into the object the page saves, which is why allSetting
+    // comes in as a prop.
+    //
+    // Translated text arrives from the markup, which the server renders, or
+    // from this map, which it also renders: a component template is compiled in
+    // the browser long after the i18n actions are gone, so anything JavaScript
+    // needs at runtime has to be baked in here.
+    const ChainText = {
+        stateLabels: {
+            pending: '{{ i18n "pages.settings.chain.state.pending" }}',
+            joined: '{{ i18n "pages.settings.chain.state.joined" }}',
+            legacy: '{{ i18n "pages.settings.chain.state.legacy" }}',
+        },
+        empty: '{{ i18n "pages.settings.chain.empty" }}',
+        tokenOnce: '{{ i18n "pages.settings.chain.tokenOnce" }}',
+        tokenCopied: '{{ i18n "pages.settings.chain.tokenCopied" }}',
+        tokenExpires: '{{ i18n "pages.settings.chain.tokenExpires" }}',
+        lastSeen: '{{ i18n "pages.settings.chain.lastSeen" }}',
+        portsProblem: '{{ i18n "pages.settings.chain.portsProblem" }}',
+        legacyReinstall: '{{ i18n "pages.settings.chain.legacyReinstall" }}',
+        makeActiveTitle: '{{ i18n "pages.settings.chain.makeActiveTitle" }}',
+        switchNote: '{{ i18n "pages.settings.chain.switchNote" }}',
+        deleteConfirmTitle: '{{ i18n "pages.settings.chain.deleteConfirmTitle" }}',
+        deleteActiveRefusedTitle: '{{ i18n "pages.settings.chain.deleteActiveRefusedTitle" }}',
+        deleteActiveRefused: '{{ i18n "pages.settings.chain.deleteActiveRefused" }}',
+        deletePowerOff: '{{ i18n "pages.settings.chain.deletePowerOff" }}',
+        deletePowerOffNow: '{{ i18n "pages.settings.chain.deletePowerOffNow" }}',
+        clearActiveTitle: '{{ i18n "pages.settings.chain.clearActiveTitle" }}',
+        clearActiveNote: '{{ i18n "pages.settings.chain.clearActiveNote" }}',
+        reissueTitle: '{{ i18n "pages.settings.chain.reissueTitle" }}',
+        reissueNote: '{{ i18n "pages.settings.chain.reissueNote" }}',
+        // The freshness marker is the one string with values in it. The bundle
+        // keeps go-i18n's own placeholders, and the two sentinels below come
+        // back through them so the browser can fill the numbers in.
+        freshness: '{{ i18n "pages.settings.chain.freshness" "Rev==%rev%" "Head==%head%" }}',
+        freshnessCurrent: '{{ i18n "pages.settings.chain.freshnessCurrent" "Rev==%rev%" }}',
+        sure: '{{ i18n "sure" }}',
+        cancel: '{{ i18n "cancel" }}',
+    };
+
+    Vue.component('chain-editor', {
+        // The root instance moved the mustaches out of the way for Go's
+        // templates; a component compiled in the browser has to be told too.
+        delimiters: ['[[', ']]'],
+        props: {
+            allSetting: { type: Object, required: true },
+        },
+        data() {
+            return {
+                text: ChainText,
+                revision: 0,
+                activeEdge: '',
+                hops: [],
+                portsProblem: null,
+                health: {},
+                // Join tokens live here and nowhere else: the panel keeps only
+                // the hash, so a token exists in this page from the moment it
+                // was issued until the operator leaves (§4.1).
+                tokens: {},
+                busy: false,
+                addModal: { visible: false, form: {} },
+                portsModal: { visible: false, text: '' },
+            };
+        },
+        computed: {
+            innerHops() {
+                return this.hops.filter(h => h.role === ChainUtil.ROLE_INNER);
+            },
+            edgeHops() {
+                return this.hops.filter(h => h.role === ChainUtil.ROLE_EDGE);
+            },
+            legacyNames() {
+                return this.hops.filter(ChainUtil.isLegacy).map(h => h.name).join(', ');
+            },
+            // What the new hop will be chained onto, by the same rule the
+            // service applies: an edge hangs off the last inner that has
+            // entered the chain, an inner off whatever it is inserted after.
+            nextHopPreview() {
+                const inners = this.innerHops;
+                if (this.addModal.form.role === ChainUtil.ROLE_INNER) {
+                    const at = Number(this.addModal.form.position || 0);
+                    return at > 0 && inners[at - 1] ? inners[at - 1].name : 'real-server';
+                }
+                const entered = inners.filter(h => h.state !== ChainUtil.STATE_PENDING);
+                return entered.length ? entered[entered.length - 1].name : 'real-server';
+            },
+        },
+        async mounted() {
+            await this.load();
+        },
+        methods: {
+            async load() {
+                const msg = await ChainApi.list();
+                if (msg.success && msg.obj) {
+                    this.revision = msg.obj.revision || 0;
+                    this.activeEdge = msg.obj.activeEdge || '';
+                    this.hops = msg.obj.hops || [];
+                    this.portsProblem = msg.obj.portsProblem || null;
+                }
+                const health = await ChainApi.health();
+                if (health.success && Array.isArray(health.obj)) {
+                    const byName = {};
+                    health.obj.forEach(h => { byName[h.name] = h.state; });
+                    this.health = byName;
+                }
+            },
+            stateColor: ChainUtil.stateColor,
+            stamp: ChainUtil.stamp,
+            stateLabel(state) {
+                return this.text.stateLabels[state] || state;
+            },
+            isPending(hop) {
+                return hop.state === ChainUtil.STATE_PENDING;
+            },
+            healthOf(hop) {
+                return this.health[hop.name] || 'UNKNOWN';
+            },
+            healthClass(hop) {
+                return ChainUtil.healthClass(this.healthOf(hop));
+            },
+            tokenOf(hop) {
+                return this.tokens[hop.name] || '';
+            },
+            freshnessText(hop) {
+                if (this.isPending(hop)) return '';
+                if (ChainUtil.isCurrent(hop, this.revision)) {
+                    return this.text.freshnessCurrent.replace('%rev%', this.revision);
+                }
+                return this.text.freshness
+                    .replace('%rev%', hop.lastRevision || 0)
+                    .replace('%head%', this.revision);
+            },
+            lastSeenText(hop) {
+                if (!hop.lastSeenAt) return '';
+                return this.text.lastSeen + ' ' + ChainUtil.stamp(hop.lastSeenAt);
+            },
+            // Only a hop whose box has entered the chain can carry the
+            // override (invariant 1), and making the active one active again
+            // is not an action.
+            canMakeActive(hop) {
+                return !hop.isActive &&
+                    (hop.state === ChainUtil.STATE_JOINED || hop.state === ChainUtil.STATE_LEGACY);
+            },
+            confirm(options) {
+                this.$confirm(Object.assign({
+                    class: themeSwitcher.currentTheme,
+                    okText: this.text.sure,
+                    cancelText: this.text.cancel,
+                }, options));
+            },
+            openAdd() {
+                this.addModal.form = {
+                    name: '',
+                    host: '',
+                    role: ChainUtil.ROLE_EDGE,
+                    subPort: 2096,
+                    position: this.innerHops.length,
+                };
+                this.addModal.visible = true;
+            },
+            async submitAdd() {
+                const form = this.addModal.form;
+                const hop = {
+                    name: (form.name || '').trim(),
+                    host: (form.host || '').trim(),
+                    role: form.role,
+                    subPort: Number(form.subPort || 0),
+                };
+                if (form.role === ChainUtil.ROLE_INNER) {
+                    hop.position = Number(form.position || 0);
+                }
+                this.busy = true;
+                const msg = await ChainApi.add(hop);
+                this.busy = false;
+                if (!msg.success) return;
+                // The token is shown from here on, whole and copyable: this is
+                // the only time the panel has it in the clear.
+                this.$set(this.tokens, hop.name, msg.obj.joinToken);
+                this.addModal.visible = false;
+                await this.load();
+            },
+            // The panel's own "/proxy off": next to the active edge because it
+            // undoes exactly what "Make active" did, not a whole-chain action
+            // buried in a menu somewhere else.
+            confirmClearActive() {
+                this.confirm({
+                    title: this.text.clearActiveTitle,
+                    content: this.text.clearActiveNote,
+                    onOk: async () => {
+                        const msg = await ChainApi.clearActive();
+                        if (msg.success) await this.load();
+                    },
+                });
+            },
+            confirmMakeActive(hop) {
+                this.confirm({
+                    title: this.text.makeActiveTitle,
+                    // One line, not a second step: switching is instant, but
+                    // the links already handed out keep their old edge (§4.7).
+                    content: hop.name + ' — ' + this.text.switchNote,
+                    onOk: async () => {
+                        const msg = await ChainApi.setActive(hop.id);
+                        if (msg.success) await this.load();
+                    },
+                });
+            },
+            confirmDelete(hop) {
+                if (hop.isActive) {
+                    // Refused before the request is made: the service says the
+                    // same, and there is nothing for the operator to confirm.
+                    this.$warning({
+                        class: themeSwitcher.currentTheme,
+                        title: this.text.deleteActiveRefusedTitle,
+                        content: this.text.deleteActiveRefused,
+                    });
+                    return;
+                }
+                this.confirm({
+                    title: this.text.deleteConfirmTitle,
+                    content: hop.name,
+                    onOk: async () => {
+                        const msg = await ChainApi.del(hop.id, false);
+                        if (!msg.success) return;
+                        const wait = msg.obj && msg.obj.safeToPowerOffWhen;
+                        if (wait && wait.hop) {
+                            // §4.5: the registry write is instant, the box is
+                            // not safe to power off until its outer neighbour
+                            // has taken the new revision.
+                            this.$message.warning(
+                                this.text.deletePowerOff.replace('%s', wait.hop).replace('%s', wait.revision));
+                        } else {
+                            // Nothing hung off the deleted hop, so there is no
+                            // outer neighbour to wait for at all.
+                            this.$message.info(this.text.deletePowerOffNow);
+                        }
+                        this.$delete(this.tokens, hop.name);
+                        await this.load();
+                    },
+                });
+            },
+            confirmReissue(hop) {
+                this.confirm({
+                    title: this.text.reissueTitle,
+                    content: hop.name + ' — ' + this.text.reissueNote,
+                    onOk: async () => {
+                        const msg = await ChainApi.reissueToken(hop.id);
+                        if (!msg.success) return;
+                        this.$set(this.tokens, hop.name, msg.obj.joinToken);
+                        await this.load();
+                    },
+                });
+            },
+            copyToken(hop) {
+                const token = this.tokenOf(hop);
+                if (!token) return;
+                const done = () => this.$message.success(this.text.tokenCopied);
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(token).then(done).catch(() => done());
+                    return;
+                }
+                const ta = document.createElement('textarea');
+                ta.value = token;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                done();
+            },
+            // The relayed ports of the chain document — what `x-ui chain ports`
+            // prints, and what replaced the fork's relay manifest (§5.9).
+            async showPorts() {
+                const msg = await ChainApi.ports();
+                if (!msg.success) return;
+                this.portsModal.text = JSON.stringify(msg.obj, null, 2);
+                this.portsModal.visible = true;
+            },
+        },
+        template: `{{ template "settings/panel/subscription/chainEditorMarkup" . }}`,
+    });
+
+    // The read-only Proxy front row of general.html: the host clients are given
+    // is the active edge's, and there is nothing to edit there any more (§2.3).
+    // It reads the registry itself rather than being handed the editor's copy,
+    // because the two sit in different templates and neither owns the other.
+    Vue.component('chain-override-readonly', {
+        delimiters: ['[[', ']]'],
+        props: {
+            allSetting: { type: Object, required: true },
+        },
+        data() {
+            // hops starts null rather than empty: "not asked yet" must not
+            // render as "no chain" and flash the legacy fields at a panel that
+            // has a registry.
+            return { activeEdge: '—', hops: null };
+        },
+        computed: {
+            empty() {
+                return Array.isArray(this.hops) && this.hops.length === 0;
+            },
+        },
+        async mounted() {
+            const msg = await ChainApi.list();
+            if (msg.success && msg.obj) {
+                this.hops = msg.obj.hops || [];
+                if (msg.obj.activeEdge) this.activeEdge = msg.obj.activeEdge;
+            }
+        },
+        template: `{{ template "settings/panel/subscription/chainOverrideMarkup" . }}`,
+    });
+</script>
+{{end}}

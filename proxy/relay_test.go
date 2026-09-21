@@ -7,36 +7,29 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/coinman-dev/3ax-ui/v2/relaymanifest"
+	"github.com/coinman-dev/3ax-ui/v2/chain"
+	"github.com/coinman-dev/3ax-ui/v2/chainports"
 	"github.com/coinman-dev/3ax-ui/v2/util/json_util"
 )
 
 func TestBuildRelayConfig(t *testing.T) {
-	// Shape mirrors a real panel config: an internal gRPC api tunnel on loopback,
-	// two public inbounds (explicit 0.0.0.0 and implicit empty listen), and an
-	// internal loopback inbound. Only the two public ports should be relayed.
-	panelCfg := `{
-		"inbounds": [
-			{"listen":"127.0.0.1","port":62789,"protocol":"dokodemo-door","tag":"api"},
-			{"listen":"0.0.0.0","port":443,"protocol":"vless","tag":"inbound-443"},
-			{"port":8443,"protocol":"trojan","tag":"inbound-8443"},
-			{"listen":"127.0.0.1","port":10085,"protocol":"vmess","tag":"internal"}
-		]
-	}`
-	path := writePanelCfg(t, panelCfg)
+	ports := []chain.Port{
+		{Port: 443, Network: chain.NetworkTCPUDP, Tag: "inbound-443", Source: chain.SourceXray},
+		{Port: 8443, Network: chain.NetworkTCPUDP, Tag: "inbound-8443", Source: chain.SourceXray},
+	}
 
-	cfg, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", nil)
+	cfg, relayed, err := BuildRelayConfig(ports, "1.2.3.4", "::")
 	if err != nil {
 		t.Fatalf("BuildRelayConfig: %v", err)
 	}
 
 	wantPorts := map[int]bool{443: true, 8443: true}
-	if len(ports) != len(wantPorts) {
-		t.Fatalf("relayed ports = %v, want exactly %v", ports, wantPorts)
+	if len(relayed) != len(wantPorts) {
+		t.Fatalf("relayed ports = %v, want exactly %v", relayed, wantPorts)
 	}
-	for _, p := range ports {
+	for _, p := range relayed {
 		if !wantPorts[p] {
-			t.Errorf("unexpected relayed port %d (api/loopback should be skipped)", p)
+			t.Errorf("unexpected relayed port %d", p)
 		}
 	}
 
@@ -70,30 +63,32 @@ func TestBuildRelayConfig(t *testing.T) {
 	}
 }
 
-func TestBuildRelayConfigNoInbounds(t *testing.T) {
-	// Only an internal api inbound -> nothing to relay -> error.
-	path := writePanelCfg(t, `{"inbounds":[{"listen":"127.0.0.1","port":62789,"protocol":"dokodemo-door","tag":"api"}]}`)
-	if _, _, err := BuildRelayConfig(path, "1.2.3.4", "::", nil); err == nil {
-		t.Fatal("expected error when there are no relayable inbounds, got nil")
+func TestBuildRelayConfigNoPorts(t *testing.T) {
+	// Nothing to relay is an error: an xray with no inbound would start and
+	// serve nobody, and the front would look healthy while it is deaf.
+	if _, _, err := BuildRelayConfig(nil, "1.2.3.4", "::"); err == nil {
+		t.Fatal("expected an error when there are no ports to relay, got nil")
 	}
 }
 
-// writePanelCfg stores body as a relay manifest: the inbounds given, under the
-// marker the relay insists on. Bodies are written in the manifest's own field
-// whitelist, so wrapping is all it takes.
-func writePanelCfg(t *testing.T, body string) string {
+// writePorts stores a port list the way `x-ui chain ports` prints it.
+func writePorts(t *testing.T, ports []chain.Port) string {
 	t.Helper()
-	body = strings.Replace(strings.TrimSpace(body), "{", `{"relayManifest":{"version":1},`, 1)
-	path := filepath.Join(t.TempDir(), "relay-manifest.json")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	data, err := json.Marshal(ports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "chain-ports.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
-func TestBuildRelayConfigRefusesRawPanelConfig(t *testing.T) {
-	// The panel's bin/config.json, keys and all, must never be accepted as the
-	// relay's input — only a relay manifest exported from the panel is.
+// TestLoadRelayPortsRefusesARawPanelConfig: the panel's bin/config.json, keys
+// and all, must never be what the front reads — only the computed port list
+// is, and the refusal says where to get one.
+func TestLoadRelayPortsRefusesARawPanelConfig(t *testing.T) {
 	raw := `{"log":{"loglevel":"warning"},"inbounds":[{"port":443,"protocol":"vless","tag":"inbound-443",
 	  "settings":{"clients":[{"id":"x"}],"decryption":"none"},
 	  "streamSettings":{"security":"reality","realitySettings":{"privateKey":"SECRET"}}}],
@@ -102,14 +97,23 @@ func TestBuildRelayConfigRefusesRawPanelConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := BuildRelayConfig(path, "1.2.3.4", "::", nil)
+	_, err := LoadRelayPorts(path)
 	if err == nil {
-		t.Fatal("a raw panel config was accepted as relay input")
+		t.Fatal("a raw panel config was accepted as the front's port list")
 	}
-	for _, want := range []string{"not a relay manifest", "x-ui relay-manifest"} {
+	for _, want := range []string{"not a chain port list", "x-ui chain ports"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}
+	}
+}
+
+// TestLoadRelayPortsRefusesAnUnknownNetwork: the network names the listeners
+// the relay opens, so a value it does not know would open none.
+func TestLoadRelayPortsRefusesAnUnknownNetwork(t *testing.T) {
+	path := writePorts(t, []chain.Port{{Port: 443, Network: "quic", Tag: "inbound-443", Source: chain.SourceXray}})
+	if _, err := LoadRelayPorts(path); err == nil {
+		t.Fatal("a port with an unknown network was accepted")
 	}
 }
 
@@ -125,19 +129,21 @@ func relaySettings(t *testing.T, in json_util.RawMessage) (port int, network str
 	return s.Port, s.Network
 }
 
-func TestBuildRelayConfigExtraPorts(t *testing.T) {
-	// An AmneziaWG listener lives on the host, not in the xray config, so the
-	// panel config alone yields one relayed port; extraPorts adds the UDP one
-	// with its own network selector and the TCP-only one likewise.
-	path := writePanelCfg(t, `{"inbounds":[{"port":443,"protocol":"vless","tag":"inbound-443"}]}`)
-	extra := []ExtraPort{{Port: 51820, Network: "udp"}, {Port: 8443, Network: "tcp"}}
-
-	cfg, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", extra)
+// TestBuildRelayConfigKeepsEachPortsNetwork: a UDP-only tunnel port and a
+// TCP-only one must not both become tcp,udp listeners — the network travels
+// per port in the document for exactly this reason.
+func TestBuildRelayConfigKeepsEachPortsNetwork(t *testing.T) {
+	ports := []chain.Port{
+		{Port: 443, Network: chain.NetworkTCPUDP, Tag: "inbound-443", Source: chain.SourceXray},
+		{Port: 51820, Network: chain.NetworkUDP, Tag: "awg", Source: chain.SourceAwg},
+		{Port: 8443, Network: chain.NetworkTCP, Tag: "extra-8443", Source: chain.SourceExtra},
+	}
+	cfg, relayed, err := BuildRelayConfig(ports, "1.2.3.4", "::")
 	if err != nil {
 		t.Fatalf("BuildRelayConfig: %v", err)
 	}
-	if len(ports) != 3 {
-		t.Fatalf("relayed ports = %v, want 443, 51820 and 8443", ports)
+	if len(relayed) != 3 {
+		t.Fatalf("relayed ports = %v, want 443, 51820 and 8443", relayed)
 	}
 	want := map[int]string{443: "tcp,udp", 51820: "udp", 8443: "tcp"}
 	for _, in := range cfg.InboundConfigs {
@@ -155,68 +161,50 @@ func TestBuildRelayConfigExtraPorts(t *testing.T) {
 	}
 }
 
-func TestBuildRelayConfigExtraPortsOnly(t *testing.T) {
-	// A panel whose only inbound is internal still relays when extraPorts is set.
-	path := writePanelCfg(t, `{"inbounds":[{"listen":"127.0.0.1","port":62789,"protocol":"dokodemo-door","tag":"api"}]}`)
-	_, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", []ExtraPort{{Port: 51820, Network: "udp"}})
+// TestBuildRelayConfigRefusesADuplicatePort: one port, one source (§3.8) —
+// merging them silently would make the front relay one of two services and
+// leave the other dark with nothing said.
+func TestBuildRelayConfigRefusesADuplicatePort(t *testing.T) {
+	ports := []chain.Port{
+		{Port: 443, Network: chain.NetworkTCPUDP, Tag: "inbound-443", Source: chain.SourceXray},
+		{Port: 443, Network: chain.NetworkUDP, Tag: "extra-443", Source: chain.SourceExtra},
+	}
+	_, _, err := BuildRelayConfig(ports, "1.2.3.4", "::")
+	if err == nil {
+		t.Fatal("a port claimed by two sources was accepted")
+	}
+	for _, want := range []string{"xray", "extra"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the source %q", err, want)
+		}
+	}
+}
+
+// TestPortsComputedByThePanelReachTheRelay pins the contract between the two
+// halves of §3.8: what chainports computes on the panel is what the front
+// relays, with no translation in between.
+func TestPortsComputedByThePanelReachTheRelay(t *testing.T) {
+	computed := chainports.Ports([]chainports.Inbound{
+		{Listen: "127.0.0.1", Port: 62789, Protocol: "tunnel", Tag: "api"},
+		{Listen: "0.0.0.0", Port: 443, Protocol: "vless", Tag: "inbound-443",
+			Settings:       `{"clients":[{"id":"x"}]}`,
+			StreamSettings: `{"security":"reality","realitySettings":{"privateKey":"SECRET"}}`},
+		{Listen: "::", Port: 12345, Protocol: "dokodemo-door", Tag: "awg-tproxy-in",
+			Settings:       `{"followRedirect":true}`,
+			StreamSettings: `{"sockopt":{"tproxy":"tproxy"}}`},
+	})
+	path := writePorts(t, computed)
+
+	ports, err := LoadRelayPorts(path)
 	if err != nil {
-		t.Fatalf("BuildRelayConfig: %v", err)
+		t.Fatalf("LoadRelayPorts: %v", err)
 	}
-	if len(ports) != 1 || ports[0] != 51820 {
-		t.Fatalf("relayed ports = %v, want [51820]", ports)
-	}
-}
-
-func TestBuildRelayConfigSkipsTransparentInbounds(t *testing.T) {
-	// The panel adds a synthetic dokodemo-door TPROXY inbound per tunnel routed
-	// via Xray. It listens on "::" like a public inbound but only ever receives
-	// kernel-redirected packets, so it must not become a relayed port. Both the
-	// semantic markers and the default tag suffix identify it.
-	panelCfg := `{
-		"inbounds": [
-			{"port":443,"protocol":"vless","tag":"inbound-443"},
-			{"listen":"::","port":12345,"protocol":"dokodemo-door","tag":"my-tunnel",
-			 "settings":{"followRedirect":true},
-			 "streamSettings":{"sockopt":{"tproxy":"tproxy"}}},
-			{"listen":"::","port":12346,"protocol":"dokodemo-door","tag":"redir",
-			 "settings":{"followRedirect":true}},
-			{"listen":"::","port":12347,"protocol":"dokodemo-door","tag":"renamed",
-			 "streamSettings":{"sockopt":{"tproxy":"redirect"}}},
-			{"listen":"::","port":12348,"protocol":"dokodemo-door","tag":"wg-tproxy-in"}
-		]
-	}`
-	path := writePanelCfg(t, panelCfg)
-	_, ports, err := BuildRelayConfig(path, "1.2.3.4", "::", nil)
+	ports = append(ports, extraRelayPorts([]ExtraPort{{Port: 51820, Network: "udp"}})...)
+	_, relayed, err := BuildRelayConfig(ports, "203.0.113.1", "0.0.0.0")
 	if err != nil {
-		t.Fatalf("BuildRelayConfig: %v", err)
+		t.Fatalf("BuildRelayConfig over a computed port list: %v", err)
 	}
-	if len(ports) != 1 || ports[0] != 443 {
-		t.Fatalf("relayed ports = %v, want [443] only (TPROXY inbounds skipped)", ports)
-	}
-}
-
-func TestSkipReason(t *testing.T) {
-	plain := relaymanifest.Inbound{Port: 443, Protocol: "vless", Tag: "inbound-443"}
-	if r := skipReason(plain); r != "" {
-		t.Errorf("public inbound skipped: %q", r)
-	}
-	// A plain dokodemo-door port map (no redirect, no tproxy) is a real public
-	// inbound and must still be relayed.
-	portMap := relaymanifest.Inbound{Port: 8080, Protocol: "dokodemo-door", Tag: "portmap"}
-	if r := skipReason(portMap); r != "" {
-		t.Errorf("dokodemo port map skipped: %q", r)
-	}
-	tagged := relaymanifest.Inbound{Port: 12345, Protocol: "dokodemo-door", Tag: "awg-tproxy-in"}
-	if r := skipReason(tagged); r == "" {
-		t.Error("awg-tproxy-in not skipped")
-	}
-}
-
-func TestBuildRelayConfigExtraPortCollision(t *testing.T) {
-	// One port, one source: an extra port that is also an xray inbound is a
-	// config mistake, not something to merge silently.
-	path := writePanelCfg(t, `{"inbounds":[{"port":443,"protocol":"vless","tag":"inbound-443"}]}`)
-	if _, _, err := BuildRelayConfig(path, "1.2.3.4", "::", []ExtraPort{{Port: 443, Network: "udp"}}); err == nil {
-		t.Fatal("expected error when an extra port collides with an xray inbound port, got nil")
+	if len(relayed) != 2 || relayed[0] != 443 || relayed[1] != 51820 {
+		t.Fatalf("relayed ports = %v, want [443 51820]", relayed)
 	}
 }

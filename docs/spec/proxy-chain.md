@@ -110,7 +110,7 @@ type ChainHop struct {
 ```go
 // GetProxyOverride: активный edge реестра, иначе legacy-настройки.
 func (s *SettingService) GetProxyOverride() (string, bool) {
-    if host, ok := chainActiveEdgeHost(); ok { // ChainService: state IN (joined, legacy) AND is_active
+    if host, ok := chainActiveEdgeHost(); ok { // ChainService: is_active — в любом состоянии, см. ниже
         return host, true
     }
     return s.legacyProxyOverride() // прежнее тело: proxyOverrideEnable + proxyOverrideHost
@@ -118,6 +118,8 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
 ```
 
 > **Решение о месте правки.** Чтобы остаться в рамках ADR 0002 (одна вставка на upstream-файл), прежнее тело переезжает в новый форковый файл `web/service/setting_chain.go` как `legacyProxyOverride()`, а в `setting.go` остаётся один короткий hunk-обёртка. `GetProxyOverrideEnable/Host/Set*` не трогаем — они остаются доступом к legacy-ключам.
+
+**Активное звено держит override в любом состоянии.** `ActiveEdgeHost()` возвращает хост звена с `is_active`, даже если оно `pending`: перевыпуск токена активному edge (§4.4) переводит его в `pending`, не снимая активности, и фильтр по состоянию на это окно опубликовал бы адрес real server через legacy-ключи. Сделать активным `pending`-звено по-прежнему нельзя (инвариант 1); речь только о звене, которое уже было активным. Хост введён владельцем и остаётся верным.
 
 Разовая миграция при первом старте после апгрейда (`ChainService.MigrateLegacyOverride()`, вызов из `database/db.go` рядом с прочими миграциями, `database/db.go:350-367`):
 

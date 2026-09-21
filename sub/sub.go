@@ -48,6 +48,7 @@ type Server struct {
 	listener6  net.Listener
 
 	sub            *SUBController
+	chain          *ChainController
 	settingService service.SettingService
 
 	ctx    context.Context
@@ -274,6 +275,11 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 		SubJsonFragment, SubJsonNoises, SubJsonMux, SubJsonRules, SubTitle, SubSupportUrl,
 		SubProfileUrl, SubAnnounce, SubEnableRouting, SubRoutingRules, SubTheme)
 
+	// The chain's wave and join share the sub port with the subscriptions
+	// (docs/spec/proxy-chain.md §3.3): one port is enough, and a second one
+	// would be another field in the registry, the document and the installer.
+	s.chain = NewChainController(g)
+
 	return engine, nil
 }
 
@@ -315,6 +321,7 @@ func (s *Server) Start() (err error) {
 		return err
 	}
 	if !subEnable {
+		warnChainNeedsSubServer()
 		return nil
 	}
 

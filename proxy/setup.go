@@ -17,16 +17,15 @@ import (
 	"time"
 
 	"github.com/coinman-dev/3ax-ui/v2/logger"
-	"github.com/coinman-dev/3ax-ui/v2/relaymanifest"
 )
 
-// maxManifestBytes bounds a paste; a real manifest is a few KB.
+// maxManifestBytes bounds a paste; a real port list is a few KB.
 const maxManifestBytes = 1 << 20
 
-// SetupServer is the proxy front's bootstrap mode: while no relay manifest
+// SetupServer is the proxy front's bootstrap mode: while no port list
 // exists, the process serves nothing but a one-time setup page on the
 // subscription port, reachable only under a random token. The owner pastes
-// the manifest exported from the real panel; once one is accepted it is
+// the list printed on the real panel; once one is accepted it is
 // written to Config.RelayManifestPath, Accepted() fires, and the page goes
 // dark — the token is spent, and every later request is a 404.
 type SetupServer struct {
@@ -55,7 +54,7 @@ func NewSetupServer(cfg *Config) (*SetupServer, error) {
 // Token is the secret path segment of the setup page.
 func (s *SetupServer) Token() string { return s.token }
 
-// Accepted is closed once a valid manifest has been written.
+// Accepted is closed once a valid port list has been written.
 func (s *SetupServer) Accepted() <-chan struct{} { return s.accepted }
 
 // Path is the request path of the setup page.
@@ -116,7 +115,7 @@ func (s *SetupServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// accept validates a pasted manifest (form field "manifest", or the raw body
+// accept validates a pasted port list (form field "manifest", or the raw body
 // for curl), writes it and fires Accepted. A bad paste is a 400 with the
 // validator's reason; the page stays up for another try.
 func (s *SetupServer) accept(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +137,7 @@ func (s *SetupServer) accept(w http.ResponseWriter, r *http.Request) {
 		body = string(raw)
 	}
 
-	m, err := relaymanifest.Validate([]byte(body))
+	ports, err := ParseRelayPorts([]byte(body))
 	if err != nil {
 		logger.Warningf("proxy-front: setup page rejected a paste: %v", err)
 		s.render(w, http.StatusBadRequest, setupPageData{Error: err.Error()})
@@ -152,27 +151,25 @@ func (s *SetupServer) accept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(s.cfg.RelayManifestPath), 0o755); err != nil {
-		http.Error(w, "store manifest: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "store port list: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if err := os.WriteFile(s.cfg.RelayManifestPath, []byte(body), 0o600); err != nil {
-		http.Error(w, "store manifest: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "store port list: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.done = true
 	close(s.accepted)
 
-	ports := make([]string, 0, len(m.Inbounds))
-	for _, in := range m.Inbounds {
-		if skipReason(in) == "" {
-			ports = append(ports, strconv.Itoa(in.Port))
-		}
+	listed := make([]string, 0, len(ports))
+	for _, port := range ports {
+		listed = append(listed, strconv.Itoa(port.Port)+"/"+port.Network)
 	}
 	for _, ep := range s.cfg.ExtraRelayPorts() {
-		ports = append(ports, strconv.Itoa(ep.Port)+"/"+ep.Network)
+		listed = append(listed, strconv.Itoa(ep.Port)+"/"+ep.Network)
 	}
-	logger.Infof("proxy-front: relay manifest accepted via setup page, written to %s", s.cfg.RelayManifestPath)
-	s.render(w, http.StatusOK, setupPageData{Done: true, Ports: strings.Join(ports, ", "), Upstream: s.cfg.UpstreamHost})
+	logger.Infof("proxy-front: chain port list accepted via setup page, written to %s", s.cfg.RelayManifestPath)
+	s.render(w, http.StatusOK, setupPageData{Done: true, Ports: strings.Join(listed, ", "), Upstream: s.cfg.UpstreamHost})
 }
 
 type setupPageData struct {
@@ -246,15 +243,14 @@ code{background:#eee;padding:1px 4px;border-radius:3px}
 </style></head><body>
 <h1>Proxy front setup</h1>
 {{if .Done}}
-<p class="ok">Relay manifest accepted. The relay is starting now for ports <b>{{.Ports}}</b> → <code>{{.Upstream}}</code>.
+<p class="ok">Port list accepted. The relay is starting now for ports <b>{{.Ports}}</b> → <code>{{.Upstream}}</code>.
 This page is gone; the subscription server takes this port over in a moment.</p>
 {{else}}
-<p>This box has no relay manifest yet. On the <b>real</b> panel run <code>x-ui relay-manifest</code>
-(or open Settings → Subscription → <i>Show manifest</i>), copy the output and paste it here.
-It lists ports only — no keys ever leave the real server.</p>
+<p>This box has no port list yet. On the <b>real</b> panel run <code>x-ui chain ports</code>,
+copy the output and paste it here. It lists ports only — no keys ever leave the real server.</p>
 {{if .Error}}<p class="err">Rejected: {{.Error}}</p>{{end}}
 <form method="post">
-<textarea name="manifest" placeholder='{"relayManifest": {"version": 1, ...}, "inbounds": [...]}' required></textarea><br>
+<textarea name="manifest" placeholder='[{"port": 443, "network": "tcp,udp", "tag": "inbound-443", "source": "xray"}]' required></textarea><br>
 <button type="submit">Start the relay</button>
 </form>
 {{end}}

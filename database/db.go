@@ -58,6 +58,7 @@ func initModels() error {
 		&model.MonEvent{},
 		&model.MonStatsCurrent{},
 		&model.MonStatsRollup{},
+		&model.ChainHop{},
 	}
 	for _, model := range models {
 		if err := db.AutoMigrate(model); err != nil {
@@ -114,6 +115,9 @@ var namedIndexes = map[string]string{
 	"idx_mon_stats_current_inbound":  "mon_stats_current",
 	"idx_mon_stats_rollup_key":       "mon_stats_rollup",
 	"idx_mon_stats_rollup_inbound":   "mon_stats_rollup",
+	"idx_chain_hops_name":            "chain_hops",
+	"idx_chain_hops_next":            "chain_hops",
+	"idx_chain_hops_role":            "chain_hops",
 }
 
 // dropStrayNamedIndexes removes indexes that carry one of our names but hang off
@@ -370,6 +374,11 @@ func InitDB(dbPath string) error {
 	// interim settings.clients[] shape) into the dedicated mtproto_clients table
 	// (unique Uuid, non-unique Email), carrying any recorded traffic across.
 	migrateMtprotoClientsTable()
+
+	// Migrations that live in a service and cannot be called from here without
+	// an import cycle (see post_migrate.go); the chain registry imports the
+	// legacy host override this way.
+	runPostMigrateHooks()
 
 	isUsersEmpty, err := isTableEmpty("users")
 	if err != nil {

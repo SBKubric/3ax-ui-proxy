@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -18,7 +19,6 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/logger"
 	"github.com/coinman-dev/3ax-ui/v2/proxy"
-	"github.com/coinman-dev/3ax-ui/v2/relaymanifest"
 	"github.com/coinman-dev/3ax-ui/v2/sub"
 	"github.com/coinman-dev/3ax-ui/v2/tunnel"
 	"github.com/coinman-dev/3ax-ui/v2/util/crypto"
@@ -26,7 +26,6 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/web"
 	"github.com/coinman-dev/3ax-ui/v2/web/global"
 	"github.com/coinman-dev/3ax-ui/v2/web/service"
-	"github.com/coinman-dev/3ax-ui/v2/xray"
 
 	"github.com/joho/godotenv"
 	"github.com/op/go-logging"
@@ -485,6 +484,34 @@ func migrateDb() {
 	fmt.Println("Migration done!")
 }
 
+// chainPorts is the debug export of the relayed ports the chain document
+// carries (docs/spec/proxy-chain.md §5.8, §3.8). It replaces `x-ui
+// relay-manifest`: nothing is pasted anywhere any more, the fronts get this
+// same list through the wave, and printing it is how an operator checks what
+// the panel believes it publishes.
+func chainPorts(out string) {
+	if err := database.InitDB(config.GetDBPath()); err != nil {
+		log.Fatalf("chain ports: %v", err)
+	}
+	ports, err := (&service.ChainPortsService{}).Ports()
+	if err != nil {
+		log.Fatalf("chain ports: %v", err)
+	}
+	data, err := json.MarshalIndent(ports, "", "  ")
+	if err != nil {
+		log.Fatalf("chain ports: %v", err)
+	}
+	data = append(data, '\n')
+	if out == "" {
+		os.Stdout.Write(data)
+		return
+	}
+	if err := os.WriteFile(out, data, 0o600); err != nil {
+		log.Fatalf("chain ports: %v", err)
+	}
+	fmt.Printf("chain ports written to %s\n", out)
+}
+
 // generateAwg2 fills the AmneziaWG server row with freshly generated 2.0
 // obfuscation parameters (DB only, no interface changes). Used by install.sh on
 // a FRESH install so new setups default to AmneziaWG 2.0; on update the caller
@@ -573,7 +600,7 @@ func main() {
 		fmt.Println("    migrate        migrate form other/old x-ui")
 		fmt.Println("    setting        set settings")
 		fmt.Println("    proxy          run sacrificial proxy front (dokodemo relay + sub)")
-		fmt.Println("    relay-manifest print the relay manifest for a proxy front (ports only, no keys)")
+		fmt.Println("    chain ports    print the relayed ports of the chain document (debug export)")
 		fmt.Println("    proxy-setup-url show the pending setup-page link of a proxy front")
 	}
 
@@ -644,26 +671,23 @@ func main() {
 		} else {
 			updateCert(webCertFile, webKeyFile)
 		}
-	case "relay-manifest":
-		manifestCmd := flag.NewFlagSet("relay-manifest", flag.ExitOnError)
-		var manifestOut string
-		manifestCmd.StringVar(&manifestOut, "o", "", "write the manifest to this file instead of stdout")
-		if err := manifestCmd.Parse(os.Args[2:]); err != nil {
+	case "chain":
+		chainCmd := flag.NewFlagSet("chain", flag.ExitOnError)
+		var chainOut string
+		chainCmd.StringVar(&chainOut, "o", "", "write the port list to this file instead of stdout")
+		if len(os.Args) < 3 {
+			fmt.Println("chain: the only subcommand is `ports`")
+			os.Exit(1)
+		}
+		if os.Args[2] != "ports" {
+			fmt.Printf("chain: unknown subcommand %q; the only one is `ports`\n", os.Args[2])
+			os.Exit(1)
+		}
+		if err := chainCmd.Parse(os.Args[3:]); err != nil {
 			fmt.Println(err)
 			return
 		}
-		data, err := relaymanifest.FromFile(xray.GetConfigPath(), config.GetVersion())
-		if err != nil {
-			log.Fatalf("relay-manifest: %v", err)
-		}
-		if manifestOut == "" {
-			os.Stdout.Write(data)
-			return
-		}
-		if err := os.WriteFile(manifestOut, data, 0o600); err != nil {
-			log.Fatalf("relay-manifest: %v", err)
-		}
-		fmt.Printf("relay manifest written to %s\n", manifestOut)
+		chainPorts(chainOut)
 	case "proxy-setup-url":
 		urlCmd := flag.NewFlagSet("proxy-setup-url", flag.ExitOnError)
 		var urlCfgPath string
