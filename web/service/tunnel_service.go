@@ -141,6 +141,16 @@ func (s *TunnelService[K]) GetServer() (*model.TunnelServer, error) {
 		needSave = true
 	}
 
+	// The MTU has to leave room for the S4 padding (tunnel/mtu.go). Records
+	// written before that was accounted for carry 1420, which is too large once
+	// S4 is on; the panel picked that value, not the operator, so it follows the
+	// padding. An MTU the operator chose is left alone. This is also how a new
+	// record gets its MTU: it is born with 1420 and the seeded padding above.
+	if mtu := server.MTU; k.Obfuscation {
+		tunnel.FollowServerMTU(k, &server, 0)
+		needSave = needSave || server.MTU != mtu
+	}
+
 	if needSave {
 		if err := db.Save(&server).Error; err != nil {
 			return nil, err
@@ -194,6 +204,17 @@ func (s *TunnelService[K]) SaveServer(server *model.TunnelServer) error {
 		return err
 	}
 
+	var prev model.TunnelServer
+	hasPrev := db.First(&prev, server.Id).Error == nil
+
+	// A default MTU follows the padding — Generate changes S4 while the form
+	// still holds the MTU computed for the old one — and an MTU the padding
+	// cannot fit is refused rather than left to drop every full-size packet.
+	tunnel.FollowServerMTU(s.kind(), server, prev.S4)
+	if err := tunnel.ValidateMTU(s.kind(), server); err != nil {
+		return err
+	}
+
 	if server.ListenPort <= 0 {
 		port, err := pickRandomTunnelListenPort(otherTunnelListenPort(db, s.kind().Name))
 		if err != nil {
@@ -207,8 +228,7 @@ func (s *TunnelService[K]) SaveServer(server *model.TunnelServer) error {
 	// Xray to restart so it picks up the dokodemo-door inbound additions.
 	xrayDirty := false
 	obfDirty := false
-	var prev model.TunnelServer
-	if err := db.First(&prev, server.Id).Error; err == nil {
+	if hasPrev {
 		if prev.RouteViaXray != server.RouteViaXray ||
 			prev.XrayInboundTag != server.XrayInboundTag ||
 			prev.XrayTproxyPort != server.XrayTproxyPort {
@@ -313,7 +333,7 @@ func (s *TunnelService[K]) ResetToDefaults() (*model.TunnelServer, error) {
 	// Reset operational settings to defaults, but keep network config
 	server.Enable = false
 	server.ListenPort = port
-	server.MTU = 1420
+	server.MTU = tunnel.LegacyDefaultMTU // right for the unpadded 1.x set below
 	server.PrivateKey = priv
 	server.PublicKey = pub
 	server.IPv4Address = s.kind().DefaultIPv4Address
@@ -1160,6 +1180,14 @@ func (s *TunnelService[K]) StartIfEnabled() {
 		return
 	}
 	if tunnel.IsInterfaceUp(s.kind(), server.InterfaceName) {
+		// Survived a panel restart, e.g. an upgrade. GetServer may just have
+		// lowered a default MTU to make room for the padding; the live link and
+		// the file on disk still carry the old one until they are re-applied.
+		if live, err := tunnel.InterfaceMTU(server.InterfaceName); err == nil && server.MTU > 0 && live != server.MTU {
+			if err := s.applyServerConfig(server); err != nil {
+				logger.Warningf("Failed to apply %s MTU %d on startup:: %v", s.kind().Title, server.MTU, err)
+			}
+		}
 		return
 	}
 	logger.Info("Restoring AmneziaWG interface after startup...")
@@ -1197,7 +1225,14 @@ func (s *TunnelService[K]) applyServerConfig(server *model.TunnelServer) error {
 
 	// Sync or restart interface
 	if tunnel.IsInterfaceUp(s.kind(), server.InterfaceName) {
-		return tunnel.SyncConfig(s.kind(), server.InterfaceName)
+		if err := tunnel.SyncConfig(s.kind(), server.InterfaceName); err != nil {
+			return err
+		}
+		// syncconf leaves the link MTU as the interface was created with.
+		if err := tunnel.SyncInterfaceMTU(server.InterfaceName, server.MTU); err != nil {
+			logger.Warningf("%s: %v", s.kind().Title, err)
+		}
+		return nil
 	}
 	return tunnel.InterfaceUp(s.kind(), server.InterfaceName)
 }

@@ -303,3 +303,141 @@ func TestWithProxyOverrideRewritesEndpointOnly(t *testing.T) {
 		t.Errorf("client conf leaks the real server address:\n%s", conf)
 	}
 }
+
+// SBKubric/3ax-ui-proxy#118: records from before the S4 padding was accounted
+// for carry the legacy 1420, which with S4 = 22 puts a full-size packet at 1502
+// bytes. Reading the server lowers such a panel-picked MTU to fit; an MTU the
+// operator chose is left alone.
+func TestLegacyDefaultMTUFollowsPadding(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "x-ui.db")); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	svc := &AwgService{}
+	fresh, err := svc.GetServer()
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if fresh.S4 == 0 || fresh.MTU != tunnel.DefaultMTU(fresh.S4) {
+		t.Errorf("fresh server: MTU %d with S4 %d, want %d", fresh.MTU, fresh.S4, tunnel.DefaultMTU(fresh.S4))
+	}
+
+	db := database.GetDB()
+	setMTU := func(mtu, s4 int) {
+		t.Helper()
+		if err := db.Model(&model.TunnelServer{}).Where("id = ?", fresh.Id).
+			Updates(map[string]any{"mtu": mtu, "s4": s4}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	setMTU(1420, 22) // the stand, upgraded
+	got, err := svc.GetServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MTU != 1398 {
+		t.Errorf("legacy 1420 with S4=22 read back as %d, want 1398", got.MTU)
+	}
+	var stored model.TunnelServer
+	db.First(&stored, fresh.Id)
+	if stored.MTU != 1398 {
+		t.Errorf("the lowered MTU was not persisted: %d", stored.MTU)
+	}
+	conf, err := svc.GetClientConfig(mustAddClient(t, svc).Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(conf, "MTU = 1398\n") {
+		t.Errorf("client config does not carry the lowered MTU:\n%s", conf)
+	}
+
+	setMTU(1300, 22) // chosen by the operator
+	if got, _ := svc.GetServer(); got.MTU != 1300 {
+		t.Errorf("operator MTU 1300 was rewritten to %d", got.MTU)
+	}
+
+	setMTU(1420, 0) // a 1.x server: 1420 is right
+	if got, _ := svc.GetServer(); got.MTU != 1420 {
+		t.Errorf("unpadded server's 1420 was rewritten to %d", got.MTU)
+	}
+
+	wg, err := (&WgService{}).GetServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wg.MTU != 1420 {
+		t.Errorf("WireGuard MTU = %d, want 1420", wg.MTU)
+	}
+}
+
+// Saving follows the default MTU along with the padding (Generate changes S4
+// while the form still holds the MTU computed for the old value) and refuses
+// an MTU the padding cannot fit.
+func TestSaveServerKeepsMTUInsideTheLink(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "x-ui.db")); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	svc := &AwgService{}
+	server, err := svc.GetServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Enable = false // nothing to apply to the host in a test
+
+	// Pin the padding first; the MTU follows from the seeded default.
+	server.S4 = 22
+	if err := svc.SaveServer(server); err != nil {
+		t.Fatalf("save S4=22: %v", err)
+	}
+	if server.MTU != 1398 {
+		t.Fatalf("MTU after S4=22 = %d, want 1398", server.MTU)
+	}
+
+	// Generate: new S4, the form still says 1398.
+	server.S4 = 10
+	if err := svc.SaveServer(server); err != nil {
+		t.Fatalf("save S4=10: %v", err)
+	}
+	if server.MTU != 1410 {
+		t.Errorf("default MTU did not follow S4 22 -> 10: %d, want 1410", server.MTU)
+	}
+
+	// The legacy value in a POST (an old form, an orchestrator inventory) is a
+	// default too.
+	server.MTU = 1420
+	if err := svc.SaveServer(server); err != nil {
+		t.Fatalf("save MTU=1420: %v", err)
+	}
+	if server.MTU != 1410 {
+		t.Errorf("posted 1420 saved as %d, want the default 1410", server.MTU)
+	}
+
+	// An explicit value over the IPv4 ceiling is refused and nothing is stored.
+	server.MTU = 1431
+	if err := svc.SaveServer(server); err == nil {
+		t.Errorf("MTU 1431 with S4=10 was accepted; the ceiling is 1430")
+	}
+	var stored model.TunnelServer
+	database.GetDB().First(&stored, server.Id)
+	if stored.MTU != 1410 {
+		t.Errorf("refused save still changed the MTU to %d", stored.MTU)
+	}
+
+	// An explicit value that fits is kept as typed.
+	server.MTU = 1380
+	if err := svc.SaveServer(server); err != nil {
+		t.Fatalf("save MTU=1380: %v", err)
+	}
+	if stored = (model.TunnelServer{}); database.GetDB().First(&stored, server.Id).Error != nil || stored.MTU != 1380 {
+		t.Errorf("operator MTU 1380 stored as %d", stored.MTU)
+	}
+}
+
+func mustAddClient(t *testing.T, svc *AwgService) *model.TunnelClient {
+	t.Helper()
+	c := &model.TunnelClient{Name: "mtu-check", Email: "mtu-check", Enable: false}
+	if err := svc.AddClient(c); err != nil {
+		t.Fatalf("AddClient: %v", err)
+	}
+	return c
+}

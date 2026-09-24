@@ -3,6 +3,7 @@ package tunnel
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +99,39 @@ func RestartInterface(k Kind, interfaceName string) error {
 	_ = InterfaceDown(k, interfaceName)
 	time.Sleep(500 * time.Millisecond)
 	return InterfaceUp(k, interfaceName)
+}
+
+// SyncInterfaceMTU brings a live interface's MTU in line with mtu. The quick
+// tool sets the MTU only when it creates the interface, and syncconf never
+// touches it, so without this an MTU saved on a running tunnel would wait for
+// the next reboot. Changing a link's MTU drops no session. A non-positive mtu
+// means "let the quick tool pick" and is left alone.
+func SyncInterfaceMTU(interfaceName string, mtu int) error {
+	if mtu <= 0 {
+		return nil
+	}
+	live, err := InterfaceMTU(interfaceName)
+	if err != nil {
+		return err
+	}
+	if live == mtu {
+		return nil
+	}
+	output, err := exec.Command("ip", "link", "set", "dev", interfaceName, "mtu", strconv.Itoa(mtu)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("set %s mtu %d: %s: %w", interfaceName, mtu, strings.TrimSpace(string(output)), err)
+	}
+	logger.Infof("%s MTU %d -> %d", interfaceName, live, mtu)
+	return nil
+}
+
+// InterfaceMTU returns the MTU a live interface runs with.
+func InterfaceMTU(interfaceName string) (int, error) {
+	iface, err := net.InterfaceByName(interfaceName)
+	if err != nil {
+		return 0, fmt.Errorf("look up %s: %w", interfaceName, err)
+	}
+	return iface.MTU, nil
 }
 
 // IsInterfaceUp reports whether the interface exists in the system.
