@@ -2,13 +2,15 @@
 
 Статус: **принят** — итог карты [Healthcheck-мониторинг inbound'ов: mon-server, mon-clients и контракт с панелью](https://github.com/SBKubric/3ax-ui-proxy/issues/20); черновик принят в тикете [Контракт API панели для mon-server](https://github.com/SBKubric/3ax-ui-proxy/issues/21), собран в [Собрать спеку](https://github.com/SBKubric/3ax-ui-proxy/issues/29). Термины — по [CONTEXT.md](../../CONTEXT.md) (real server, proxy front, host override, mon-server, mon-client, target, path, probe account, heartbeat, stale). Панельная сторона контракта — [monitoring-panel.md](monitoring-panel.md); сторона mon-server — [спека mon-server](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-server.md) в репо `3ax-ui-monitoring`. Принцип «mon-server — единственный источник, панель — пассивный приёмник» зафиксирован в [ADR 0004](../adr/0004-mon-server-single-source-panel-passive.md).
 
+Правки 2026-09-24 по карте [Мониторинг: исполнение](https://github.com/SBKubric/3ax-ui-monitoring/issues/49), совместимые (версия контракта остаётся `1`): поэлементная валидация батчей, ответ с `rejected`, терпимость панели к неизвестным полям, грамматика `path`, пустой `from` у первого перехода, семантика `handshakeMs`, без `503 xray_unavailable` — [#50](https://github.com/SBKubric/3ax-ui-monitoring/issues/50); причины `PAUSED` — [#51](https://github.com/SBKubric/3ax-ui-monitoring/issues/51), [#53](https://github.com/SBKubric/3ax-ui-monitoring/issues/53); адрес probe-ссылок и `?hop=` до per-hop — [#54](https://github.com/SBKubric/3ax-ui-monitoring/issues/54).
+
 Контракт описывает **только** ручки, которые панель (real server) открывает mon-server. Протокол mon-server ↔ mon-client — [mon-protocol.md](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-protocol.md) в репо `3ax-ui-monitoring`. Панель наружу не звонит: все запросы инициирует mon-server.
 
 ## 1. Версия и адрес
 
 - Базовый путь: `<panelScheme>://<panelHost>:<panelPort><webBasePath>mon/v1/` — тот же листенер, TLS и `webBasePath`, что у панели. Версия контракта зашита в путь; несовместимое изменение = `/mon/v2/`.
 - Каждый успешный ответ несёт заголовок `X-Mon-Contract: 1`; `GET /state` дублирует его полем `contract`.
-- Совместимые изменения (новые необязательные поля, новые `reason`, новые `kind` событий) не меняют версию; mon-server обязан игнорировать неизвестные поля.
+- Совместимые изменения (новые необязательные поля, новые `reason`, новые `kind` событий) не меняют версию; обе стороны игнорируют неизвестные поля: mon-server — в ответах панели, панель — в телах запросов mon-server (строгий разбор с отказом на неизвестный ключ запрещён).
 
 ## 2. Аутентификация
 
@@ -22,7 +24,7 @@
 - Тела — JSON, `Content-Type: application/json; charset=utf-8`. Все времена — `int64`, миллисекунды UTC epoch, как в моделях панели. Длительности и latency — `int64`, миллисекунды.
 - Идентификаторы событий — **UUID v7** строкой (36 символов, lowercase); генерирует mon-server. `monClientId` — строка ≤ 64 символов `[A-Za-z0-9_.-]`, выдаёт mon-server.
 - `inboundId` — числовой `id` xray-inbound'а панели. AWG-сервер адресуется `inboundId = 0` и `kind = "awg"`, чтобы target'ы xray и AWG жили в одном ключе `(monClientId, kind, inboundId, path)`.
-- `path` ∈ `direct` | `proxy`.
+- `path` — строка по грамматике `direct` | `proxy` | `edge:<name>` | `inner:<name>`, где `<name>` — имя звена цепочки (`[a-z0-9-]{1,32}`, [proxy-chain](proxy-chain.md) §6.1); по реестру цепочки имя не сверяется. Любое другое значение — ошибка элемента (`rejected`, ниже).
 - Статусы: `200` успех с телом, `204` успех без тела, `400` схема/валидация, `404` см. §2 (и неизвестный маршрут), `409` конфликт (см. конкретные ручки), `413` батч больше лимита, `500` ошибка панели, `503` панель стартует / БД недоступна. Тело ошибки (кроме 404):
 
   ```json
@@ -30,7 +32,8 @@
   ```
 
   `error` — стабильный snake_case код, `message` — для логов.
-- Ретраи mon-server: только сеть, `5xx` и таймаут, с экспоненциальной задержкой; `4xx` — лог и дроп (для батчей — дроп всего батча, поэтому панель валидирует батч целиком до записи).
+- Ретраи mon-server: только сеть, `5xx` и таймаут, с экспоненциальной задержкой; `4xx` — лог и дроп запроса.
+- Батчи (`POST /events`, `POST /stats`) валидируются **поэлементно**: валидные элементы принимаются и пишутся, невалидные перечисляются в `rejected: [{index, id?, error}]` ответа `200` (`index` — позиция в массиве, `id` — только для событий, `error` — текст ошибки поля, как `message`). mon-server помечает отправленным всё, кроме `rejected`; отвергнутые логирует с `error` и помечает `dropped` без повторов. `400 invalid_body` на весь батч — только когда тело не читается (не JSON, нет массива) или версия неверна.
 - Идемпотентность: `POST /events` по `id`, `POST /stats` — upsert по ключу, `POST /probe/ensure` — по построению. Повтор любого запроса безопасен.
 - Лимиты: тело ≤ 1 МиБ; `events` ≤ 1000 элементов; `stats` ≤ 2000; `monClients` ≤ 200. Превышение — `413` `batch_too_large`.
 - Неизвестный `inboundId` (inbound удалён) в событиях/статистике — запись пропускается, ответ `200`, id попадает в `ignored`. Панель не хранит ничего по неизвестным inbound'ам.
@@ -102,16 +105,18 @@
  "created": [{"kind":"xray","inboundId":12}], "present": 5}
 ```
 
-`created` — что завёл этот вызов (обычно пусто), `present` — размер набора после вызова. Если создать клиента не удалось (например, xray API недоступен) — `503` `xray_unavailable`, набор частично создан, следующий ensure доделает.
+`created` — что завёл этот вызов (обычно пусто), `present` — размер набора после вызова. Недоступный xray API — не ошибка: клиент записан в inbound, рестарт xray запланирован, ответ `200`. `5xx` — только при ошибке БД; набор тогда может быть создан частично, следующий ensure доделает.
 
-Панель хранит снимок реестра как кэш для UI (в памяти + `monClientsSnapshot` в настройках, чтобы пережить рестарт), не как источник истины; поле `state` в нём — то, что сказал mon-server, панель его не пересчитывает.
+Панель хранит снимок реестра как кэш для UI (в памяти + `monClientsSnapshot` в настройках, чтобы пережить рестарт), не как источник истины; поле `state` в нём — то, что сказал mon-server, панель его не пересчитывает. `state` ∈ `ONLINE` | `OFFLINE` | `NEVER` (`NEVER` — зарегистрирован, но heartbeat ещё не было, `lastHeartbeat = 0`); такие mon-clients не считаются offline и не входят в знаменатель coverage дайджеста ([monitoring-panel](monitoring-panel.md) §6).
 
 ### 4.4 `GET /probe/configs`
 
 Отдаёт материал probe-набора для одного path. Панель рендерит теми же сервисами, что `/sub` и `/tun`, но по токену, без зависимости от sub-сервера.
 
 - `GET /probe/configs` — как для пользователей: с host override, если он включён (path `proxy`). При `override.enabled=false` — `409` `override_disabled`.
-- `GET /probe/configs?host=<realHost>` — без override, адрес из параметра (path `direct`). `host` — то, куда mon-server и так ходит за панелью; остальное (порт, SNI, serverName, ключи) панель не трогает.
+- `GET /probe/configs?host=<realHost>` — без override (path `direct`): адрес — публичный `Listen` inbound'а, если он задан (единственный адрес, где inbound слушает), иначе из параметра. `host` — то, куда mon-server и так ходит за панелью; остальное (порт, SNI, serverName, ключи) панель не трогает.
+- `GET /probe/configs?hop=<name>` (`?edge=<name>` — синоним) — path конкретного звена цепочки ([proxy-chain](proxy-chain.md) §6.1). До реализации per-hop любой непустой `hop`/`edge` → `409` `unknown_hop` (`unknown_edge` — синоним для старых клиентов); оба параметра с разными именами — тоже `409` `unknown_hop`. Панель не отдаёт вместо звена path `proxy`, и mon-server не принимает `proxy` за звено.
+- `externalProxy` inbound'а в probe-ссылках не участвует: ссылка рендерится на копии stream без `externalProxy`, поэтому `direct` и `proxy` указывают туда, куда сказано выше, а не в `externalProxy.dest`. Отдельного path для `externalProxy` нет.
 
 Ответ `200`:
 
@@ -123,7 +128,7 @@
  ]}
 ```
 
-- `link` — ссылка того же формата, что в `/sub` (по одной на inbound; multi-link inbound'ы отдают первую ссылку, т.к. probe один). `conf` — текст, идентичный элементу `/tun` ([tunnel subscription](tunnel-subscription.md) §6), с уже применённым host override к `Endpoint` для path `proxy` и с адресом из `host` для `direct`.
+- `link` — ссылка того же формата, что в `/sub` (ровно одна строка на inbound; multi-link inbound'ы отдают первую ссылку, т.к. probe один). `conf` — текст, идентичный элементу `/tun` ([tunnel subscription](tunnel-subscription.md) §6), с уже применённым host override к `Endpoint` для path `proxy` и с адресом из `host` для `direct`.
 - Выключенные inbound'ы в `items` **не попадают** (как и в подписке) — так mon-server видит `PAUSED`. `revision` в ответе позволяет mon-server отбросить ответ, если ревизия уже устарела относительно `/state`.
 - Если probe-набор ещё не создан — `409` `probe_not_ensured`.
 
@@ -148,10 +153,13 @@
 ```
 
 - `kind`: `target` (обязательны `monClientId`, `inboundKind`, `inboundId`, `path`), `mon_client` (обязателен `monClientId`), `panel` (ни того, ни другого; всегда `notified=true`, панель только пишет в ленту).
-- `from`/`to` для `target`: `UP` `DOWN` `FLAPPING` `UNKNOWN` `PAUSED`; для `mon_client`: `ONLINE` `OFFLINE`; для `panel`: `PANEL_UP` `PANEL_DOWN`.
-- `reason` — snake_case из словаря диагностики (`tcp_refused` `tcp_timeout` `tls_timeout` `reality_real_cert` `awg_no_handshake` `http_error` `heartbeat_missed` `recovered` `flapping` `config_disabled` `config_enabled` `http_timeout`…); неизвестные значения панель принимает и показывает как есть.
+- `from`/`to` для `target`: `UP` `DOWN` `FLAPPING` `UNKNOWN` `PAUSED`; для `mon_client`: `ONLINE` `OFFLINE`; для `panel`: `PANEL_UP` `PANEL_DOWN`. `from` пустой у первого перехода (панель принимает пустой `from` для любого `kind`); внутреннее состояние реестра mon-server `NEVER` наружу не уходит — первый переход mon-client приходит как `"" → ONLINE`.
+- Переходы считает только mon-server, панель их не выводит и не проверяет: из `UNKNOWN` в `DOWN` — только после `downAfter` провалов подряд, в `UP` — с первого успеха; выход из `FLAPPING` — только по пришедшему результату, не по таймеру ([спека mon-server](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-server.md) §7.2).
+- `reason` — snake_case из словаря диагностики (`tcp_refused` `tcp_timeout` `tls_timeout` `reality_real_cert` `awg_no_handshake` `http_error` `heartbeat_missed` `recovered` `flapping` `config_disabled` `config_enabled` `http_timeout`…); неизвестные значения панель принимает и показывает как есть (свободная строка ≤ 128 символов).
+- `PAUSED` — административное состояние target'а, не инцидент. Кроме выключенного inbound'а (`config_disabled`), mon-server ставит его, когда target выпал из конфига по не-inbound причине, с `reason`: `override_disabled` (выключен host override), `path_removed` (у mon-client убран path), `no_probe_link` (у inbound'а нет probe-ссылки), `config_error` (mon-client отверг конфиг этой цели). Строка target'а не удаляется; при возврате в конфиг — `UNKNOWN`, затем первый результат.
+- Отзыв токена mon-client приходит как `mon_client` `ONLINE → OFFLINE` с `reason` `token_revoked`, его targets — `→ UNKNOWN` с `reason` `mon_client_revoked`.
 - `notified=true` → панель не шлёт Telegram за это событие (mon-server уже отправил «via mon-server»).
-- Ответ `200`: `{"accepted": 2, "duplicates": 0, "ignored": [{"id": "…", "error": "unknown_inbound"}]}`. Дубликат по `id` — не ошибка. Окно дедупликации — та же скользящая неделя, что у ленты событий.
+- Ответ `200`: `{"accepted": 2, "duplicates": 0, "ignored": [{"id": "…", "error": "unknown_inbound"}], "rejected": [{"index": 3, "id": "…", "error": "events[3].path: unknown value \"foo\""}]}`. `rejected` — невалидные элементы (§3), остальные элементы батча приняты. Дубликат по `id` — не ошибка. Окно дедупликации — та же скользящая неделя, что у ленты событий.
 - Порядок применения — по `ts` внутри батча; событие старше текущего состояния target'а (пришло с опозданием после `PANEL_DOWN`) пишется в ленту, но состояние не откатывает.
 
 ### 4.7 `POST /stats`
@@ -165,8 +173,8 @@
 ]}
 ```
 
-- `latency*` — фаза TLS/подключения по research [mon-client probes](https://github.com/SBKubric/3ax-ui-proxy/issues/28); `handshakeMs` — только AWG (время с последнего handshake на конец бакета), иначе `null`. При `nOk=0` все latency — `null`.
-- Ответ `200`: `{"accepted": 1, "ignored": []}`.
+- `latency*` — фаза TLS/подключения по research [mon-client probes](https://github.com/SBKubric/3ax-ui-proxy/issues/28); `handshakeMs` — только AWG: латентность handshake в пробе, `last_handshake − t(dial)` (определение [протокола mon-server ↔ mon-client](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-protocol.md) §5.3), иначе `null`. При `nOk=0` все latency — `null`.
+- Ответ `200`: `{"accepted": 1, "ignored": [], "rejected": [{"index": 4, "error": "stats[4].bucketStart: must be a positive multiple of 300000 ms"}]}`; `rejected` — по §3, без `id`.
 - Хранение, ретеншн (скользящая неделя) и расчёт суточного uptime для дайджеста — тикет [Схема статистики](https://github.com/SBKubric/3ax-ui-proxy/issues/25); wire-форма выше — его вход.
 
 ## 5. Настройки панели, добавляемые контрактом
@@ -180,15 +188,16 @@
 | `monProbeLastEnsured` | int64 ms | `0` | последний ensure |
 | `monProbeTtlHours` | int | `24` | TTL очистки probe-набора |
 | `monLastContact` | int64 ms | `0` | последний авторизованный запрос |
+| `monStaleSince` | int64 ms | `0` | начало текущего STALE, `0` — не STALE; переживает рестарт |
 | `monClientsSnapshot` | JSON string | `"[]"` | кэш реестра для UI |
 
 Все — через `defaultValueMap` + `entity.AllSetting` + getter/setter, как остальные ключи форка.
 
 ## 6. Поведение панели, на которое опирается контракт
 
-- Фоновая job `MonitoringJob` (`@every 1m`): STALE по `monLastContact`; раз в час — очистка probe-набора по TTL.
+- Фоновая job `MonitoringJob` (`@every 1m`): STALE по `monLastContact`, момент объявления хранится в `monStaleSince` (рестарт панели не повторяет «monitoring silent»); при `monEnable=false` STALE не объявляется и не шлётся. Раз в час — очистка probe-набора по TTL.
 - Удаление inbound каскадно удаляет его состояние, события и агрегаты; последующие события/статистика по этому `inboundId` → `ignored`.
-- `GET /state` и `POST /probe/ensure` не требуют работающего xray; создание probe-клиента — требует (иначе `503`).
+- `GET /state` и `POST /probe/ensure` не требуют работающего xray: probe-клиент при недоступном xray API записывается в inbound, рестарт xray планируется (§4.3).
 
 ## 7. Пример цикла mon-server
 
