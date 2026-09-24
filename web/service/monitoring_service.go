@@ -72,6 +72,12 @@ var (
 	ErrProbeNotEnsured = &MonError{409, "probe_not_ensured", "the probe set has not been created; call POST /probe/ensure first"}
 	// ErrLinksNotWired is a wiring mistake, not a runtime condition.
 	ErrLinksNotWired = &MonError{500, "internal", "no probe link renderer is wired into MonitoringService"}
+	// ErrUnknownHop: GET /probe/configs?hop= names no hop in the registry
+	// (proxy-chain.md §6.1). Until per-hop probing lands every name is unknown.
+	ErrUnknownHop = &MonError{409, "unknown_hop", "no such hop in the chain registry"}
+	// ErrUnknownEdge is ErrUnknownHop under its first-edition code, for a
+	// request that named the hop through the ?edge= synonym.
+	ErrUnknownEdge = &MonError{409, "unknown_edge", "no such hop in the chain registry"}
 )
 
 func errXrayUnavailable(err error) *MonError {
@@ -532,7 +538,14 @@ func (s *MonitoringService) tunnelProbeConf(client *model.TunnelClient, host str
 // With an empty host the links carry the host override (path "proxy"); with a
 // host they carry that host instead (path "direct"). Disabled inbounds are
 // left out, as in a subscription, so mon-server sees them PAUSED.
-func (s *MonitoringService) ProbeConfigs(host string) (*MonProbeConfigs, error) {
+//
+// hop and edge are ?hop= and its synonym ?edge= (proxy-chain.md §6.1). Until
+// per-hop probing lands no hop is known, so any name is 409 unknown_hop
+// (unknown_edge when asked through ?edge= alone) rather than the proxy path.
+func (s *MonitoringService) ProbeConfigs(host, hop, edge string) (*MonProbeConfigs, error) {
+	if err := unknownHop(hop, edge); err != nil {
+		return nil, err
+	}
 	subId, err := s.settingService.GetMonProbeSubId()
 	if err != nil {
 		return nil, err
@@ -573,7 +586,9 @@ func (s *MonitoringService) ProbeConfigs(host string) (*MonProbeConfigs, error) 
 			if probe == nil {
 				continue
 			}
-			link := links.ProbeLink(ib, probe.Email, host, useOverride)
+			// One link per inbound: the first, should a renderer hand back a
+			// multi-link inbound (§4.3).
+			link, _, _ := strings.Cut(links.ProbeLink(ib, probe.Email, host, useOverride), "\n")
 			if link == "" {
 				continue
 			}
@@ -608,6 +623,21 @@ func (s *MonitoringService) ProbeConfigs(host string) (*MonProbeConfigs, error) 
 		return nil, err
 	}
 	return &MonProbeConfigs{Revision: rev, Path: path, Items: items}, nil
+}
+
+// unknownHop answers the ?hop= / ?edge= mode of GET /probe/configs before
+// the chain registry is consulted for it: blank parameters are absent, any
+// name is unknown. Two different names are refused as unknown_hop as well.
+func unknownHop(hop, edge string) error {
+	hop, edge = strings.TrimSpace(hop), strings.TrimSpace(edge)
+	switch {
+	case hop == "" && edge == "":
+		return nil
+	case hop == "":
+		return ErrUnknownEdge
+	default:
+		return ErrUnknownHop
+	}
 }
 
 // removeXrayProbe deletes the probe client of an inbound, with its traffic

@@ -171,9 +171,9 @@ func (a *MonitoringController) probeEnsure(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
-// GET /probe/configs[?host=]
+// GET /probe/configs[?host=|?hop=|?edge=]
 func (a *MonitoringController) probeConfigs(c *gin.Context) {
-	res, err := a.monitoringService.ProbeConfigs(c.Query("host"))
+	res, err := a.monitoringService.ProbeConfigs(c.Query("host"), c.Query("hop"), c.Query("edge"))
 	if err != nil {
 		a.fail(c, err)
 		return
