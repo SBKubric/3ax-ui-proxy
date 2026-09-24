@@ -35,9 +35,11 @@ func newMonRouter(t *testing.T) *gin.Engine {
 	// the same binary, even though this test's own DB starts empty.
 	service.ResetMonContactForTest()
 	service.ResetMonStaleForTest()
+	service.ResetMonRegistryForTest()
 	t.Cleanup(func() {
 		service.ResetMonContactForTest()
 		service.ResetMonStaleForTest()
+		service.ResetMonRegistryForTest()
 	})
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

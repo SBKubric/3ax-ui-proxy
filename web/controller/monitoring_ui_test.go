@@ -38,6 +38,10 @@ func newMonUIRouter(t *testing.T) *gin.Engine {
 		t.Fatalf("InitDB: %v", err)
 	}
 	t.Cleanup(func() { database.CloseDB() })
+	// The mon-client snapshot is cached in package state beyond this test's
+	// database: a snapshot another test ensured would un-retire targets here.
+	service.ResetMonRegistryForTest()
+	t.Cleanup(service.ResetMonRegistryForTest)
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
