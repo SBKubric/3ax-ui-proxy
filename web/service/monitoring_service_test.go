@@ -283,17 +283,17 @@ func TestProbeConfigsPaths(t *testing.T) {
 	monInbound(t, 2, model.VMESS, false, model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000002", Email: "bob"})
 
 	var monErr *MonError
-	if _, err := m.ProbeConfigs("203.0.113.10"); !errors.As(err, &monErr) || monErr != ErrProbeNotEnsured {
+	if _, err := m.ProbeConfigs("203.0.113.10", "", ""); !errors.As(err, &monErr) || monErr != ErrProbeNotEnsured {
 		t.Errorf("before ensure: err = %v, want probe_not_ensured", err)
 	}
 	if _, err := m.EnsureProbeSet(nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.ProbeConfigs(""); !errors.As(err, &monErr) || monErr != ErrOverrideDisabled {
+	if _, err := m.ProbeConfigs("", "", ""); !errors.As(err, &monErr) || monErr != ErrOverrideDisabled {
 		t.Errorf("proxy path with the override off: err = %v, want override_disabled", err)
 	}
 
-	direct, err := m.ProbeConfigs("203.0.113.10")
+	direct, err := m.ProbeConfigs("203.0.113.10", "", "")
 	if err != nil {
 		t.Fatalf("direct: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestProbeConfigsPaths(t *testing.T) {
 
 	setSetting(t, "proxyOverrideEnable", "true")
 	setSetting(t, "proxyOverrideHost", "front.example.net")
-	proxy, err := m.ProbeConfigs("")
+	proxy, err := m.ProbeConfigs("", "", "")
 	if err != nil {
 		t.Fatalf("proxy: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestProbeConfigsPaths(t *testing.T) {
 
 	m.Links = nil
 	SetProbeLinkRenderer(nil)
-	if _, err := m.ProbeConfigs("203.0.113.10"); !errors.As(err, &monErr) || monErr != ErrLinksNotWired {
+	if _, err := m.ProbeConfigs("203.0.113.10", "", ""); !errors.As(err, &monErr) || monErr != ErrLinksNotWired {
 		t.Errorf("without a renderer: err = %v, want the wiring error", err)
 	}
 }
@@ -381,7 +381,7 @@ func TestEnsureCoversTheTunnelServer(t *testing.T) {
 		t.Errorf("second ensure recreated the awg probe: %+v", again)
 	}
 
-	direct, err := m.ProbeConfigs("203.0.113.10")
+	direct, err := m.ProbeConfigs("203.0.113.10", "", "")
 	if err != nil {
 		t.Fatalf("direct: %v", err)
 	}
@@ -396,5 +396,65 @@ func TestEnsureCoversTheTunnelServer(t *testing.T) {
 	clients, _ = (&AwgService{}).GetClients()
 	if len(clients) != 0 {
 		t.Errorf("awg clients after delete: %+v", clients)
+	}
+}
+
+// multiLinks renders a multi-link inbound the way /sub does with several
+// external proxies: one link per line.
+type multiLinks struct{}
+
+func (multiLinks) ProbeLink(inbound *model.Inbound, email, address string, useOverride bool) string {
+	return "vless://" + email + "@first.example.net\nvless://" + email + "@second.example.net"
+}
+
+// TestProbeConfigsTakesTheFirstLink: a renderer that hands back several lines
+// still yields one link per inbound, the first (monitoring-panel.md §4.3).
+func TestProbeConfigsTakesTheFirstLink(t *testing.T) {
+	m := newMonitoringTestService(t)
+	m.Links = multiLinks{}
+	monInbound(t, 1, model.VLESS, true, model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice"})
+	if _, err := m.EnsureProbeSet(nil); err != nil {
+		t.Fatal(err)
+	}
+	direct, err := m.ProbeConfigs("203.0.113.10", "", "")
+	if err != nil {
+		t.Fatalf("direct: %v", err)
+	}
+	if len(direct.Items) != 1 || direct.Items[0].Link != "vless://probe-1@first.example.net" {
+		t.Errorf("items: %+v", direct.Items)
+	}
+}
+
+// TestProbeConfigsRefusesHops: until per-hop probing (proxy-chain §6.1)
+// every named hop is unknown, whether asked by ?hop= or its synonym ?edge=,
+// and never falls back to the proxy path. Two different names are refused
+// too; the same name twice is one request.
+func TestProbeConfigsRefusesHops(t *testing.T) {
+	m := newMonitoringTestService(t)
+	monInbound(t, 1, model.VLESS, true, model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice"})
+	setSetting(t, "proxyOverrideEnable", "true")
+	setSetting(t, "proxyOverrideHost", "front.example.net")
+	if _, err := m.EnsureProbeSet(nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		host, hop, edge, code string
+	}{
+		{"", "ams-1", "", "unknown_hop"},
+		{"", "", "ams-1", "unknown_edge"},
+		{"", "ams-1", "ams-1", "unknown_hop"},
+		{"", "ams-1", "core-1", "unknown_hop"},
+		{"203.0.113.10", "ams-1", "", "unknown_hop"},
+		{"", " ams-1 ", "", "unknown_hop"},
+	} {
+		_, err := m.ProbeConfigs(tc.host, tc.hop, tc.edge)
+		var monErr *MonError
+		if !errors.As(err, &monErr) || monErr.Status != 409 || monErr.Code != tc.code {
+			t.Errorf("host=%q hop=%q edge=%q: err = %v, want 409 %s", tc.host, tc.hop, tc.edge, err, tc.code)
+		}
+	}
+	// Blank parameters are absent: the proxy path as before.
+	if res, err := m.ProbeConfigs("", " ", ""); err != nil || res.Path != "proxy" {
+		t.Errorf("blank hop: %+v, %v", res, err)
 	}
 }

@@ -1,6 +1,8 @@
 package sub
 
 import (
+	"encoding/json"
+
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/web/service"
 )
@@ -28,9 +30,13 @@ func init() {
 // ProbeLink renders one client's link for the monitoring probe set
 // (docs/spec/monitoring-panel.md §4.3) exactly as /sub would, except that the
 // caller decides the connection address: with useOverride the proxy-front host
-// override applies as it does for users (path "proxy"); without it address is
-// used instead (path "direct"). Runs on a copy, like GetSubs, so the shared
-// service is never written to. Satisfies service.ProbeLinkRenderer.
+// override applies as it does for users (path "proxy"); without it the
+// inbound's public Listen, if it has one, else address (path "direct"). The
+// stream's externalProxy is dropped: it would replace both addresses with its
+// own ep.dest and fan the link out into one line per endpoint, and a probe
+// wants exactly one link that goes where its path says. Runs on a copy, like
+// GetSubs, so the shared service is never written to. Satisfies
+// service.ProbeLinkRenderer.
 func (s *SubService) ProbeLink(inbound *model.Inbound, email, address string, useOverride bool) string {
 	local := *s
 	local.address = address
@@ -52,5 +58,24 @@ func (s *SubService) ProbeLink(inbound *model.Inbound, email, address string, us
 			ib.Listen, ib.Port, ib.StreamSettings = listen, port, streamSettings
 		}
 	}
+	ib.StreamSettings = withoutExternalProxy(ib.StreamSettings)
 	return local.getLink(&ib, email)
+}
+
+// withoutExternalProxy returns streamSettings with the externalProxy key
+// removed, or unchanged when it has none or does not parse.
+func withoutExternalProxy(streamSettings string) string {
+	var stream map[string]any
+	if err := json.Unmarshal([]byte(streamSettings), &stream); err != nil {
+		return streamSettings
+	}
+	if _, ok := stream["externalProxy"]; !ok {
+		return streamSettings
+	}
+	delete(stream, "externalProxy")
+	raw, err := json.Marshal(stream)
+	if err != nil {
+		return streamSettings
+	}
+	return string(raw)
 }

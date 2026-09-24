@@ -273,6 +273,11 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		return s.addMtprotoInbound(inbound)
 	}
 
+	// Probe accounts are created by MonitoringService.EnsureProbeSet only.
+	if err := s.rejectAddedProbeClients(nil, inbound); err != nil {
+		return inbound, false, err
+	}
+
 	exist, err := s.checkPortExist(inbound.Listen, inbound.Port, 0)
 	if err != nil {
 		return inbound, false, err
@@ -975,6 +980,10 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 
 	oldInbound, err := s.GetInbound(inbound.Id)
 	if err != nil {
+		return inbound, false, err
+	}
+	// Probe accounts are created by MonitoringService.EnsureProbeSet only.
+	if err := s.rejectAddedProbeClients(oldInbound, inbound); err != nil {
 		return inbound, false, err
 	}
 

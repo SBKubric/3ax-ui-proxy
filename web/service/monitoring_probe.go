@@ -95,6 +95,28 @@ func withoutProbeAccounts(emails []string) []string {
 	return kept
 }
 
+// rejectAddedProbeClients is the guard of AddInbound (old is nil) and
+// UpdateInbound: a probe email in updated's settings.clients passes only if
+// old already held exactly that email. The probe an inbound has survives an
+// ordinary edit and may be dropped (the next ensure recreates it); a new one,
+// or a renamed one, is refused.
+func (s *InboundService) rejectAddedProbeClients(old, updated *model.Inbound) error {
+	clients, _ := s.GetClients(updated)
+	had := map[string]bool{}
+	if old != nil {
+		oldClients, _ := s.GetClients(old)
+		for _, c := range oldClients {
+			had[c.Email] = true
+		}
+	}
+	for _, c := range clients {
+		if IsProbeAccount(c.Email) && !had[c.Email] {
+			return errProbeAccount(c.Email)
+		}
+	}
+	return nil
+}
+
 // clientEmails lists the emails of a batch of clients, in order.
 func clientEmails(clients []model.Client) []string {
 	emails := make([]string, 0, len(clients))

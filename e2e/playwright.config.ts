@@ -36,12 +36,13 @@ export default defineConfig({
   // a dependency is.
   //
   // monitoring-api.spec.ts posts events and stats through the contract, so it
-  // comes last of all: it turns monitoring on, issues its own token and leaves
-  // targets behind.
+  // comes after them: it turns monitoring on, issues its own token and leaves
+  // targets behind. monitoring-probe-configs.spec.ts drives the same
+  // monEnable/monToken, so it follows the events spec.
   projects: [
     {
       name: 'panel',
-      testIgnore: /monitoring-(settings|cli|api)\.spec\.ts/,
+      testIgnore: /monitoring-(settings|cli|api|probe-configs)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },
     {
@@ -62,6 +63,17 @@ export default defineConfig({
       name: 'mon-server-events',
       testMatch: /monitoring-api\.spec\.ts/,
       dependencies: ['mon-server-contact-cli'],
+      workers: 1,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    // Turns monitoring on and issues its own token through `x-ui setting`, as
+    // the events spec does through the settings form, so it runs after it
+    // rather than beside it: two specs flipping one monEnable/monToken would
+    // pull the token out from under each other.
+    {
+      name: 'mon-server-contact-probe-configs',
+      testMatch: /monitoring-probe-configs\.spec\.ts/,
+      dependencies: ['mon-server-events'],
       workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },

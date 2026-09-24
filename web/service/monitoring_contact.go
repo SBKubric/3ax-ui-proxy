@@ -83,6 +83,15 @@ func ResetMonStaleForTest() {
 	resetMonStaleForTest()
 }
 
+// ResetMonRegistryForTest forgets the cached mon-client snapshot, for the
+// same reason: the cache outlives each test's database, so a snapshot one
+// test ensured would make another test's targets look current.
+func ResetMonRegistryForTest() {
+	monRegistry.Lock()
+	monRegistry.loaded, monRegistry.clients = false, nil
+	monRegistry.Unlock()
+}
+
 // --- default probe link renderer ---------------------------------------------
 
 // The xray link renderer lives in package sub, which imports this package
