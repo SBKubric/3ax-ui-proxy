@@ -31,12 +31,10 @@ const ProbePrefix = "probe-"
 const ProbeComment = "monitoring probe"
 
 // probeTunnelPrefix starts the email of every AmneziaWG probe peer. Native
-// WireGuard is out of v1; it would be "probe-wg-".
+// WireGuard is out of v1; it would be "probe-wg-". Contract v1 had one shared
+// peer, "probe-awg"; the first ensure of v2 deletes it with every other peer
+// outside the snapshot.
 const probeTunnelPrefix = ProbePrefix + "awg-"
-
-// legacyProbeTunnelEmail is the one shared AmneziaWG probe of contract v1. The
-// first ensure of v2 deletes it with every other peer outside the snapshot.
-const legacyProbeTunnelEmail = ProbePrefix + "awg"
 
 // monClientIdRule is the grammar of a monClientId in the registry snapshot
 // (contract v2 §3): it becomes part of a peer name, so it is kept short and
