@@ -1,6 +1,7 @@
 package service
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -9,9 +10,12 @@ import (
 )
 
 // Probe accounts (docs/spec/monitoring-panel.md §3). mon-server probes every
-// inbound through a client of its own — one xray client per client-facing
-// inbound and one AmneziaWG client — all sharing the panel's probe subId. They
-// are recognised by name alone: the ProbePrefix on the email.
+// inbound through a client of its own: one xray client per client-facing
+// inbound, shared by every mon-client and path, and one AmneziaWG peer per
+// mon-client × path (a WireGuard peer has one endpoint and one session, so a
+// shared peer is fought over by concurrent probes; SBKubric/3ax-ui-monitoring
+// #80). They all share the panel's probe subId and are recognised by name
+// alone: the ProbePrefix on the email.
 //
 // The name is the guard. Every ordinary path that creates or edits a client
 // refuses an email carrying the prefix, so a probe can only come from
@@ -26,9 +30,23 @@ const ProbePrefix = "probe-"
 // ProbeComment is the comment every probe client is created with.
 const ProbeComment = "monitoring probe"
 
-// ProbeTunnelEmail is the email of the AmneziaWG probe client. Native
-// WireGuard is out of v1; it would be "probe-wg".
-const ProbeTunnelEmail = ProbePrefix + "awg"
+// probeTunnelPrefix starts the email of every AmneziaWG probe peer. Native
+// WireGuard is out of v1; it would be "probe-wg-". Contract v1 had one shared
+// peer, "probe-awg"; the first ensure of v2 deletes it with every other peer
+// outside the snapshot.
+const probeTunnelPrefix = ProbePrefix + "awg-"
+
+// monClientIdRule is the grammar of a monClientId in the registry snapshot
+// (contract v2 §3): it becomes part of a peer name, so it is kept short and
+// free of the separators paths use.
+var monClientIdRule = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+// ProbeTunnelEmail is the email of the AmneziaWG probe peer of one mon-client
+// on one path: probe-awg-<monClientId>-<path>, a ':' in the path (a hop,
+// edge:<name>) written as '-'.
+func ProbeTunnelEmail(monClientId, path string) string {
+	return probeTunnelPrefix + monClientId + "-" + strings.ReplaceAll(path, ":", "-")
+}
 
 // IsProbeAccount reports whether an email names a probe account. The check is
 // case-insensitive so "Probe-12" cannot slip past the guard.
@@ -55,13 +73,14 @@ func NewProbeXrayClient(inboundId int, subId, flow string) model.Client {
 	}
 }
 
-// NewProbeTunnelClient builds the AmneziaWG probe client. The subId is not a
-// column of tunnel clients; EnsureProbeSet binds it through the tunnel
-// subscription service after creation.
-func NewProbeTunnelClient() model.TunnelClient {
+// NewProbeTunnelClient builds the AmneziaWG probe peer of one mon-client on
+// one path. The subId is not a column of tunnel clients; EnsureProbeSet binds
+// it through the tunnel subscription service after creation.
+func NewProbeTunnelClient(monClientId, path string) model.TunnelClient {
+	email := ProbeTunnelEmail(monClientId, path)
 	return model.TunnelClient{
-		Name:    ProbeTunnelEmail,
-		Email:   ProbeTunnelEmail,
+		Name:    email,
+		Email:   email,
 		Enable:  true,
 		Comment: ProbeComment,
 	}

@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/xray"
+	"gorm.io/gorm"
 )
 
 // fakeLinks stands in for sub.SubService: it records what address and
@@ -107,7 +109,7 @@ func TestStateIsSanitisedAndSorted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("State: %v", err)
 	}
-	if st.Contract != 1 || st.Probe.SubId != nil || st.Stale.ThresholdMinutes != 15 || st.Override.Enabled || len(st.Revision) != 16 {
+	if st.Contract != 2 || st.Probe.SubId != nil || st.Stale.ThresholdMinutes != 15 || st.Override.Enabled || len(st.Revision) != 16 {
 		t.Errorf("state header: %+v", st)
 	}
 	want := []MonInbound{
@@ -330,12 +332,12 @@ func TestRevision_CoversTunnelMaterial(t *testing.T) {
 	}
 	rev := monRevision(t, m)
 	noPeer := rev()
-	if _, err := m.EnsureProbeSet(nil); err != nil {
+	if _, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1"}}); err != nil {
 		t.Fatal(err)
 	}
 	base := rev()
 	if base == noPeer {
-		t.Error("creating the probe peer left the revision unchanged")
+		t.Error("creating the probe peers left the revision unchanged")
 	}
 
 	for _, tc := range []struct {
@@ -350,17 +352,24 @@ func TestRevision_CoversTunnelMaterial(t *testing.T) {
 		{"peer preshared key", "tunnel_clients", "preshared_key", "cGVlci1wc2stcm90YXRlZC0wMDAwMDAwMDAwMDAwMDA="},
 		{"peer address", "tunnel_clients", "ipv4_address", "10.66.66.9/32"},
 	} {
+		// One row: the server, or the direct peer of ams-1.
+		row := func() *gorm.DB {
+			if tc.table == "tunnel_clients" {
+				return db.Table(tc.table).Where("email = ?", "probe-awg-ams-1-direct")
+			}
+			return db.Table(tc.table).Where("1 = 1")
+		}
 		var old any
-		if err := db.Table(tc.table).Select(tc.column).Limit(1).Row().Scan(&old); err != nil {
+		if err := row().Select(tc.column).Row().Scan(&old); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if err := db.Table(tc.table).Where("1 = 1").Update(tc.column, tc.value).Error; err != nil {
+		if err := row().Update(tc.column, tc.value).Error; err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		if rev() == base {
 			t.Errorf("changing the %s left the revision unchanged", tc.name)
 		}
-		db.Table(tc.table).Where("1 = 1").Update(tc.column, old)
+		row().Update(tc.column, old)
 		if rev() != base {
 			t.Fatalf("restoring the %s did not restore the revision", tc.name)
 		}
@@ -429,7 +438,7 @@ func TestEnsureProbeSetIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("third ensure: %v", err)
 	}
-	if len(third.Created) != 1 || third.Created[0] != (MonInboundRef{"xray", 1}) {
+	if len(third.Created) != 1 || third.Created[0] != (MonProbeRef{Kind: "xray", InboundId: 1}) {
 		t.Errorf("third ensure created %+v, want the deleted probe only", third.Created)
 	}
 	if recreated := probeEmails(t, 1)["probe-1"]; recreated.ID == probe1.ID || recreated.SubID != first.SubId {
@@ -556,49 +565,278 @@ func TestDeleteProbeSetForgetsEverything(t *testing.T) {
 	}
 }
 
-// TestEnsureCoversTheTunnelServer: the AmneziaWG server gets a probe client
-// too, and ProbeConfigs renders its .conf with the chosen endpoint host.
-func TestEnsureCoversTheTunnelServer(t *testing.T) {
-	m := newMonitoringTestService(t)
-	db := database.GetDB()
-	if err := db.Create(&model.Inbound{Id: 7, Port: 51820, Protocol: model.AmneziaWG, Tag: "awg", Remark: "AmneziaWG",
+// awgTestServer stores an enabled AmneziaWG inbound and its server row.
+func awgTestServer(t *testing.T) {
+	t.Helper()
+	if err := database.GetDB().Create(&model.Inbound{Id: 7, Port: 51820, Protocol: model.AmneziaWG, Tag: "awg", Remark: "AmneziaWG",
 		Settings: "{}", StreamSettings: "{}", Sniffing: "{}", Enable: true}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (&AwgService{}).GetServer(); err != nil {
 		t.Fatal(err)
 	}
+}
 
-	res, err := m.EnsureProbeSet(nil)
+// awgProbePeers maps the AmneziaWG probe peers by email.
+func awgProbePeers(t *testing.T) map[string]model.TunnelClient {
+	t.Helper()
+	clients, err := (&AwgService{}).GetClients()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]model.TunnelClient{}
+	for _, c := range clients {
+		if IsProbeAccount(c.Email) {
+			out[c.Email] = c
+		}
+	}
+	return out
+}
+
+func sortedKeys[V any](m map[string]V) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
+}
+
+// TestEnsureReconcilesTunnelPeers (#120): ensure gives every mon-client of
+// the snapshot, whatever its state, its own AmneziaWG probe peer on each path
+// the panel serves, keeps the ones it already has, and deletes the peers of
+// mon-clients that left. An empty snapshot leaves no peer.
+func TestEnsureReconcilesTunnelPeers(t *testing.T) {
+	m := newMonitoringTestService(t)
+	awgTestServer(t)
+	db := database.GetDB()
+	if err := db.Create(&model.TunnelClient{ServerId: 1, UUID: "bbbbbbbb-0000-0000-0000-000000000001", Name: "erin", Email: "erin",
+		Enable: true, IPv4Address: "10.66.66.40/32"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1", State: "ONLINE"}, {Id: "msk-1", State: "NEVER"}})
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if res.Present != 1 || len(res.Created) != 1 || res.Created[0] != (MonInboundRef{"awg", 0}) {
-		t.Errorf("ensure with an AWG server: %+v", res)
+	if got, want := sortedKeys(awgProbePeers(t)), "probe-awg-ams-1-direct,probe-awg-ams-1-proxy,probe-awg-msk-1-direct,probe-awg-msk-1-proxy"; got != want {
+		t.Fatalf("peers = %s, want %s", got, want)
 	}
-	clients, _ := (&AwgService{}).GetClients()
-	if len(clients) != 1 || clients[0].Email != "probe-awg" || !clients[0].Enable || clients[0].PublicKey == "" {
-		t.Errorf("awg probe client: %+v", clients)
+	if res.Present != 4 || len(res.Created) != 4 || len(res.Unallocated) != 0 ||
+		res.Created[0] != (MonProbeRef{Kind: "awg", InboundId: 0, MonClientId: "ams-1", Path: "direct"}) {
+		t.Errorf("first ensure: %+v", res)
 	}
-	if again, _ := m.EnsureProbeSet(nil); len(again.Created) != 0 {
-		t.Errorf("second ensure recreated the awg probe: %+v", again)
+	peers := awgProbePeers(t)
+	addresses := map[string]bool{}
+	for _, p := range peers {
+		if p.PublicKey == "" || !p.Enable || p.Comment != ProbeComment || addresses[p.IPv4Address] {
+			t.Errorf("peer %+v: want its own keys and address", p)
+		}
+		addresses[p.IPv4Address] = true
 	}
+
+	again, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1", State: "ONLINE"}, {Id: "msk-1", State: "NEVER"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Created) != 0 || again.Present != 4 || awgProbePeers(t)["probe-awg-ams-1-direct"].PublicKey != peers["probe-awg-ams-1-direct"].PublicKey {
+		t.Errorf("second ensure replaced peers: %+v", again)
+	}
+
+	// msk-1 leaves, ber-1 joins: msk-1's peers go, ber-1 gets a pair.
+	res, err = m.EnsureProbeSet([]MonClient{{Id: "ams-1", State: "OFFLINE"}, {Id: "ber-1", State: "NEVER"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sortedKeys(awgProbePeers(t)), "probe-awg-ams-1-direct,probe-awg-ams-1-proxy,probe-awg-ber-1-direct,probe-awg-ber-1-proxy"; got != want {
+		t.Errorf("peers after the registry changed = %s, want %s", got, want)
+	}
+	if len(res.Created) != 2 || res.Created[0].MonClientId != "ber-1" || res.Present != 4 {
+		t.Errorf("ensure after the registry changed: %+v", res)
+	}
+
+	if _, err := m.EnsureProbeSet(nil); err != nil {
+		t.Fatal(err)
+	}
+	if peers := awgProbePeers(t); len(peers) != 0 {
+		t.Errorf("peers after an empty snapshot: %s", sortedKeys(peers))
+	}
+	var users int64
+	db.Model(&model.TunnelClient{}).Where("email = ?", "erin").Count(&users)
+	if users != 1 {
+		t.Error("reconciling the probe peers touched a user")
+	}
+}
+
+// TestEnsureDeletesTheSharedTunnelProbe (#120): the one shared probe-awg of
+// contract v1 is deleted by the first ensure of v2.
+func TestEnsureDeletesTheSharedTunnelProbe(t *testing.T) {
+	m := newMonitoringTestService(t)
+	awgTestServer(t)
+	if err := database.GetDB().Create(&model.TunnelClient{ServerId: 1, UUID: "bbbbbbbb-0000-0000-0000-000000000002", Name: "probe-awg",
+		Email: "probe-awg", Enable: true, IPv4Address: "10.66.66.2/32"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sortedKeys(awgProbePeers(t)); got != "probe-awg-ams-1-direct,probe-awg-ams-1-proxy" {
+		t.Errorf("peers after the first v2 ensure = %s, want ams-1's pair without probe-awg", got)
+	}
+}
+
+// TestEnsureRefusesBadMonClientIds (#120): the id becomes part of a peer
+// name, so one outside 1–32 characters of [A-Za-z0-9_-] is 400 before
+// anything changes.
+func TestEnsureRefusesBadMonClientIds(t *testing.T) {
+	m := newMonitoringTestService(t)
+	awgTestServer(t)
+	for _, id := range []string{"", strings.Repeat("a", 33), "ams.1", "ams:1", "ams 1", "амс"} {
+		_, err := m.EnsureProbeSet([]MonClient{{Id: "ok-1"}, {Id: id}})
+		var monErr *MonError
+		if !errors.As(err, &monErr) || monErr.Status != 400 || monErr.Code != "invalid_body" || !strings.Contains(monErr.Message, "monClients[1].id") {
+			t.Errorf("id %q: err = %v, want 400 invalid_body", id, err)
+		}
+	}
+	if subId, _ := (&SettingService{}).GetMonProbeSubId(); subId != "" || len(awgProbePeers(t)) != 0 {
+		t.Error("a refused ensure changed the probe set")
+	}
+	if _, err := m.EnsureProbeSet([]MonClient{{Id: strings.Repeat("a", 32)}, {Id: "A_b-9"}}); err != nil {
+		t.Errorf("valid ids: %v", err)
+	}
+}
+
+// TestEnsureSurvivesAFullTunnelPool (#120): when the AmneziaWG pool has no
+// room, ensure still answers, lists the mon-clients left without a peer, and
+// their AWG items are missing from the configs; the others keep theirs.
+func TestEnsureSurvivesAFullTunnelPool(t *testing.T) {
+	m := newMonitoringTestService(t)
+	awgTestServer(t)
+	// A /29 holds .2–.6 for clients (.1 is the server): room for five peers.
+	db := database.GetDB()
+	if err := db.Model(&model.TunnelServer{}).Where("1 = 1").Updates(map[string]any{"ipv4_pool": "10.66.66.0/29", "ipv4_address": "10.66.66.1/24"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshot := []MonClient{{Id: "a-1"}, {Id: "b-1"}, {Id: "c-1"}}
+	res, err := m.EnsureProbeSet(snapshot)
+	if err != nil {
+		t.Fatalf("ensure with a full pool: %v", err)
+	}
+	if strings.Join(res.Unallocated, ",") != "c-1" || res.Present != 5 || len(res.Created) != 5 {
+		t.Errorf("ensure with a full pool: %+v", res)
+	}
+	direct, err := m.ProbeConfigs("203.0.113.10", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range direct.Items {
+		got = append(got, it.MonClientId)
+	}
+	if strings.Join(got, ",") != "a-1,b-1,c-1" {
+		t.Errorf("direct items for %v, want a-1, b-1 and c-1 (its direct peer fit)", got)
+	}
+	setSetting(t, "proxyOverrideEnable", "true")
+	setSetting(t, "proxyOverrideHost", "front.example.net")
+	proxy, err := m.ProbeConfigs("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	for _, it := range proxy.Items {
+		got = append(got, it.MonClientId)
+	}
+	if strings.Join(got, ",") != "a-1,b-1" {
+		t.Errorf("proxy items for %v, want a-1 and b-1 only", got)
+	}
+
+	// b-1 leaves: its addresses are freed first, so c-1 fits now.
+	res, err = m.EnsureProbeSet([]MonClient{{Id: "a-1"}, {Id: "c-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Unallocated) != 0 || res.Present != 4 {
+		t.Errorf("ensure after room was freed: %+v", res)
+	}
+}
+
+// TestEnsureCoversTheTunnelServer: ProbeConfigs renders one AmneziaWG item
+// per mon-client for the asked path, named by monClientId, each the .conf of
+// that mon-client's peer for the path with the chosen endpoint host; xray
+// items carry no monClientId. DeleteProbeSet removes every peer.
+func TestEnsureCoversTheTunnelServer(t *testing.T) {
+	m := newMonitoringTestService(t)
+	awgTestServer(t)
+	monInbound(t, 1, model.VLESS, true, model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice"})
+	if _, err := m.EnsureProbeSet([]MonClient{{Id: "msk-1"}, {Id: "ams-1"}}); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	peers := awgProbePeers(t)
 
 	direct, err := m.ProbeConfigs("203.0.113.10", "", "")
 	if err != nil {
 		t.Fatalf("direct: %v", err)
 	}
-	if len(direct.Items) != 1 || direct.Items[0].Kind != "awg" || direct.Items[0].Filename != "probe-awg" ||
-		!strings.Contains(direct.Items[0].Conf, "Endpoint = 203.0.113.10:") {
-		t.Errorf("awg direct item: %+v", direct.Items)
+	if len(direct.Items) != 3 {
+		t.Fatalf("direct items: %+v", direct.Items)
+	}
+	if it := direct.Items[0]; it.Kind != "awg" || it.MonClientId != "ams-1" || it.Filename != "probe-awg-ams-1-direct" ||
+		!strings.Contains(it.Conf, "Endpoint = 203.0.113.10:") || !strings.Contains(it.Conf, peers["probe-awg-ams-1-direct"].PrivateKey) {
+		t.Errorf("awg direct item 0: %+v", it)
+	}
+	if it := direct.Items[1]; it.MonClientId != "msk-1" || it.Filename != "probe-awg-msk-1-direct" {
+		t.Errorf("awg direct item 1: %+v", it)
+	}
+	raw, _ := json.Marshal(direct.Items[2])
+	if direct.Items[2].Kind != "xray" || strings.Contains(string(raw), "monClientId") {
+		t.Errorf("xray item: %s", raw)
+	}
+
+	setSetting(t, "proxyOverrideEnable", "true")
+	setSetting(t, "proxyOverrideHost", "front.example.net")
+	proxy, err := m.ProbeConfigs("", "", "")
+	if err != nil {
+		t.Fatalf("proxy: %v", err)
+	}
+	if it := proxy.Items[0]; it.MonClientId != "ams-1" || it.Filename != "probe-awg-ams-1-proxy" ||
+		!strings.Contains(it.Conf, "Endpoint = front.example.net:") || !strings.Contains(it.Conf, peers["probe-awg-ams-1-proxy"].PrivateKey) {
+		t.Errorf("awg proxy item 0: %+v", it)
 	}
 
 	if err := m.DeleteProbeSet(); err != nil {
 		t.Fatal(err)
 	}
-	clients, _ = (&AwgService{}).GetClients()
-	if len(clients) != 0 {
-		t.Errorf("awg clients after delete: %+v", clients)
+	if left := awgProbePeers(t); len(left) != 0 {
+		t.Errorf("awg peers after delete: %s", sortedKeys(left))
+	}
+}
+
+// TestRevisionCoversTheProbePeerSet (#120): a mon-client joining or leaving
+// changes the peer set and so the revision, which is how mon-server learns
+// to reread /probe/configs for the new mon-client.
+func TestRevisionCoversTheProbePeerSet(t *testing.T) {
+	m := newMonitoringTestService(t)
+	awgTestServer(t)
+	one, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1"}, {Id: "msk-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if two.Revision == one.Revision {
+		t.Error("a new mon-client's peers left the revision unchanged")
+	}
+	back, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Revision == two.Revision {
+		t.Error("a mon-client leaving left the revision unchanged")
+	}
+	if same, _ := m.EnsureProbeSet([]MonClient{{Id: "ams-1", State: "OFFLINE"}}); same.Revision != back.Revision {
+		t.Error("a state change of a mon-client moved the revision")
 	}
 }
 

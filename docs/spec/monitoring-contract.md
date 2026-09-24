@@ -1,15 +1,17 @@
-# Контракт API панели для mon-server (v1)
+# Контракт API панели для mon-server (v2)
 
 Статус: **принят** — итог карты [Healthcheck-мониторинг inbound'ов: mon-server, mon-clients и контракт с панелью](https://github.com/SBKubric/3ax-ui-proxy/issues/20); черновик принят в тикете [Контракт API панели для mon-server](https://github.com/SBKubric/3ax-ui-proxy/issues/21), собран в [Собрать спеку](https://github.com/SBKubric/3ax-ui-proxy/issues/29). Термины — по [CONTEXT.md](../../CONTEXT.md) (real server, proxy front, host override, mon-server, mon-client, target, path, probe account, heartbeat, stale). Панельная сторона контракта — [monitoring-panel.md](monitoring-panel.md); сторона mon-server — [спека mon-server](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-server.md) в репо `3ax-ui-monitoring`. Принцип «mon-server — единственный источник, панель — пассивный приёмник» зафиксирован в [ADR 0004](../adr/0004-mon-server-single-source-panel-passive.md).
 
-Правки 2026-09-24 по карте [Мониторинг: исполнение](https://github.com/SBKubric/3ax-ui-monitoring/issues/49), совместимые (версия контракта остаётся `1`): поэлементная валидация батчей, ответ с `rejected`, терпимость панели к неизвестным полям, грамматика `path`, пустой `from` у первого перехода, семантика `handshakeMs`, без `503 xray_unavailable` — [#50](https://github.com/SBKubric/3ax-ui-monitoring/issues/50); причины `PAUSED` — [#51](https://github.com/SBKubric/3ax-ui-monitoring/issues/51), [#53](https://github.com/SBKubric/3ax-ui-monitoring/issues/53); адрес probe-ссылок и `?hop=` до per-hop — [#54](https://github.com/SBKubric/3ax-ui-monitoring/issues/54); ревизия покрывает весь probe-материал (streamSettings, ключи, параметры AWG, набор probe-пиров), §4.2 — [3ax-ui-proxy#117](https://github.com/SBKubric/3ax-ui-proxy/issues/117).
+Правки 2026-09-24 по карте [Мониторинг: исполнение](https://github.com/SBKubric/3ax-ui-monitoring/issues/49), совместимые (версию контракта не меняли; v2 — ниже): поэлементная валидация батчей, ответ с `rejected`, терпимость панели к неизвестным полям, грамматика `path`, пустой `from` у первого перехода, семантика `handshakeMs`, без `503 xray_unavailable` — [#50](https://github.com/SBKubric/3ax-ui-monitoring/issues/50); причины `PAUSED` — [#51](https://github.com/SBKubric/3ax-ui-monitoring/issues/51), [#53](https://github.com/SBKubric/3ax-ui-monitoring/issues/53); адрес probe-ссылок и `?hop=` до per-hop — [#54](https://github.com/SBKubric/3ax-ui-monitoring/issues/54); ревизия покрывает весь probe-материал (streamSettings, ключи, параметры AWG, набор probe-пиров), §4.2 — [3ax-ui-proxy#117](https://github.com/SBKubric/3ax-ui-proxy/issues/117).
+
+**Версия 2** (2026-09-24, решение [3ax-ui-monitoring#80](https://github.com/SBKubric/3ax-ui-monitoring/issues/80), тикет [3ax-ui-proxy#120](https://github.com/SBKubric/3ax-ui-proxy/issues/120)): AWG probe-пир на каждую пару mon-client × path вместо одного общего `probe-awg` — у WireGuard-пира один endpoint и одна сессия, общий пир `direct` и `proxy` отбирали друг у друга. `POST /probe/ensure` сверяет пиры со снимком реестра, отвечает `unallocated`, `monClientId` в снимке ≤ 32 символов `[A-Za-z0-9_-]`; AWG-элементы `/probe/configs` несут `monClientId`; ревизия покрывает набор пиров; `contract: 2`. mon-server требует `contract ≥ 2`; панель и mon-* выпускаются вместе.
 
 Контракт описывает **только** ручки, которые панель (real server) открывает mon-server. Протокол mon-server ↔ mon-client — [mon-protocol.md](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-protocol.md) в репо `3ax-ui-monitoring`. Панель наружу не звонит: все запросы инициирует mon-server.
 
 ## 1. Версия и адрес
 
-- Базовый путь: `<panelScheme>://<panelHost>:<panelPort><webBasePath>mon/v1/` — тот же листенер, TLS и `webBasePath`, что у панели. Версия контракта зашита в путь; несовместимое изменение = `/mon/v2/`.
-- Каждый успешный ответ несёт заголовок `X-Mon-Contract: 1`; `GET /state` дублирует его полем `contract`.
+- Базовый путь: `<panelScheme>://<panelHost>:<panelPort><webBasePath>mon/v1/` — тот же листенер, TLS и `webBasePath`, что у панели. Сегмент `v1` в пути исторический и в v2 не менялся: версию контракта несут заголовок и поле `contract`, по ним mon-server и проверяет совместимость (`contract ≥ 2`). Панель и mon-* выпускаются вместе, двух версий одновременно панель не обслуживает.
+- Каждый успешный ответ несёт заголовок `X-Mon-Contract: 2`; `GET /state` дублирует его полем `contract`.
 - Совместимые изменения (новые необязательные поля, новые `reason`, новые `kind` событий) не меняют версию; обе стороны игнорируют неизвестные поля: mon-server — в ответах панели, панель — в телах запросов mon-server (строгий разбор с отказом на неизвестный ключ запрещён).
 
 ## 2. Аутентификация
@@ -22,7 +24,7 @@
 ## 3. Соглашения
 
 - Тела — JSON, `Content-Type: application/json; charset=utf-8`. Все времена — `int64`, миллисекунды UTC epoch, как в моделях панели. Длительности и latency — `int64`, миллисекунды.
-- Идентификаторы событий — **UUID v7** строкой (36 символов, lowercase); генерирует mon-server. `monClientId` — строка ≤ 64 символов `[A-Za-z0-9_.-]`, выдаёт mon-server.
+- Идентификаторы событий — **UUID v7** строкой (36 символов, lowercase); генерирует mon-server. `monClientId` — строка 1–32 символа `[A-Za-z0-9_-]`, выдаёт mon-server (v2: из него собирается имя AWG probe-пира, §4.3). `POST /probe/ensure` с другим id в снимке — `400 invalid_body` целиком; `POST /events`/`/stats` по-прежнему принимают прежнюю грамматику (≤ 64 символов `[A-Za-z0-9_.-]`), чтобы не терять историю.
 - `inboundId` — числовой `id` xray-inbound'а панели. AWG-сервер адресуется `inboundId = 0` и `kind = "awg"`, чтобы target'ы xray и AWG жили в одном ключе `(monClientId, kind, inboundId, path)`.
 - `path` — строка по грамматике `direct` | `proxy` | `edge:<name>` | `inner:<name>`, где `<name>` — имя звена цепочки (`[a-z0-9-]{1,32}`, [proxy-chain](proxy-chain.md) §6.1); по реестру цепочки имя не сверяется. Любое другое значение — ошибка элемента (`rejected`, ниже).
 - Статусы: `200` успех с телом, `204` успех без тела, `400` схема/валидация, `404` см. §2 (и неизвестный маршрут), `409` конфликт (см. конкретные ручки), `413` батч больше лимита, `500` ошибка панели, `503` панель стартует / БД недоступна. Тело ошибки (кроме 404):
@@ -55,7 +57,7 @@
 
 ```json
 {
-  "contract": 1,
+  "contract": 2,
   "panelVersion": "1.8.1-fork.3",
   "serverTime": 1757721600000,
   "revision": "9f2c1a7b3e5d4c60",
@@ -81,7 +83,8 @@
 {"hiddifyCompat": false,
  "inbounds": [
    {"kind": "awg", "inboundId": 0, "protocol": "awg", "port": 51820, "enable": true,
-    "peers": [{"name": "probe-awg", "conf": "[Interface]\nPrivateKey = …\n[Peer]\nEndpoint = probe.invalid:51820\n…"}]},
+    "peers": [{"name": "probe-awg-ams-1-direct", "conf": "[Interface]\nPrivateKey = …\n[Peer]\nEndpoint = probe.invalid:51820\n…"},
+              {"name": "probe-awg-ams-1-proxy",  "conf": "…"}]},
    {"kind": "xray", "inboundId": 12, "protocol": "vless", "port": 443, "enable": true, "listen": "",
     "stream": {"network": "tcp", "security": "reality", "realitySettings": {"serverNames": ["…"], "target": "…", "privateKey": "…", "shortIds": ["…"], "settings": {"publicKey": "…", "fingerprint": "chrome"}}},
     "settings": {"clients": [{"email": "probe-12", "id": "<uuid>", "flow": "xtls-rprx-vision", …}], "decryption": "none"}}
@@ -92,7 +95,7 @@
 
 - `inbounds` — те же inbound'ы, что в `/state`, отсортированы по `(kind, inboundId)`; поля target'а `kind, inboundId, protocol, port, enable` плюс материал:
   - xray: `listen` (адрес path `direct`, если публичный); `stream` — `streamSettings` целиком, кроме `externalProxy` (в probe-ссылках он не участвует, §4.4): транспорт, TLS/Reality, `serverNames`/`target`/ключи/`shortIds`/SNI/fingerprint; `settings` — настройки протокола (метод shadowsocks, `decryption`, `fallbacks`…), где `clients` сокращён до probe-клиента этого inbound'а (`probe-<inboundId>` со всеми его полями). Добавление и правка пользователей ревизию не двигают. Сохранённые JSON-колонки разбираются и сериализуются заново, числа — в исходной записи.
-  - AWG: `peers` — probe-пиры по имени (email), отсортированы по `name`; `conf` — текст `.conf`, как его отдаёт `/probe/configs`, но с хостом `Endpoint`, заменённым на `probe.invalid` (хост — не материал панели: для `proxy` это `override.host`, для `direct` — `host` из запроса). В `conf` входят публичные параметры AWG-сервера (публичный ключ, порт, MTU, DNS, обфускация) и ключи/адреса пира, так что ротация любого из них двигает ревизию; набор пиров — тоже.
+  - AWG: `peers` — все probe-пиры AWG-сервера (`probe-awg-<monClientId>-<path>`, §4.3) по имени, отсортированы по `name`; `conf` — текст `.conf`, как его отдаёт `/probe/configs`, но с хостом `Endpoint`, заменённым на `probe.invalid` (хост — не материал панели: для `proxy` это `override.host`, для `direct` — `host` из запроса). В `conf` входят публичные параметры AWG-сервера (публичный ключ, порт, MTU, DNS, обфускация) и ключи/адреса пира, так что ротация любого из них двигает ревизию; набор пиров — тоже: новый mon-client в снимке получает пиры на ближайшем ensure, ревизия сдвигается, и mon-server перечитывает `/probe/configs`. Смена `state` mon-client'а ревизию не двигает.
 - `hiddifyCompat` — настройка панели `xrayHiddifyCompat`, меняющая вид xhttp/grpc-ссылок.
 - `remark`/`tag` в хэш не входят (переименование не меняет targets).
 
@@ -100,7 +103,7 @@
 
 ### 4.3 `POST /probe/ensure`
 
-Идемпотентно. Панель: (1) генерирует `monProbeSubId`, если пуст; (2) для каждого клиентского xray-inbound'а без клиента `probe-<inboundId>` создаёт его (`AddInboundClient`: xray API без рестарта), для AWG-сервера без клиента `probe-awg` — создаёт AWG-клиента с этим subId; атрибуты — по резолюции [Probe account](https://github.com/SBKubric/3ax-ui-proxy/issues/24); (3) ставит `monProbeLastEnsured = now`; (4) заменяет кэш реестра mon-clients содержимым тела.
+Идемпотентно. Панель: (0) проверяет снимок — `monClients[i].id` вне грамматики §3 → `400 invalid_body`, ничего не меняется; (1) генерирует `monProbeSubId`, если пуст; (2) для каждого клиентского xray-inbound'а без клиента `probe-<inboundId>` создаёт его (`AddInboundClient`: xray API без рестарта) — один на inbound, общий для всех mon-clients и path; (3) если AWG-сервер создан, **сверяет его probe-пиры со снимком**: по пиру `probe-awg-<monClientId>-<path>` на каждый mon-client снимка (состояния `NEVER`/`ONLINE`/`OFFLINE` одинаково) × каждый path, который панель обслуживает (`direct`, `proxy`; `:` в path → `-`; per-hop расширит список по тому же правилу); все прочие probe-пиры удаляются — пиры mon-clients, выпавших из снимка, и общий `probe-awg` контракта v1 (миграция: его удаляет первый же ensure v2). Сначала удаление, потом создание — освобождённые адреса идут новым пирам; создание — по `(monClientId, path)` в порядке сортировки. Атрибуты — по резолюции [Probe account](https://github.com/SBKubric/3ax-ui-proxy/issues/24); (4) ставит `monProbeLastEnsured = now`; (5) заменяет кэш реестра mon-clients содержимым тела.
 
 Тело запроса — снимок реестра mon-clients (полная замена, не патч):
 
@@ -115,12 +118,17 @@
 
 ```json
 {"subId": "k3j9d8s7f6g5h4j3", "revision": "9f2c1a7b3e5d4c60", "lastEnsured": 1757721600000,
- "created": [{"kind":"xray","inboundId":12}], "present": 5}
+ "created": [{"kind":"xray","inboundId":12},
+             {"kind":"awg","inboundId":0,"monClientId":"msk-1","path":"direct"},
+             {"kind":"awg","inboundId":0,"monClientId":"msk-1","path":"proxy"}],
+ "present": 8, "unallocated": []}
 ```
 
-`created` — что завёл этот вызов (обычно пусто), `present` — размер набора после вызова. Недоступный xray API — не ошибка: клиент записан в inbound, рестарт xray запланирован, ответ `200`. `5xx` — только при ошибке БД; набор тогда может быть создан частично, следующий ensure доделает.
+`created` — что завёл этот вызов (обычно пусто); у AWG-пира — с `monClientId` и `path`. `present` — размер набора после вызова: xray probe-клиенты плюс AWG probe-пиры. `unallocated` — mon-clients, которым не хватило адреса в пуле AWG-сервера хотя бы на одном path (всегда массив, обычно пустой): ensure всё равно отвечает `200`, панель пишет warning в лог, недостающих AWG-элементов в `/probe/configs` просто нет — mon-server ставит этим target'ам `PAUSED` `no_probe_link`. Пиры, которым адрес достался, остаются. Недоступный xray API — не ошибка: клиент записан в inbound, рестарт xray запланирован, ответ `200`. `5xx` — только при ошибке БД; набор тогда может быть создан частично, следующий ensure доделает.
 
 Панель хранит снимок реестра как кэш для UI (в памяти + `monClientsSnapshot` в настройках, чтобы пережить рестарт), не как источник истины; поле `state` в нём — то, что сказал mon-server, панель его не пересчитывает. `state` ∈ `ONLINE` | `OFFLINE` | `NEVER` (`NEVER` — зарегистрирован, но heartbeat ещё не было, `lastHeartbeat = 0`); такие mon-clients не считаются offline и не входят в знаменатель coverage дайджеста ([monitoring-panel](monitoring-panel.md) §6).
+
+TTL-очистка (`monProbeTtlHours`, §4.5) остаётся и удаляет все пиры вместе с остальным набором.
 
 ### 4.4 `GET /probe/configs`
 
@@ -136,18 +144,20 @@
 ```json
 {"revision": "9f2c1a7b3e5d4c60", "path": "direct",
  "items": [
-   {"kind": "xray", "inboundId": 12, "link": "vless://<uuid>@203.0.113.10:443?security=reality&…#probe-12"},
-   {"kind": "awg",  "inboundId": 0,  "filename": "probe-awg", "conf": "[Interface]\nPrivateKey = …\n[Peer]\nEndpoint = 203.0.113.10:51820\n…"}
+   {"kind": "awg",  "inboundId": 0,  "monClientId": "ams-1", "filename": "probe-awg-ams-1-direct", "conf": "[Interface]\nPrivateKey = …\n[Peer]\nEndpoint = 203.0.113.10:51820\n…"},
+   {"kind": "awg",  "inboundId": 0,  "monClientId": "msk-1", "filename": "probe-awg-msk-1-direct", "conf": "…"},
+   {"kind": "xray", "inboundId": 12, "link": "vless://<uuid>@203.0.113.10:443?security=reality&…#probe-12"}
  ]}
 ```
 
+- Порядок элементов — по `(kind, inboundId, monClientId)`. xray-элемент один на inbound и общий для всех mon-clients, поля `monClientId` у него нет. AWG-элементов — по одному на mon-client снимка реестра, у которого есть пир для этого path (`probe-awg-<monClientId>-<path>`); `monClientId` говорит mon-server, какому mon-client отдать этот `conf`, `filename` — имя пира. mon-client без пира (пул исчерпан, §4.3, или ensure ещё не видел его) AWG-элемента не получает.
 - `link` — ссылка того же формата, что в `/sub` (ровно одна строка на inbound; multi-link inbound'ы отдают первую ссылку, т.к. probe один). `conf` — текст, идентичный элементу `/tun` ([tunnel subscription](tunnel-subscription.md) §6), с уже применённым host override к `Endpoint` для path `proxy` и с адресом из `host` для `direct`.
 - Выключенные inbound'ы в `items` **не попадают** (как и в подписке) — так mon-server видит `PAUSED`. `revision` в ответе позволяет mon-server отбросить ответ, если ревизия уже устарела относительно `/state`.
 - Если probe-набор ещё не создан — `409` `probe_not_ensured`.
 
 ### 4.5 `DELETE /probe`
 
-Удаляет все probe account'ы (xray + AWG, вместе с `client_traffics`), забывает `monProbeSubId`, `monProbeLastEnsured`, снимок реестра. Ответ `204`. Для uninstall mon-server; то же делает hourly job панели после `monProbeTtlHours` (default 24) без ensure.
+Удаляет все probe account'ы (xray + все AWG probe-пиры, вместе с `client_traffics`), забывает `monProbeSubId`, `monProbeLastEnsured`, снимок реестра. Ответ `204`. Для uninstall mon-server; то же делает hourly job панели после `monProbeTtlHours` (default 24) без ensure.
 
 ### 4.6 `POST /events`
 
@@ -214,7 +224,7 @@
 
 ## 7. Пример цикла mon-server
 
-1. Старт: `GET /state` → `POST /probe/ensure` (со снимком реестра) → `GET /probe/configs?host=<real>` и, при `override.enabled`, `GET /probe/configs` → раздать targets mon-clients.
+1. Старт: `GET /state` (проверить `contract ≥ 2`) → `POST /probe/ensure` (со снимком реестра) → `GET /probe/configs?host=<real>` и, при `override.enabled`, `GET /probe/configs` → раздать targets mon-clients: xray-элементы — всем, AWG-элемент — только mon-client'у из его `monClientId`.
 2. Раз в минуту: `GET /state`; ревизия изменилась → шаг 1 без первого пункта. `POST /probe/ensure` раз в минуту (с актуальным снимком).
 3. По переходам: `POST /events`. Раз в 5 минут: `POST /stats`.
 4. Три неудачи подряд → `PANEL_DOWN`: события копятся (≤ 24 ч) и досылаются одним или несколькими батчами с `notified=true`; poll `GET /state` продолжается как детектор возврата.

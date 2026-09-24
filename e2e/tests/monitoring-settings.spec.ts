@@ -54,7 +54,7 @@ test.describe('monitoring settings', () => {
       headers: { Authorization: `Bearer ${first}` },
     });
     expect(state.status()).toBe(200);
-    expect((await state.json()).contract).toBe(1);
+    expect((await state.json()).contract).toBe(2);
 
     // Regenerate again: the panel reads the setting on every request, so the
     // previous token is refused from this moment, with a bare 404 rather than

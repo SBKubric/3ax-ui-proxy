@@ -109,7 +109,7 @@ func TestMonAuthHidesThePanel(t *testing.T) {
 	}
 
 	w := monRequest(r, "GET", "/mon/v1/state", monTestToken, "")
-	if w.Code != http.StatusOK || w.Header().Get("X-Mon-Contract") != "1" {
+	if w.Code != http.StatusOK || w.Header().Get("X-Mon-Contract") != "2" {
 		t.Fatalf("authorised GET /state: status %d header %q body %s", w.Code, w.Header().Get("X-Mon-Contract"), w.Body.String())
 	}
 	if got := (&service.MonitoringService{}).MonLastContact(); got == 0 {
@@ -119,7 +119,7 @@ func TestMonAuthHidesThePanel(t *testing.T) {
 		t.Error("monLastContact not persisted on first contact")
 	}
 	var st service.MonState
-	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.Contract != 1 || len(st.Revision) != 16 {
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.Contract != 2 || len(st.Revision) != 16 {
 		t.Errorf("GET /state body: %v %s", err, w.Body.String())
 	}
 }
@@ -174,6 +174,11 @@ func TestMonRoutesSpeakTheContract(t *testing.T) {
 	if w := monRequest(r, "POST", "/mon/v1/probe/ensure", monTestToken, `{"monClients":[{"name":"no id"}]}`); w.Code != http.StatusBadRequest {
 		t.Errorf("mon-client without id: %d %s", w.Code, w.Body.String())
 	}
+	// Contract v2: the id names a probe peer, so it is 1–32 of [A-Za-z0-9_-].
+	if w := monRequest(r, "POST", "/mon/v1/probe/ensure", monTestToken, `{"monClients":[{"id":"ams.1"}]}`); w.Code != http.StatusBadRequest ||
+		!strings.Contains(w.Body.String(), `"error":"invalid_body"`) {
+		t.Errorf("mon-client id outside the v2 grammar: %d %s", w.Code, w.Body.String())
+	}
 
 	// Probe configs before the set exists: 409.
 	if w := monRequest(r, "GET", "/mon/v1/probe/configs?host=203.0.113.10", monTestToken, ""); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "probe_not_ensured") {
@@ -182,10 +187,11 @@ func TestMonRoutesSpeakTheContract(t *testing.T) {
 
 	// Ensure, then configs on both paths, then events and stats round-trip.
 	w := monRequest(r, "POST", "/mon/v1/probe/ensure", monTestToken, `{"monClients":[{"id":"ams-1","name":"Amsterdam","region":"NL","state":"ONLINE","lastHeartbeat":1}]}`)
-	if w.Code != http.StatusOK || w.Header().Get("X-Mon-Contract") != "1" {
+	if w.Code != http.StatusOK || w.Header().Get("X-Mon-Contract") != "2" {
 		t.Fatalf("ensure: %d %s", w.Code, w.Body.String())
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil || m["present"] != float64(1) || len(m["subId"].(string)) != 16 {
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil || m["present"] != float64(1) || len(m["subId"].(string)) != 16 ||
+		!strings.Contains(w.Body.String(), `"unallocated":[]`) {
 		t.Errorf("ensure body: %v %s", err, w.Body.String())
 	}
 	if w := monRequest(r, "GET", "/mon/v1/probe/configs", monTestToken, ""); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "override_disabled") {
