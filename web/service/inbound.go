@@ -1249,7 +1249,7 @@ func (s *InboundService) addInboundClient(data *model.Inbound, allowProbe bool) 
 	}
 	// Probe accounts are created by MonitoringService.EnsureProbeSet only.
 	if !allowProbe {
-		if err := rejectProbeEmails(clientEmails(clients)...); err != nil {
+		if err := s.rejectNewProbeClients(data.Id, clients); err != nil {
 			return false, err
 		}
 	}
@@ -1752,6 +1752,9 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	}
 	// A probe account is never edited, and no client is renamed into one.
 	if err := rejectProbeEmails(oldEmail, clients[0].Email); err != nil {
+		return false, err
+	}
+	if err := s.rejectProbeLookalikes(oldInbound, clients[:1]); err != nil {
 		return false, err
 	}
 

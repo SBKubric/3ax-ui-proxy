@@ -114,7 +114,88 @@ func (s *InboundService) rejectAddedProbeClients(old, updated *model.Inbound) er
 			return errProbeAccount(c.Email)
 		}
 	}
+	return s.rejectProbeLookalikes(old, clients)
+}
+
+// rejectNewProbeClients is the guard of AddInboundClient: no probe email, and
+// no probe identity under another name (rejectProbeLookalikes) against the
+// probe the target inbound holds.
+func (s *InboundService) rejectNewProbeClients(inboundId int, clients []model.Client) error {
+	if err := rejectProbeEmails(clientEmails(clients)...); err != nil {
+		return err
+	}
+	inbound, err := s.GetInbound(inboundId)
+	if err != nil {
+		return err
+	}
+	return s.rejectProbeLookalikes(inbound, clients)
+}
+
+// rejectProbeLookalikes closes the gap the email guard leaves (#115): a probe
+// renamed into a user ("probe-1" → "carol") reads as a drop plus an add, and
+// the new client would inherit the probe's identity — its credential and its
+// subId, that is the probe set's links. A client that is not a probe by name
+// is refused if it carries the credential or subId of a probe client of old,
+// or the panel's monProbeSubId. Probe clients themselves are left to the email
+// guards. old may be nil (a new inbound): then only monProbeSubId is checked.
+func (s *InboundService) rejectProbeLookalikes(old *model.Inbound, clients []model.Client) error {
+	secrets := map[string]bool{}
+	subIds := map[string]bool{}
+	monSubId, err := (&SettingService{}).GetMonProbeSubId()
+	if err != nil {
+		return err
+	}
+	if monSubId != "" {
+		subIds[monSubId] = true
+	}
+	if old != nil {
+		oldClients, _ := s.GetClients(old)
+		for _, c := range oldClients {
+			if !IsProbeAccount(c.Email) {
+				continue
+			}
+			for _, secret := range clientSecrets(c) {
+				secrets[secret] = true
+			}
+			if c.SubID != "" {
+				subIds[c.SubID] = true
+			}
+		}
+	}
+	for _, c := range clients {
+		if IsProbeAccount(c.Email) {
+			continue
+		}
+		if subIds[c.SubID] {
+			return errProbeIdentity(c.Email)
+		}
+		for _, secret := range clientSecrets(c) {
+			if secrets[secret] {
+				return errProbeIdentity(c.Email)
+			}
+		}
+	}
 	return nil
+}
+
+// clientSecrets lists the credentials a client may connect with: the uuid of
+// vless/vmess, the password of trojan/shadowsocks, the auth of hysteria. All
+// of them rather than the protocol's one, so an edit that also changes the
+// inbound's protocol cannot move a probe secret into another field unseen.
+func clientSecrets(c model.Client) []string {
+	secrets := make([]string, 0, 3)
+	for _, secret := range []string{c.ID, c.Password, c.Auth} {
+		if secret != "" {
+			secrets = append(secrets, secret)
+		}
+	}
+	return secrets
+}
+
+// errProbeIdentity is what the guards return for a user carrying a probe's
+// credential or subId.
+func errProbeIdentity(email string) error {
+	return common.NewError("client carries the identity of a monitoring probe:", email)
 }
 
 // clientEmails lists the emails of a batch of clients, in order.

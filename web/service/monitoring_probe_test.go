@@ -448,3 +448,128 @@ func TestTunnelResetMovesTheRevision(t *testing.T) {
 		t.Errorf("awg clients after reset: %+v", clients)
 	}
 }
+
+// TestProbeGuard_RenamedProbeKeepsNoIdentity (#115): the email guard alone let
+// an inbound edit rename probe-1 into "carol" — a drop plus an add — and carol
+// inherited the probe's credential and subId, i.e. the probe set's links. A
+// client that is not a probe by name may carry neither the credential nor the
+// subId of a probe the inbound had, nor the panel's monProbeSubId. Dropping
+// the probe and editing other clients stay open.
+func TestProbeGuard_RenamedProbeKeepsNoIdentity(t *testing.T) {
+	initProbeTestDB(t)
+	s := &InboundService{}
+	const probeSub = "probesub01234567"
+	if err := (&SettingService{}).SetMonProbeSubId(probeSub); err != nil {
+		t.Fatal(err)
+	}
+	alice := model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice", SubID: "alicesub", Enable: false}
+	probe := model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000002", Email: "probe-1", SubID: probeSub, Enable: false}
+	vlessInbound(t, 1, alice, probe)
+	edit := func(clients ...model.Client) *model.Inbound {
+		ib := mustInbound(t, s, 1)
+		settings, _ := json.Marshal(map[string]any{"clients": clients, "decryption": "none"})
+		ib.Settings = string(settings)
+		ib.Remark = "edited"
+		return ib
+	}
+	fresh := func(email, id, subId string) model.Client {
+		return model.Client{ID: id, Email: email, SubID: subId, Enable: false}
+	}
+	const freshID = "aaaaaaaa-0000-0000-0000-000000000009"
+
+	// UpdateInbound: the rename, and each half of the identity on its own.
+	renamed := probe
+	renamed.Email = "carol"
+	for name, clients := range map[string][]model.Client{
+		"probe renamed to carol":        {alice, renamed},
+		"carol with the probe's uuid":   {alice, fresh("carol", probe.ID, "carolsub")},
+		"carol with the probe's subId":  {alice, fresh("carol", freshID, probeSub)},
+		"kept probe, carol with its id": {alice, probe, fresh("carol", probe.ID, "carolsub")},
+		"alice takes the probe's subId": {fresh("alice", alice.ID, probeSub), probe},
+	} {
+		if _, _, err := s.UpdateInbound(edit(clients...)); err == nil || !strings.Contains(err.Error(), "monitoring probe") {
+			t.Errorf("UpdateInbound, %s: err = %v, want the probe guard", name, err)
+		}
+	}
+	if got := mustInbound(t, s, 1); got.Remark == "edited" {
+		t.Error("a refused edit was stored")
+	}
+
+	// Passing edits, asserted on the guard (the rest of UpdateInbound needs xray).
+	old := mustInbound(t, s, 1)
+	aliceEdited := alice
+	aliceEdited.Comment = "vip"
+	for name, clients := range map[string][]model.Client{
+		"probe dropped":            {alice},
+		"alice edited, probe kept": {aliceEdited, probe},
+		"new user, own identity":   {alice, probe, fresh("carol", freshID, "carolsub")},
+		"new user without a subId": {alice, fresh("carol", freshID, "")},
+	} {
+		if err := s.rejectAddedProbeClients(old, edit(clients...)); err != nil {
+			t.Errorf("guard, %s: %v", name, err)
+		}
+	}
+
+	// Other protocols: the credential is the one the probe's link carries.
+	for _, tc := range []struct {
+		protocol model.Protocol
+		probe    model.Client
+	}{
+		{model.Trojan, model.Client{Password: "trojanprobesecret", Email: "probe-3"}},
+		{model.Shadowsocks, model.Client{Password: "ssprobesecret", Email: "probe-4"}},
+		{model.VMESS, model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000033", Email: "probe-5"}},
+	} {
+		settings := func(clients ...model.Client) string {
+			b, _ := json.Marshal(map[string]any{"clients": clients})
+			return string(b)
+		}
+		oldIb := &model.Inbound{Protocol: tc.protocol, Settings: settings(tc.probe)}
+		stolen := tc.probe
+		stolen.Email = "carol"
+		if err := s.rejectAddedProbeClients(oldIb, &model.Inbound{Protocol: tc.protocol, Settings: settings(stolen)}); err == nil {
+			t.Errorf("%s: probe renamed to carol passed the guard", tc.protocol)
+		}
+		if err := s.rejectAddedProbeClients(oldIb, &model.Inbound{Protocol: tc.protocol, Settings: settings()}); err != nil {
+			t.Errorf("%s: dropping the probe: %v", tc.protocol, err)
+		}
+	}
+
+	// AddInbound: a new inbound cannot bring a client on the probe subId.
+	settings, _ := json.Marshal(map[string]any{"clients": []model.Client{fresh("dave", freshID, probeSub)}, "decryption": "none"})
+	if _, _, err := s.AddInbound(&model.Inbound{UserId: 1, Port: 20003, Protocol: model.VLESS, Tag: "inbound-probe-sub",
+		Remark: "t", Settings: string(settings), Enable: false, StreamSettings: "{}", Sniffing: "{}"}); err == nil ||
+		!strings.Contains(err.Error(), "monitoring probe") {
+		t.Errorf("AddInbound with the probe subId: err = %v, want the probe guard", err)
+	}
+
+	// AddInboundClient: neither the probe subId nor the uuid of the inbound's probe.
+	for name, c := range map[string]model.Client{
+		"probe subId":  fresh("dave", freshID, probeSub),
+		"probe's uuid": fresh("dave", probe.ID, "davesub"),
+	} {
+		if _, err := s.AddInboundClient(clientsPayload(1, c)); err == nil || !strings.Contains(err.Error(), "monitoring probe") {
+			t.Errorf("AddInboundClient with the %s: err = %v, want the probe guard", name, err)
+		}
+	}
+	if clients := mustClients(t, s, 1); len(clients) != 2 {
+		t.Errorf("a refused add was applied: %d clients", len(clients))
+	}
+
+	// UpdateInboundClient: a user cannot take the probe subId or the probe's uuid.
+	for name, c := range map[string]model.Client{
+		"probe subId":  fresh("alice", alice.ID, probeSub),
+		"probe's uuid": fresh("alice", probe.ID, "alicesub"),
+	} {
+		if _, err := s.UpdateInboundClient(clientsPayload(1, c), alice.ID); err == nil || !strings.Contains(err.Error(), "monitoring probe") {
+			t.Errorf("UpdateInboundClient to the %s: err = %v, want the probe guard", name, err)
+		}
+	}
+
+	// Ordinary client paths still work.
+	if _, err := s.AddInboundClient(clientsPayload(1, fresh("dave", freshID, "davesub"))); err != nil {
+		t.Fatalf("AddInboundClient(dave): %v", err)
+	}
+	if _, err := s.UpdateInboundClient(clientsPayload(1, aliceEdited), alice.ID); err != nil {
+		t.Fatalf("UpdateInboundClient(alice): %v", err)
+	}
+}
