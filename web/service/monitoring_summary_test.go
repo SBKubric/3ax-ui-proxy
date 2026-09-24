@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -79,8 +80,11 @@ func nearly(got, want float64) bool { return got-want < 1e-9 && want-got < 1e-9 
 
 // TestSummaryUptimeCoverageAndIncidents walks the whole §7.4 calculation over
 // mon_stats_current: uptime folded over mon-clients, coverage against the
-// buckets two mon-clients owed, incidents counted from DOWN target events
-// only, and the worst target ignoring a target nobody really measured.
+// buckets owed by the mon-clients that are ONLINE and probe that path (an
+// OFFLINE one owes nothing, one that has a target on the path but went quiet
+// owes its share), hop paths after direct and proxy, incidents counted from
+// DOWN target events only, and the worst target ignoring a target nobody
+// really measured.
 func TestSummaryUptimeCoverageAndIncidents(t *testing.T) {
 	m := newMonitoringTestService(t)
 	t.Cleanup(resetMonStaleForTest)
@@ -92,7 +96,15 @@ func TestSummaryUptimeCoverageAndIncidents(t *testing.T) {
 	monRegister(t,
 		MonClient{Id: "ams-1", Name: "Amsterdam", Region: "eu-west", State: "ONLINE"},
 		MonClient{Id: "fra-1", Name: "Frankfurt", Region: "eu-central", State: "OFFLINE"},
+		MonClient{Id: "waw-1", Name: "Warsaw", Region: "pl", State: "ONLINE"},
+		MonClient{Id: "new-1", Name: "Newcomer", Region: "pl", State: "NEVER"},
 	)
+	// waw-1 probes inbound 1 on direct (it has a target there) but sent no
+	// buckets in the window: it still owes them.
+	if err := database.GetDB().Create(&model.MonTarget{MonClientId: "waw-1", InboundKind: "xray", InboundId: 1,
+		Path: "direct", State: model.MonStateDown}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	from := monSummaryNow.Add(-24 * time.Hour).UnixMilli()
 	// inbound 1, direct: one mon-client at 90 %, one at 100 %, each covering
@@ -101,6 +113,9 @@ func TestSummaryUptimeCoverageAndIncidents(t *testing.T) {
 	monCurrent(t, "fra-1", "xray", 1, "direct", from, 144, 10, 0)
 	// inbound 1, proxy: one mon-client covering the whole window.
 	monCurrent(t, "ams-1", "xray", 1, "proxy", from, 288, 10, 0)
+	// inbound 1 through two hops of the chain, half of the window each.
+	monCurrent(t, "ams-1", "xray", 1, "inner:core-1", from, 144, 10, 0)
+	monCurrent(t, "ams-1", "xray", 1, "edge:ams-2", from, 144, 10, 0)
 	// inbound 2: a handful of failing buckets — the worst uptime in the
 	// database, but far below the coverage the spec trusts.
 	monCurrent(t, "ams-1", "xray", 2, "direct", from, 10, 0, 5)
@@ -135,14 +150,29 @@ func TestSummaryUptimeCoverageAndIncidents(t *testing.T) {
 	if direct.Uptime == nil || !nearly(*direct.Uptime, 2736.0/2880.0) {
 		t.Errorf("direct uptime = %v, want %v", direct.Uptime, 2736.0/2880.0)
 	}
-	// Two mon-clients owe 288 buckets each over 24h of 5-minute buckets.
-	if direct.Expected != 576 || direct.Received != 288 || !nearly(direct.Coverage, 0.5) {
-		t.Errorf("direct coverage = %d/%d = %v, want 288/576 = 0.5", direct.Received, direct.Expected, direct.Coverage)
+	// The two ONLINE mon-clients on direct (ams-1, waw-1) owe 288 buckets
+	// each over 24h of 5-minute buckets; only ams-1 sent any. fra-1 is
+	// OFFLINE and new-1 has never reported: neither owes anything, and
+	// fra-1's buckets count for uptime but not for coverage.
+	if direct.Expected != 576 || direct.Received != 144 || !nearly(direct.Coverage, 0.25) {
+		t.Errorf("direct coverage = %d/%d = %v, want 144/576 = 0.25", direct.Received, direct.Expected, direct.Coverage)
 	}
 	proxy := pathByName(t, one, model.MonPathProxy)
-	if proxy.Uptime == nil || !nearly(*proxy.Uptime, 1) || !nearly(proxy.Coverage, 0.5) {
-		t.Errorf("proxy = %+v, want uptime 1 coverage 0.5", proxy)
+	if proxy.Uptime == nil || !nearly(*proxy.Uptime, 1) || proxy.Expected != 288 || !nearly(proxy.Coverage, 1) {
+		t.Errorf("proxy = %+v, want uptime 1 coverage 288/288", proxy)
 	}
+	edge := pathByName(t, one, "edge:ams-2")
+	if edge.Uptime == nil || !nearly(*edge.Uptime, 1) || edge.Expected != 288 || !nearly(edge.Coverage, 0.5) {
+		t.Errorf("edge:ams-2 = %+v, want uptime 1 coverage 144/288", edge)
+	}
+	var order []string
+	for _, p := range one.Paths {
+		order = append(order, p.Path)
+	}
+	if strings.Join(order, ",") != "direct,proxy,edge:ams-2,inner:core-1" {
+		t.Errorf("path order = %v, want direct, proxy, then hops by name", order)
+	}
+	// (144 + 288 + 144 + 144) / (576 + 288 + 288 + 288)
 	if !nearly(one.Coverage, 0.5) {
 		t.Errorf("inbound coverage = %v, want 0.5", one.Coverage)
 	}
@@ -164,7 +194,10 @@ func TestSummaryUptimeCoverageAndIncidents(t *testing.T) {
 	}
 
 	if len(sum.OfflineClients) != 1 || sum.OfflineClients[0].Id != "fra-1" {
-		t.Errorf("offline clients = %+v, want fra-1", sum.OfflineClients)
+		t.Errorf("offline clients = %+v, want fra-1 (a NEVER mon-client is not offline)", sum.OfflineClients)
+	}
+	if len(sum.AwaitingClients) != 1 || sum.AwaitingClients[0].Id != "new-1" {
+		t.Errorf("awaiting clients = %+v, want new-1", sum.AwaitingClients)
 	}
 	if sum.StaleMs != 0 || sum.StaleNow {
 		t.Errorf("stale = %d ms / now %v, want 0 / false", sum.StaleMs, sum.StaleNow)
@@ -189,8 +222,8 @@ func TestSummaryWithoutData(t *testing.T) {
 	if sum.Inbounds[0].Coverage != 0 || sum.Worst != nil {
 		t.Errorf("coverage = %v, worst = %+v, want 0 and nil", sum.Inbounds[0].Coverage, sum.Worst)
 	}
-	if len(sum.OfflineClients) != 0 {
-		t.Errorf("offline clients = %+v, want none", sum.OfflineClients)
+	if len(sum.OfflineClients) != 0 || sum.AwaitingClients == nil || len(sum.AwaitingClients) != 0 {
+		t.Errorf("offline clients = %+v, awaiting %+v; want none and an empty list", sum.OfflineClients, sum.AwaitingClients)
 	}
 }
 

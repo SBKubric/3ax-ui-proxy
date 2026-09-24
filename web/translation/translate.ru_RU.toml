@@ -1309,6 +1309,7 @@
 "digestNoData" = "▫️ {{ .Remark }}: нет данных\r\n"
 "digestWorst" = "⚠️ Худший: {{ .Remark }} через {{ .Path }} · {{ .Client }} · {{ .Uptime }} (покрытие {{ .Coverage }} %)\r\n"
 "digestOffline" = "🔌 mon-clients офлайн: {{ .Clients }}\r\n"
+"digestAwaiting" = "⏳ mon-clients ждут первого heartbeat: {{ .Clients }}\r\n"
 "digestStale" = "🟡 Мониторинг молчал: {{ .Minutes }} мин\r\n"
 
 [tgbot.buttons]
