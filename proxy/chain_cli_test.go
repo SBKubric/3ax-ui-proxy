@@ -65,6 +65,48 @@ func TestRejoinPointsTheBoxAtANewNextHop(t *testing.T) {
 	}
 }
 
+// TestRejoinKeepsTheCertificate (#124): install.sh writes cert and key into
+// proxy.json and `x-ui chain rejoin` then rewrites the file with the new
+// secret. The rewrite must carry the TLS paths over, or a reinstalled hop
+// comes up on plain HTTP under a next-outer hop that polls it over https.
+func TestRejoinKeepsTheCertificate(t *testing.T) {
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(joinAnswer())
+	}))
+	defer panel.Close()
+	host, port := hostPort(t, panel.URL)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "proxy.json")
+	written := `{"version":2,"nextHop":{"host":"10.0.0.7","subPort":2096,"subScheme":"https"},` +
+		`"subPort":2096,"domain":"10.0.0.9","cert":"/root/cert/ip/fullchain.pem","key":"/root/cert/ip/privkey.pem",` +
+		`"stateDir":"` + filepath.Join(dir, "chain") + `"}`
+	if err := os.WriteFile(cfgPath, []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rejoin(context.Background(), cfg, host, port, "http", "0123456789012345678901234567890a"); err != nil {
+		t.Fatalf("Rejoin: %v", err)
+	}
+
+	saved, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.CertFile != "/root/cert/ip/fullchain.pem" || saved.KeyFile != "/root/cert/ip/privkey.pem" {
+		t.Errorf("rejoin rewrote the TLS paths: cert=%q key=%q", saved.CertFile, saved.KeyFile)
+	}
+	if !saved.TLS() || saved.Scheme() != "https" {
+		t.Error("the rejoined hop would serve its sub port over plain HTTP")
+	}
+	if saved.HopSecret != "the-issued-hop-secret" {
+		t.Errorf("saved hopSecret = %q", saved.HopSecret)
+	}
+}
+
 // TestRejoinLeavesTheBoxAloneWhenTheChainRefuses: a rejoin is typed by hand
 // while something is already broken. A stale token, a typo in --next-hop or a
 // network blip must cost nothing — the box keeps the secret and the next hop

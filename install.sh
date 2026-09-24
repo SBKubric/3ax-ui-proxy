@@ -2832,9 +2832,6 @@ prompt_proxy_mode() {
         exit 1
         ;;
     esac
-    if [[ "${PROXY_TLS}" == "manual" && (-z "${PROXY_CERT:-}" || -z "${PROXY_KEY:-}") ]]; then
-        echo -e "${yellow}PROXY_TLS=manual without PROXY_CERT/PROXY_KEY — the sub port and the join page will answer over plain HTTP.${plain}"
-    fi
     if [[ "${PROXY_TLS}" != "manual" && (-n "${PROXY_CERT:-}" || -n "${PROXY_KEY:-}") ]]; then
         echo -e "${yellow}PROXY_CERT/PROXY_KEY only mean something with PROXY_TLS=manual — ignoring them.${plain}"
         PROXY_CERT=""
@@ -2842,6 +2839,7 @@ prompt_proxy_mode() {
     fi
 
     proxy_validate_config_values
+    proxy_check_manual_tls
 
     export PROXY_NEXT_HOP PROXY_NEXT_HOP_SUB_PORT PROXY_NEXT_HOP_SCHEME PROXY_JOIN_TOKEN
     export PROXY_DOMAIN PROXY_SUB_PORT PROXY_SUB_LISTEN PROXY_RELAY_LISTEN PROXY_TLS
@@ -2895,6 +2893,68 @@ proxy_validate_config_values() {
     proxy_json_port_ok PROXY_NEXT_HOP_SUB_PORT "${PROXY_NEXT_HOP_SUB_PORT:-}"
 }
 
+# PROXY_TLS=manual means "serve the sub port with these two files". It used to
+# be enough for either of them to be missing, empty or unset for the box to come
+# up on plain HTTP with nothing but a line in the install log (#124) — and the
+# next-outer hop, which polls this one over https, then only reports it
+# unreachable. So a manual certificate that cannot be served stops the install
+# here, while nothing on the box has been touched yet. Plain HTTP is still one
+# word away: PROXY_TLS=none.
+proxy_check_manual_tls() {
+    [[ "${PROXY_TLS}" == "manual" ]] || return 0
+    if [[ -z "${PROXY_CERT:-}" || -z "${PROXY_KEY:-}" ]]; then
+        echo -e "${red}PROXY_TLS=manual needs both PROXY_CERT and PROXY_KEY (paths on this box). For plain HTTP on purpose, install with PROXY_TLS=none. Nothing has been changed.${plain}"
+        exit 1
+    fi
+    local __name __path __marker
+    for __name in PROXY_CERT PROXY_KEY; do
+        __path="${!__name}"
+        __marker="CERTIFICATE"
+        [[ "${__name}" == "PROXY_KEY" ]] && __marker="PRIVATE KEY"
+        # x-ui runs from its own folder, so a relative path would point
+        # somewhere else than it does in this shell.
+        if [[ "${__path}" != /* ]]; then
+            echo -e "${red}${__name}='${__path}' must be an absolute path. Nothing has been changed.${plain}"
+            exit 1
+        fi
+        if [[ ! -f "${__path}" || ! -r "${__path}" || ! -s "${__path}" ]]; then
+            echo -e "${red}${__name}='${__path}' is missing, unreadable or empty — the sub port would have come up on plain HTTP. Nothing has been changed.${plain}"
+            exit 1
+        fi
+        if ! grep -q -- "-----BEGIN .*${__marker}-----" "${__path}"; then
+            echo -e "${red}${__name}='${__path}' holds no PEM ${__marker}. Nothing has been changed.${plain}"
+            exit 1
+        fi
+    done
+    # The pair check needs openssl, which a minimal box may lack; without it
+    # the files above are still known to exist and to be PEM.
+    if command -v openssl >/dev/null 2>&1; then
+        local __cert_pub __key_pub
+        __cert_pub=$(openssl x509 -in "${PROXY_CERT}" -noout -pubkey 2>/dev/null)
+        __key_pub=$(openssl pkey -in "${PROXY_KEY}" -pubout 2>/dev/null)
+        if [[ -z "${__cert_pub}" || "${__cert_pub}" != "${__key_pub}" ]]; then
+            echo -e "${red}PROXY_CERT='${PROXY_CERT}' and PROXY_KEY='${PROXY_KEY}' are not a certificate and its key. Nothing has been changed.${plain}"
+            exit 1
+        fi
+    fi
+}
+
+# proxy_ip_cert_reusable <cert-dir> <ip> — the IP certificate a previous install
+# left in <cert-dir> can serve this one: it is there, still valid for more than a
+# day, issued for <ip>, and acme.sh still has it on its renewal list. A reinstall
+# of a joined hop then keeps its certificate instead of asking Let's Encrypt for
+# another one — which, a few reinstalls into the week, the CA refuses (five
+# duplicate certificates per 168 h), and a refused issuance meant plain HTTP (#124).
+proxy_ip_cert_reusable() {
+    local __dir="$1" __ip="$2" __acme_home="${HOME:-/root}/.acme.sh"
+    [[ -s "${__dir}/fullchain.pem" && -s "${__dir}/privkey.pem" ]] || return 1
+    [[ -d "${__acme_home}/${__ip}_ecc" || -d "${__acme_home}/${__ip}" ]] || return 1
+    command -v openssl >/dev/null 2>&1 || return 1
+    openssl x509 -in "${__dir}/fullchain.pem" -noout -checkend 86400 >/dev/null 2>&1 || return 1
+    openssl x509 -in "${__dir}/fullchain.pem" -noout -ext subjectAltName 2>/dev/null |
+        grep -Eo 'IP Address:[^,[:space:]]+' | grep -qxF "IP Address:${__ip}"
+}
+
 # Public IPv4 of this box — the subject of the Let's Encrypt IP certificate and
 # the address the footer shows. Same probe list as the panel install path.
 proxy_public_ipv4() {
@@ -2927,9 +2987,8 @@ proxy_setup_tls() {
         return 0
         ;;
     manual)
-        if [[ -n "${PROXY_CERT:-}" && -n "${PROXY_KEY:-}" ]]; then
-            echo -e "${green}PROXY_TLS=manual — using ${PROXY_CERT} / ${PROXY_KEY}; this box will not renew them.${plain}"
-        fi
+        # proxy_check_manual_tls has already refused anything it cannot serve.
+        echo -e "${green}PROXY_TLS=manual — using ${PROXY_CERT} / ${PROXY_KEY}; this box will not renew them.${plain}"
         return 0
         ;;
     esac
@@ -2944,6 +3003,14 @@ proxy_setup_tls() {
         echo -e "${yellow}WARN: could not detect this box's public IPv4 — skipping the Let's Encrypt IP certificate; the join page will be served over plain HTTP.${plain}"
         PROXY_CERT=""
         PROXY_KEY=""
+        return 0
+    fi
+    local __certDir="/root/cert/ip"
+    if proxy_ip_cert_reusable "${__certDir}" "${__ip}"; then
+        PROXY_CERT="${__certDir}/fullchain.pem"
+        PROXY_KEY="${__certDir}/privkey.pem"
+        proxy_tls_ip="${__ip}"
+        echo -e "${green}Keeping the IP certificate already on this box for ${__ip} → ${PROXY_CERT} (acme.sh keeps renewing it).${plain}"
         return 0
     fi
     if is_port_in_use 80; then
@@ -2961,7 +3028,6 @@ proxy_setup_tls() {
         fi
     fi
 
-    local __certDir="/root/cert/ip"
     mkdir -p "${__certDir}"
     echo -e "${green}Issuing a Let's Encrypt IP certificate for ${__ip} (shortlived profile, ~6 days, auto-renewed)...${plain}"
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
