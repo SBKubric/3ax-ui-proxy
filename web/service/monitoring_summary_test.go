@@ -274,6 +274,9 @@ func TestStaleIntervalsRecordedOnBothEdges(t *testing.T) {
 	resetMonContactForTest()
 	resetMonStaleForTest()
 	t.Cleanup(func() { resetMonContactForTest(); resetMonStaleForTest() })
+	if err := (&SettingService{}).SetMonEnable(true); err != nil {
+		t.Fatal(err)
+	}
 
 	start := monSummaryNow.Add(-2 * time.Hour)
 	m.TouchMonLastContact(start)

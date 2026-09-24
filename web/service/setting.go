@@ -108,7 +108,7 @@ var defaultValueMap = map[string]string{
 	"chainDrainMinutes":   "10",
 
 	// Monitoring (docs/spec/monitoring-panel.md §2.2). The first seven are
-	// preferences the settings form edits; the last four are state that
+	// preferences the settings form edits; the last five are state that
 	// mon-server and the panel write between saves, so they are deliberately
 	// absent from entity.AllSetting — a form save must not roll them back.
 	"monEnable":              "false",
@@ -121,6 +121,7 @@ var defaultValueMap = map[string]string{
 	"monProbeSubId":          "",
 	"monProbeLastEnsured":    "0",
 	"monLastContact":         "0",
+	"monStaleSince":          "0",
 	"monClientsSnapshot":     "[]",
 
 	// LDAP defaults

@@ -3,6 +3,8 @@ package service
 import (
 	"sync"
 	"time"
+
+	"github.com/coinman-dev/3ax-ui/v2/logger"
 )
 
 // Last contact with mon-server (monitoring-panel.md §4.2, §5). Every
@@ -35,7 +37,7 @@ func (s *MonitoringService) TouchMonLastContact(now time.Time) {
 		}
 	}
 	monContact.Unlock()
-	clearMonStale(now)
+	s.clearMonStale(now)
 	monContact.Lock()
 }
 
@@ -112,10 +114,15 @@ func (s *MonitoringService) links() ProbeLinkRenderer {
 
 // STALE is the panel's one own state (monitoring-panel.md §5): mon-server has
 // been silent longer than monStaleMinutes, so every target is suspect. It is
-// a flag in memory — mon_targets rows are not touched — set by the minute job
-// and cleared by the next authorised request. Both edges are announced once
+// a flag — mon_targets rows are not touched — set by the minute job and
+// cleared by the next authorised request. Both edges are announced once
 // through the MonStaleNotifier the bot registers (§6). Until mon-server has
-// reached the panel at all (monLastContact = 0) STALE is never declared.
+// reached the panel at all (monLastContact = 0) STALE is never declared, and
+// with monEnable=false it is neither declared nor sent.
+//
+// The flag lives in memory with its start mirrored in monStaleSince, so a
+// restart in the middle of a silence picks it up again instead of announcing
+// it a second time (SBKubric/3ax-ui-monitoring#50, item 8).
 
 // MonStaleNotifier is the Telegram side of STALE. since is the last contact
 // before the silence; silentFor how long it lasted.
@@ -139,9 +146,10 @@ const monStaleHistory = 7 * 24 * time.Hour
 
 var monStale struct {
 	sync.Mutex
-	stale bool
-	since int64 // ms: the last contact before the silence
-	n     MonStaleNotifier
+	loaded bool // monStaleSince has been read since the process started
+	stale  bool
+	since  int64 // ms: the last contact before the silence
+	n      MonStaleNotifier
 	// intervals are the closed stretches of silence, oldest first. They live
 	// in memory only: a restart loses the history, so a summary taken right
 	// after one reports less STALE time than really happened (v1 limitation).
@@ -160,12 +168,38 @@ func SetMonStaleNotifier(n MonStaleNotifier) {
 func (s *MonitoringService) IsMonStale() (bool, int64) {
 	monStale.Lock()
 	defer monStale.Unlock()
+	s.loadStaleLocked()
 	return monStale.stale, monStale.since
+}
+
+// loadStaleLocked restores a silence that was going on when the panel last
+// stopped. The caller holds monStale's lock.
+func (s *MonitoringService) loadStaleLocked() {
+	if monStale.loaded {
+		return
+	}
+	monStale.loaded = true
+	if since, err := s.settingService.GetMonStaleSince(); err == nil && since > 0 && !monStale.stale {
+		monStale.stale, monStale.since = true, since
+	}
+}
+
+// persistStaleSince mirrors the flag's start into the setting, 0 when clear.
+func (s *MonitoringService) persistStaleSince(since int64) {
+	if err := s.settingService.SetMonStaleSince(since); err != nil {
+		logger.Warning("monitoring: could not persist monStaleSince:", err)
+	}
 }
 
 // CheckMonStale is the minute job: declare STALE when the last contact is
 // older than the threshold. Returns true when this call made the transition.
+// With monitoring switched off nothing is declared, and a STALE left from
+// before the switch is dropped silently: nobody is expected to call.
 func (s *MonitoringService) CheckMonStale(now time.Time) bool {
+	if enabled, err := s.settingService.GetMonEnable(); err != nil || !enabled {
+		s.dropMonStale(now)
+		return false
+	}
 	last := s.MonLastContact()
 	if last == 0 {
 		return false
@@ -178,11 +212,13 @@ func (s *MonitoringService) CheckMonStale(now time.Time) bool {
 		return false
 	}
 	monStale.Lock()
+	s.loadStaleLocked()
 	if monStale.stale {
 		monStale.Unlock()
 		return false
 	}
 	monStale.stale, monStale.since = true, last
+	s.persistStaleSince(last)
 	n := monStale.n
 	monStale.Unlock()
 	if n != nil {
@@ -192,20 +228,36 @@ func (s *MonitoringService) CheckMonStale(now time.Time) bool {
 }
 
 // clearMonStale is the other edge, taken by the first authorised request.
-func clearMonStale(now time.Time) {
-	monStale.Lock()
-	if !monStale.stale {
+func (s *MonitoringService) clearMonStale(now time.Time) {
+	if since, ok := s.endMonStale(now); ok {
+		monStale.Lock()
+		n := monStale.n
 		monStale.Unlock()
-		return
+		if n != nil {
+			n.NotifyMonitoringBack(now.Sub(time.UnixMilli(since)))
+		}
+	}
+}
+
+// dropMonStale ends a silence without announcing it (monitoring switched off).
+func (s *MonitoringService) dropMonStale(now time.Time) {
+	s.endMonStale(now)
+}
+
+// endMonStale clears the flag and its setting and records the stretch;
+// reports the silence's start and whether there was one.
+func (s *MonitoringService) endMonStale(now time.Time) (int64, bool) {
+	monStale.Lock()
+	defer monStale.Unlock()
+	s.loadStaleLocked()
+	if !monStale.stale {
+		return 0, false
 	}
 	since := monStale.since
 	monStale.stale, monStale.since = false, 0
+	s.persistStaleSince(0)
 	appendMonStaleIntervalLocked(since, now.UnixMilli())
-	n := monStale.n
-	monStale.Unlock()
-	if n != nil {
-		n.NotifyMonitoringBack(now.Sub(time.UnixMilli(since)))
-	}
+	return since, true
 }
 
 // appendMonStaleIntervalLocked records a finished stretch of silence and
@@ -232,6 +284,7 @@ func appendMonStaleIntervalLocked(from, to int64) {
 func (s *MonitoringService) StaleMsWithin(from, to int64, now time.Time) int64 {
 	monStale.Lock()
 	defer monStale.Unlock()
+	s.loadStaleLocked()
 	var total int64
 	for _, iv := range monStale.intervals {
 		total += overlapMs(iv.from, iv.to, from, to)
@@ -258,6 +311,6 @@ func overlapMs(aFrom, aTo, bFrom, bTo int64) int64 {
 
 func resetMonStaleForTest() {
 	monStale.Lock()
-	monStale.stale, monStale.since, monStale.n, monStale.intervals = false, 0, nil, nil
+	monStale.loaded, monStale.stale, monStale.since, monStale.n, monStale.intervals = false, false, 0, nil, nil
 	monStale.Unlock()
 }
