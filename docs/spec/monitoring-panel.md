@@ -1,6 +1,6 @@
 # Мониторинг inbound'ов: панельная часть
 
-Спека и план реализации панельной стороны мониторинга. Итог карты [Healthcheck-мониторинг inbound'ов: mon-server, mon-clients и контракт с панелью](https://github.com/SBKubric/3ax-ui-proxy/issues/20); решения приняты в её тикетах, здесь они только собраны. Термины по [CONTEXT.md](../../CONTEXT.md): real server, proxy front, host override, mon-server, mon-client, target, path, probe account, tunnel probe, heartbeat, stale. Wire-форма — [Контракт API панели для mon-server](monitoring-contract.md); принципы — [ADR 0002](../adr/0002-additive-upstream-compatibility.md) (аддитивность к upstream) и [ADR 0003](../adr/0003-mon-server-single-source-panel-passive.md) (mon-server — единственный источник, панель — пассивный приёмник). Сторона mon-server и mon-client — [репо 3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring/tree/main/docs/spec).
+Спека и план реализации панельной стороны мониторинга. Итог карты [Healthcheck-мониторинг inbound'ов: mon-server, mon-clients и контракт с панелью](https://github.com/SBKubric/3ax-ui-proxy/issues/20); решения приняты в её тикетах, здесь они только собраны. Термины по [CONTEXT.md](../../CONTEXT.md): real server, proxy front, host override, mon-server, mon-client, target, path, probe account, tunnel probe, heartbeat, stale. Wire-форма — [Контракт API панели для mon-server](monitoring-contract.md); принципы — [ADR 0002](../adr/0002-additive-upstream-compatibility.md) (аддитивность к upstream) и [ADR 0004](../adr/0004-mon-server-single-source-panel-passive.md) (mon-server — единственный источник, панель — пассивный приёмник). Сторона mon-server и mon-client — [репо 3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring/tree/main/docs/spec).
 
 ## 1. Цель и границы
 
@@ -191,7 +191,7 @@
 - `web/controller/monitoring_ui.go` — ручки §7.4.
 - `web/job/monitoring_job.go` — §5.
 - `web/html/monitoring.html`, `web/html/settings/panel/monitoring.html`.
-- `docs/spec/monitoring-contract.md`, `docs/spec/monitoring-panel.md`, `docs/adr/0003-mon-server-single-source-panel-passive.md`.
+- `docs/spec/monitoring-contract.md`, `docs/spec/monitoring-panel.md`, `docs/adr/0004-mon-server-single-source-panel-passive.md`.
 
 ### Вставки в upstream-файлы (по одному месту на файл, если не сказано иначе)
 
