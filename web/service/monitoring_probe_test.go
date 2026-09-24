@@ -332,3 +332,119 @@ func mustClients(t *testing.T, s *InboundService, id int) []model.Client {
 	}
 	return clients
 }
+
+// TestAddInboundRefusesProbeClients: a new inbound cannot bring a probe
+// client of its own (an import, a hand-written settings.clients); probes come
+// from EnsureProbeSet only.
+func TestAddInboundRefusesProbeClients(t *testing.T) {
+	initProbeTestDB(t)
+	s := &InboundService{}
+	newInbound := func(port int, clients ...model.Client) *model.Inbound {
+		settings, _ := json.Marshal(map[string]any{"clients": clients, "decryption": "none"})
+		return &model.Inbound{UserId: 1, Port: port, Protocol: model.VLESS, Tag: "inbound-probe-guard",
+			Remark: "t", Settings: string(settings), Enable: false, StreamSettings: "{}", Sniffing: "{}"}
+	}
+	alice := model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice", Enable: true}
+	for _, email := range []string{"probe-1", "Probe-7", "probe-awg"} {
+		probe := model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000002", Email: email, Enable: true}
+		if _, _, err := s.AddInbound(newInbound(20001, alice, probe)); err == nil || !strings.Contains(err.Error(), "monitoring probes") {
+			t.Errorf("AddInbound with %s: err = %v, want the probe guard", email, err)
+		}
+	}
+	var n int64
+	database.GetDB().Model(&model.Inbound{}).Count(&n)
+	if n != 0 {
+		t.Errorf("a refused inbound was stored: %d inbounds", n)
+	}
+	if _, _, err := s.AddInbound(newInbound(20002, alice)); err != nil {
+		t.Fatalf("AddInbound(alice): %v", err)
+	}
+}
+
+// TestUpdateInboundRefusesNewProbeClients: editing an inbound keeps the probe
+// it already has and may drop it (the next ensure brings it back), but cannot
+// add a probe email it did not have — including a case change of its own.
+// The refusals come before the edit reaches the database or xray.
+func TestUpdateInboundRefusesNewProbeClients(t *testing.T) {
+	initProbeTestDB(t)
+	s := &InboundService{}
+	alice := model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice", Enable: false}
+	probe := model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000002", Email: "probe-1", Enable: false}
+	vlessInbound(t, 1, alice, probe)
+	edit := func(clients ...model.Client) *model.Inbound {
+		ib := mustInbound(t, s, 1)
+		settings, _ := json.Marshal(map[string]any{"clients": clients, "decryption": "none"})
+		ib.Settings = string(settings)
+		ib.Remark = "edited"
+		return ib
+	}
+
+	stray := model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000003", Email: "probe-2", Enable: false}
+	if _, _, err := s.UpdateInbound(edit(alice, probe, stray)); err == nil || !strings.Contains(err.Error(), "monitoring probes") {
+		t.Errorf("UpdateInbound adding probe-2: err = %v, want the probe guard", err)
+	}
+	recased := probe
+	recased.Email = "Probe-1"
+	if _, _, err := s.UpdateInbound(edit(alice, recased)); err == nil || !strings.Contains(err.Error(), "monitoring probes") {
+		t.Errorf("UpdateInbound renaming probe-1 to Probe-1: err = %v, want the probe guard", err)
+	}
+	aliceAsProbe := alice
+	aliceAsProbe.Email = "probe-1000"
+	if _, _, err := s.UpdateInbound(edit(aliceAsProbe, probe)); err == nil || !strings.Contains(err.Error(), "monitoring probes") {
+		t.Errorf("UpdateInbound renaming a user into a probe: err = %v, want the probe guard", err)
+	}
+	if got := mustInbound(t, s, 1); got.Remark == "edited" {
+		t.Error("a refused edit was stored")
+	}
+
+	// The existing probe passes the guard of an ordinary edit, and may be
+	// dropped. (The rest of UpdateInbound reaches for the xray API, so the
+	// passing cases are asserted on the guard itself.)
+	old := mustInbound(t, s, 1)
+	if err := s.rejectAddedProbeClients(old, edit(alice, probe)); err != nil {
+		t.Errorf("guard on an edit keeping probe-1: %v", err)
+	}
+	if err := s.rejectAddedProbeClients(old, edit(probe, alice)); err != nil {
+		t.Errorf("guard on an edit reordering clients: %v", err)
+	}
+	if err := s.rejectAddedProbeClients(old, edit(alice)); err != nil {
+		t.Errorf("guard on an edit dropping probe-1: %v", err)
+	}
+}
+
+// TestTunnelResetMovesTheRevision: resetting the AmneziaWG server to defaults
+// drops its inbound and probe client, and the monitoring revision moves, so
+// mon-server rereads /probe/configs (the AWG target goes PAUSED) and the next
+// ensure brings probe-awg back.
+func TestTunnelResetMovesTheRevision(t *testing.T) {
+	m := newMonitoringTestService(t)
+	db := database.GetDB()
+	if err := db.Create(&model.Inbound{Id: 7, Port: 51820, Protocol: model.AmneziaWG, Tag: "awg", Remark: "AmneziaWG",
+		Settings: "{}", StreamSettings: "{}", Sniffing: "{}", Enable: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&AwgService{}).GetServer(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.EnsureProbeSet(nil); err != nil {
+		t.Fatal(err)
+	}
+	before, err := m.Revision()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&AwgService{}).ResetToDefaults(); err != nil {
+		t.Fatalf("ResetToDefaults: %v", err)
+	}
+	after, err := m.Revision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after == before {
+		t.Errorf("revision did not move on a tunnel reset: %s", after)
+	}
+	if clients, _ := (&AwgService{}).GetClients(); len(clients) != 0 {
+		t.Errorf("awg clients after reset: %+v", clients)
+	}
+}
