@@ -618,10 +618,13 @@ func generateAwg2() {
 		return
 	}
 	o := tunnel.GenerateObfuscation20("default")
+	prevS4 := server.S4
 	server.Jc, server.Jmin, server.Jmax = o.Jc, o.Jmin, o.Jmax
 	server.S1, server.S2, server.S3, server.S4 = o.S1, o.S2, o.S3, o.S4
 	server.H1, server.H2, server.H3, server.H4 = o.H1, o.H2, o.H3, o.H4
 	server.I1 = o.I1
+	// install.sh wrote the legacy 1420, which the new S4 padding overflows.
+	tunnel.FollowServerMTU(tunnel.AWG, &server, prevS4)
 	if err := db.Save(&server).Error; err != nil {
 		fmt.Println("Failed to save AmneziaWG 2.0 parameters:", err)
 		return

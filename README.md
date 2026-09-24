@@ -153,6 +153,12 @@ The AWG settings page lets you configure packet obfuscation parameters:
 
 These parameters are automatically written into each client's config — no manual configuration needed.
 
+**MTU and S4.** `S4` pads every data packet, so it comes out of the MTU. The panel's default is `1420 − S4` — a full-size packet then fits a 1500-byte link even when the client reaches the server over IPv6 (IPv6 40 + UDP 8 + header 16 + auth tag 16 + S4). No other parameter grows data packets: S1–S3 pad handshake and cookie messages, H1–H4 only change a header value, junk and I-packets are separate datagrams, and the 3.x ContentPaddingAddition/RandomTrailers never pad past the largest packet already sent. The same MTU goes into every client config, probe peers included.
+
+- A server still on the old default 1420 (or with no MTU) while S4 is set is lowered to `1420 − S4` when the panel starts, and the running interface picks it up without a restart. Clients need to re-import their config for their own direction; the server side is fixed at once.
+- While the MTU is the default, it follows S4 when you **Generate** a new set.
+- An MTU of your own is kept, but one above `1440 − S4` (the most a full-size packet can carry over IPv4) is refused on save: every full-size packet would be lost.
+
 ### 6. Native IPv6 support without NAT
 
 AWG / native WireGuard clients can be assigned a **native public IPv6 address** from the server — without NAT66. This works via NDP proxy (ndppd or a built-in fallback using `ip -6 neigh add proxy`). Clients receive a real IPv6 address, which matters for services that require it.

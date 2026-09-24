@@ -1011,7 +1011,7 @@
 "interfaceNameDesc" = "Local WireGuard interface name on the server."
 "listenPort" = "Listen Port"
 "listenPortDesc" = "UDP port used by the server to accept client connections."
-"mtuDesc" = "Maximum packet size inside the tunnel. The default value is usually fine."
+"mtuDesc" = "Maximum packet size inside the tunnel. The default, 1420 − S4, leaves room for the S4 padding and follows it; values above 1440 − S4 are refused."
 "serverPublicKey" = "Server Public Key"
 "serverPublicKeyDesc" = "Public server key used in generated client configurations."
 "endpoint" = "Endpoint (Public IP/Domain)"

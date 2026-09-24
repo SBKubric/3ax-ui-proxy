@@ -233,7 +233,7 @@ GW=$(ip route | awk "/default/ {print \$3; exit}")
 awg-quick strip /etc/amnezia/amneziawg/awg0.conf > /tmp/awg0.conf
 amneziawg-go awg0 2>/dev/null || true          # при модуле ядра на хосте интерфейс поднимет ядро
 awg setconf awg0 /tmp/awg0.conf
-ip addr add 10.66.66.2/32 dev awg0; ip link set mtu 1420 up dev awg0
+ip addr add 10.66.66.2/32 dev awg0; ip link set mtu $(awk '/^MTU/ {print $3}' /etc/amnezia/amneziawg/awg0.conf) up dev awg0   # MTU из конфига: 1420 − S4
 ip route add <edge-ip>/32 via $GW dev eth0     # ОБЯЗАТЕЛЬНО до /1-маршрутов, иначе туннель заворачивается сам в себя
 ip route add 0.0.0.0/1 dev awg0; ip route add 128.0.0.0/1 dev awg0
 echo "nameserver 1.1.1.1" > /etc/resolv.conf; sleep 3
