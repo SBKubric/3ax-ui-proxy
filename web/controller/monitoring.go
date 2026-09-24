@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,7 +72,7 @@ func (a *MonitoringController) checkMonAuth(c *gin.Context) {
 		return
 	}
 	a.monitoringService.TouchMonLastContact(time.Now())
-	c.Header("X-Mon-Contract", "1")
+	c.Header("X-Mon-Contract", strconv.Itoa(service.MonContractVersion))
 	c.Next()
 }
 

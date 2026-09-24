@@ -49,9 +49,12 @@ func TestNewProbeClientsCarryTheSpecAttributes(t *testing.T) {
 		c.Reset != 0 || c.TgID != 0 || c.SubID != "sub0123456789abc" || c.Comment != ProbeComment || c.Flow != "xtls-rprx-vision" {
 		t.Errorf("xray probe client: %+v", c)
 	}
-	tc := NewProbeTunnelClient()
-	if tc.Email != "probe-awg" || tc.Name != "probe-awg" || !tc.Enable || tc.Comment != ProbeComment {
+	tc := NewProbeTunnelClient("ams-1", "direct")
+	if tc.Email != "probe-awg-ams-1-direct" || tc.Name != tc.Email || !tc.Enable || tc.Comment != ProbeComment {
 		t.Errorf("tunnel probe client: %+v", tc)
+	}
+	if got := ProbeTunnelEmail("msk_2", "edge:ams-front"); got != "probe-awg-msk_2-edge-ams-front" {
+		t.Errorf("ProbeTunnelEmail with a hop path = %q", got)
 	}
 }
 
@@ -415,7 +418,7 @@ func TestUpdateInboundRefusesNewProbeClients(t *testing.T) {
 // TestTunnelResetMovesTheRevision: resetting the AmneziaWG server to defaults
 // drops its inbound and probe client, and the monitoring revision moves, so
 // mon-server rereads /probe/configs (the AWG target goes PAUSED) and the next
-// ensure brings probe-awg back.
+// ensure brings the probe peers back.
 func TestTunnelResetMovesTheRevision(t *testing.T) {
 	m := newMonitoringTestService(t)
 	db := database.GetDB()
@@ -426,7 +429,7 @@ func TestTunnelResetMovesTheRevision(t *testing.T) {
 	if _, err := (&AwgService{}).GetServer(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.EnsureProbeSet(nil); err != nil {
+	if _, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1"}}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := m.Revision()

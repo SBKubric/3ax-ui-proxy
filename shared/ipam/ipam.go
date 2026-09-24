@@ -2,11 +2,16 @@ package ipam
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"strings"
 )
+
+// ErrPoolExhausted is wrapped by AllocateIPv4 and AllocateIPv6 when every
+// address of the pool is taken, so a caller can tell a full pool from a bad one.
+var ErrPoolExhausted = errors.New("pool exhausted")
 
 // AllocateIPv4 finds the next free IPv4 address in the given CIDR pool.
 // serverAddr is the server's own address (to skip), usedIPs are already allocated addresses.
@@ -44,7 +49,7 @@ func AllocateIPv4(pool string, serverAddr string, usedIPs []string) (string, err
 		}
 	}
 
-	return "", fmt.Errorf("no free IPv4 addresses in pool %s", pool)
+	return "", fmt.Errorf("no free IPv4 addresses in pool %s (%w)", pool, ErrPoolExhausted)
 }
 
 // AllocateIPv6 finds the next free IPv6 address in the given CIDR pool.
@@ -97,7 +102,7 @@ func AllocateIPv6(pool string, serverAddr string, usedIPs []string) (string, err
 		}
 	}
 
-	return "", fmt.Errorf("no free IPv6 addresses in pool %s", pool)
+	return "", fmt.Errorf("no free IPv6 addresses in pool %s (%w)", pool, ErrPoolExhausted)
 }
 
 // StripMask removes the CIDR mask from an address string.
