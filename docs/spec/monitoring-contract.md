@@ -2,7 +2,7 @@
 
 Статус: **принят** — итог карты [Healthcheck-мониторинг inbound'ов: mon-server, mon-clients и контракт с панелью](https://github.com/SBKubric/3ax-ui-proxy/issues/20); черновик принят в тикете [Контракт API панели для mon-server](https://github.com/SBKubric/3ax-ui-proxy/issues/21), собран в [Собрать спеку](https://github.com/SBKubric/3ax-ui-proxy/issues/29). Термины — по [CONTEXT.md](../../CONTEXT.md) (real server, proxy front, host override, mon-server, mon-client, target, path, probe account, heartbeat, stale). Панельная сторона контракта — [monitoring-panel.md](monitoring-panel.md); сторона mon-server — [спека mon-server](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-server.md) в репо `3ax-ui-monitoring`. Принцип «mon-server — единственный источник, панель — пассивный приёмник» зафиксирован в [ADR 0004](../adr/0004-mon-server-single-source-panel-passive.md).
 
-Правки 2026-09-24 по карте [Мониторинг: исполнение](https://github.com/SBKubric/3ax-ui-monitoring/issues/49), совместимые (версия контракта остаётся `1`): поэлементная валидация батчей, ответ с `rejected`, терпимость панели к неизвестным полям, грамматика `path`, пустой `from` у первого перехода, семантика `handshakeMs`, без `503 xray_unavailable` — [#50](https://github.com/SBKubric/3ax-ui-monitoring/issues/50); причины `PAUSED` — [#51](https://github.com/SBKubric/3ax-ui-monitoring/issues/51), [#53](https://github.com/SBKubric/3ax-ui-monitoring/issues/53); адрес probe-ссылок и `?hop=` до per-hop — [#54](https://github.com/SBKubric/3ax-ui-monitoring/issues/54).
+Правки 2026-09-24 по карте [Мониторинг: исполнение](https://github.com/SBKubric/3ax-ui-monitoring/issues/49), совместимые (версия контракта остаётся `1`): поэлементная валидация батчей, ответ с `rejected`, терпимость панели к неизвестным полям, грамматика `path`, пустой `from` у первого перехода, семантика `handshakeMs`, без `503 xray_unavailable` — [#50](https://github.com/SBKubric/3ax-ui-monitoring/issues/50); причины `PAUSED` — [#51](https://github.com/SBKubric/3ax-ui-monitoring/issues/51), [#53](https://github.com/SBKubric/3ax-ui-monitoring/issues/53); адрес probe-ссылок и `?hop=` до per-hop — [#54](https://github.com/SBKubric/3ax-ui-monitoring/issues/54); ревизия покрывает весь probe-материал (streamSettings, ключи, параметры AWG, набор probe-пиров), §4.2 — [3ax-ui-proxy#117](https://github.com/SBKubric/3ax-ui-proxy/issues/117).
 
 Контракт описывает **только** ручки, которые панель (real server) открывает mon-server. Протокол mon-server ↔ mon-client — [mon-protocol.md](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-protocol.md) в репо `3ax-ui-monitoring`. Панель наружу не звонит: все запросы инициирует mon-server.
 
@@ -75,15 +75,28 @@
 
 ### 4.2 Ревизия
 
-`revision` — первые 16 hex-символов SHA-256 от канонического JSON (ключи отсортированы, без пробелов) объекта:
+`revision` — хэш **всего, что входит в probe-материал** (`/probe/configs`): первые 16 hex-символов SHA-256 от канонического JSON (ключи объектов отсортированы на всех уровнях, без пробелов) объекта:
 
 ```json
-{"override":{"enabled":true,"host":"front.example.net"},
- "inbounds":[{"kind":"xray","inboundId":12,"protocol":"vless","port":443,"enable":true}, …],
- "probeSubId":"k3j9d8s7f6g5h4j3"}
+{"hiddifyCompat": false,
+ "inbounds": [
+   {"kind": "awg", "inboundId": 0, "protocol": "awg", "port": 51820, "enable": true,
+    "peers": [{"name": "probe-awg", "conf": "[Interface]\nPrivateKey = …\n[Peer]\nEndpoint = probe.invalid:51820\n…"}]},
+   {"kind": "xray", "inboundId": 12, "protocol": "vless", "port": 443, "enable": true, "listen": "",
+    "stream": {"network": "tcp", "security": "reality", "realitySettings": {"serverNames": ["…"], "target": "…", "privateKey": "…", "shortIds": ["…"], "settings": {"publicKey": "…", "fingerprint": "chrome"}}},
+    "settings": {"clients": [{"email": "probe-12", "id": "<uuid>", "flow": "xtls-rprx-vision", …}], "decryption": "none"}}
+ ],
+ "override": {"enabled": true, "host": "front.example.net"},
+ "probeSubId": "k3j9d8s7f6g5h4j3"}
 ```
 
-`inbounds` отсортированы по `(kind, inboundId)`; `remark`/`tag` в хэш не входят (переименование не меняет targets). Ревизия детерминирована между рестартами панели; счётчика в настройках нет. mon-server сравнивает строку с последней виденной и при отличии перечитывает `/probe/configs` и пересобирает targets.
+- `inbounds` — те же inbound'ы, что в `/state`, отсортированы по `(kind, inboundId)`; поля target'а `kind, inboundId, protocol, port, enable` плюс материал:
+  - xray: `listen` (адрес path `direct`, если публичный); `stream` — `streamSettings` целиком, кроме `externalProxy` (в probe-ссылках он не участвует, §4.4): транспорт, TLS/Reality, `serverNames`/`target`/ключи/`shortIds`/SNI/fingerprint; `settings` — настройки протокола (метод shadowsocks, `decryption`, `fallbacks`…), где `clients` сокращён до probe-клиента этого inbound'а (`probe-<inboundId>` со всеми его полями). Добавление и правка пользователей ревизию не двигают. Сохранённые JSON-колонки разбираются и сериализуются заново, числа — в исходной записи.
+  - AWG: `peers` — probe-пиры по имени (email), отсортированы по `name`; `conf` — текст `.conf`, как его отдаёт `/probe/configs`, но с хостом `Endpoint`, заменённым на `probe.invalid` (хост — не материал панели: для `proxy` это `override.host`, для `direct` — `host` из запроса). В `conf` входят публичные параметры AWG-сервера (публичный ключ, порт, MTU, DNS, обфускация) и ключи/адреса пира, так что ротация любого из них двигает ревизию; набор пиров — тоже.
+- `hiddifyCompat` — настройка панели `xrayHiddifyCompat`, меняющая вид xhttp/grpc-ссылок.
+- `remark`/`tag` в хэш не входят (переименование не меняет targets).
+
+Ревизия детерминирована между рестартами панели: в хэше нет времени и нет зависимости от порядка map или порядка ключей в БД; счётчика в настройках нет. Для mon-server строка непрозрачна: он сравнивает её с последней виденной и при отличии перечитывает `/probe/configs` и пересобирает targets. Ревизия может сдвинуться и без видимой смены targets (ротация ключа, смена SNI) — это и есть сигнал перечитать материал.
 
 ### 4.3 `POST /probe/ensure`
 

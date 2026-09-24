@@ -265,42 +265,142 @@ func (s *MonitoringService) override() MonOverride {
 	return MonOverride{Enabled: true, Host: host}
 }
 
-// revision is the first 16 hex characters of SHA-256 over the canonical JSON
-// of {override, inbounds[{kind,inboundId,protocol,port,enable}], probeSubId}
-// (monitoring-contract.md §4.2). Keys sorted, no whitespace, inbounds already
-// sorted by (kind, inboundId); tag and remark are left out so a rename does
-// not rebuild targets.
-func revision(override MonOverride, inbounds []MonInbound, probeSubId string) string {
-	type hashedInbound struct {
-		Enable    bool   `json:"enable"`
-		InboundId int    `json:"inboundId"`
-		Kind      string `json:"kind"`
-		Port      int    `json:"port"`
-		Protocol  string `json:"protocol"`
-	}
-	hashed := make([]hashedInbound, 0, len(inbounds))
-	for _, ib := range inbounds {
-		hashed = append(hashed, hashedInbound{ib.Enable, ib.InboundId, ib.Kind, ib.Port, ib.Protocol})
-	}
-	// encoding/json writes struct fields in declaration order and map keys
-	// sorted; both are alphabetical here, which is the canonical form.
-	canonical, _ := json.Marshal(map[string]any{
-		"inbounds":   hashed,
-		"override":   map[string]any{"enabled": override.Enabled, "host": override.Host},
-		"probeSubId": probeSubId,
-	})
-	sum := sha256.Sum256(canonical)
-	return hex.EncodeToString(sum[:])[:16]
-}
+// revisionEndpointHost stands in for the endpoint host when the revision
+// renders a tunnel probe .conf. The host is not probe material the panel owns:
+// path "proxy" takes the override host (hashed on its own) and path "direct"
+// the host mon-server passes, so only the port and the rest of the .conf count.
+const revisionEndpointHost = "probe.invalid"
 
-// Revision is the current revision string, as GET /state reports it.
+// Revision is the first 16 hex characters of SHA-256 over the canonical JSON
+// of everything that goes into the probe material (monitoring-contract.md
+// §4.2): the override, the probe subId, the link setting that shapes xray
+// links, and per inbound, sorted by (kind, inboundId), its target fields plus
+// its probe material — for an xray inbound listen, streamSettings and settings
+// with clients cut down to its probe client; for the AmneziaWG server the
+// probe peers, each as its rendered .conf. Tag and remark stay out so a
+// rename does not rebuild targets. Nothing in it depends on time or on map
+// order, so it is the same across restarts; there is no counter.
 func (s *MonitoringService) Revision() (string, error) {
-	inbounds, err := s.Inbounds()
+	inbounds, err := s.inboundService.GetAllInbounds()
 	if err != nil {
 		return "", err
 	}
+	entries := make([]map[string]any, 0, len(inbounds))
+	for _, ib := range inbounds {
+		switch {
+		case monXrayProtocols[ib.Protocol]:
+			entries = append(entries, map[string]any{
+				"kind": model.MonInboundKindXray, "inboundId": ib.Id, "protocol": string(ib.Protocol),
+				"port": ib.LinkPort(), "enable": ib.Enable,
+				"listen":   ib.Listen,
+				"stream":   probeStream(ib.StreamSettings),
+				"settings": probeSettings(ib),
+			})
+		case ib.Protocol == model.AmneziaWG:
+			peers, err := s.tunnelProbeMaterial()
+			if err != nil {
+				return "", err
+			}
+			entries = append(entries, map[string]any{
+				"kind": model.MonInboundKindAwg, "inboundId": 0, "protocol": model.MonInboundKindAwg,
+				"port": ib.LinkPort(), "enable": ib.Enable,
+				"peers": peers,
+			})
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		ki, kj := entries[i]["kind"].(string), entries[j]["kind"].(string)
+		if ki != kj {
+			return ki < kj
+		}
+		return entries[i]["inboundId"].(int) < entries[j]["inboundId"].(int)
+	})
 	subId, _ := s.settingService.GetMonProbeSubId()
-	return revision(s.override(), inbounds, subId), nil
+	hiddify, _ := s.settingService.GetXrayHiddifyCompat()
+	override := s.override()
+	// encoding/json writes map keys sorted and no whitespace: the canonical
+	// form. Parsed settings and streams are maps too, so their key order in
+	// the database does not matter either.
+	canonical, err := json.Marshal(map[string]any{
+		"hiddifyCompat": hiddify,
+		"inbounds":      entries,
+		"override":      map[string]any{"enabled": override.Enabled, "host": override.Host},
+		"probeSubId":    subId,
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])[:16], nil
+}
+
+// canonicalJSON parses a stored JSON column for the revision. Numbers keep
+// their literal text; a column that does not parse is hashed as the string it
+// is.
+func canonicalJSON(raw string) any {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return raw
+	}
+	return v
+}
+
+// probeStream is an xray inbound's streamSettings as the revision sees them:
+// all of it but externalProxy, which probe links drop (§4.4).
+func probeStream(raw string) any {
+	stream := canonicalJSON(raw)
+	if m, ok := stream.(map[string]any); ok {
+		delete(m, "externalProxy")
+	}
+	return stream
+}
+
+// probeSettings is an xray inbound's settings as the revision sees them: every
+// protocol-level key (a shadowsocks method, vless decryption, fallbacks...)
+// but, of the clients, only the inbound's probe, so adding or editing a user
+// does not move the revision.
+func probeSettings(ib *model.Inbound) any {
+	settings, ok := canonicalJSON(ib.Settings).(map[string]any)
+	if !ok {
+		return ib.Settings
+	}
+	clients, _ := settings["clients"].([]any)
+	probes := []any{}
+	for _, c := range clients {
+		client, _ := c.(map[string]any)
+		if email, _ := client["email"].(string); strings.EqualFold(email, ProbeXrayEmail(ib.Id)) {
+			probes = append(probes, client)
+		}
+	}
+	settings["clients"] = probes
+	return settings
+}
+
+// tunnelProbeMaterial lists the AmneziaWG probe peers for the revision, by
+// name, each with its .conf rendered as GET /probe/configs renders it but with
+// revisionEndpointHost for the host. The .conf carries the server's public
+// parameters (key, port, MTU, DNS, obfuscation) and the peer's own keys and
+// addresses, so a change to any of them moves the revision.
+func (s *MonitoringService) tunnelProbeMaterial() ([]map[string]any, error) {
+	clients, err := s.awgService.GetClients()
+	if err != nil {
+		return nil, err
+	}
+	peers := []map[string]any{}
+	for i := range clients {
+		if !IsProbeAccount(clients[i].Email) {
+			continue
+		}
+		conf, err := s.tunnelProbeConf(&clients[i], revisionEndpointHost, false)
+		if err != nil {
+			return nil, err
+		}
+		peers = append(peers, map[string]any{"name": clients[i].Email, "conf": conf})
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i]["name"].(string) < peers[j]["name"].(string) })
+	return peers, nil
 }
 
 // State is GET /state: the sanitised inbounds, the override, the probe set
@@ -310,7 +410,10 @@ func (s *MonitoringService) State() (*MonState, error) {
 	if err != nil {
 		return nil, err
 	}
-	override := s.override()
+	rev, err := s.Revision()
+	if err != nil {
+		return nil, err
+	}
 	subId, _ := s.settingService.GetMonProbeSubId()
 	lastEnsured, _ := s.settingService.GetMonProbeLastEnsured()
 	stale, err := s.settingService.GetMonStaleMinutes()
@@ -321,8 +424,8 @@ func (s *MonitoringService) State() (*MonState, error) {
 		Contract:     MonContractVersion,
 		PanelVersion: config.GetVersion(),
 		ServerTime:   time.Now().UnixMilli(),
-		Revision:     revision(override, inbounds, subId),
-		Override:     override,
+		Revision:     rev,
+		Override:     s.override(),
 		Probe:        MonProbe{LastEnsured: lastEnsured},
 		Inbounds:     inbounds,
 	}
