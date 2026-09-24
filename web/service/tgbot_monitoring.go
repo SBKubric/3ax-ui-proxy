@@ -121,7 +121,8 @@ func (t *Tgbot) monitoringSend(msg string) {
 
 // monitoringDigest is the Monitoring block of SendReport (§6): the last 24
 // hours of every enabled inbound, the worst target, the mon-clients that are
-// offline and how long monitoring itself was silent. Empty — so SendReport
+// offline, those still awaiting their first heartbeat, and how long
+// monitoring itself was silent. Empty — so SendReport
 // sends nothing — when monitoring is off or the summary cannot be built.
 func (t *Tgbot) monitoringDigest() string {
 	enabled, err := t.settingService.GetMonEnable()
@@ -165,6 +166,13 @@ func (t *Tgbot) monitoringDigest() string {
 			names = append(names, monClientLabel(monFirstNotEmpty(c.Name, c.Id), c.Region))
 		}
 		msg += t.I18nBot("tgbot.messages.monitoring.digestOffline", "Clients=="+strings.Join(names, ", "))
+	}
+	if len(summary.AwaitingClients) > 0 {
+		names := make([]string, 0, len(summary.AwaitingClients))
+		for _, c := range summary.AwaitingClients {
+			names = append(names, monClientLabel(monFirstNotEmpty(c.Name, c.Id), c.Region))
+		}
+		msg += t.I18nBot("tgbot.messages.monitoring.digestAwaiting", "Clients=="+strings.Join(names, ", "))
 	}
 	if summary.StaleMs > 0 || summary.StaleNow {
 		minutes := int64(math.Round(float64(summary.StaleMs) / 60000))

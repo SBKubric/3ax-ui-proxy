@@ -24,6 +24,9 @@ func newMaintenanceTestService(t *testing.T) *MonitoringService {
 	resetMonContactForTest()
 	resetMonStaleForTest()
 	t.Cleanup(func() { resetMonContactForTest(); resetMonStaleForTest() })
+	if err := (&SettingService{}).SetMonEnable(true); err != nil {
+		t.Fatal(err)
+	}
 	return m
 }
 
@@ -75,6 +78,102 @@ func TestStaleEdges(t *testing.T) {
 	m.TouchMonLastContact(t0.Add(3 * time.Hour))
 	if !m.CheckMonStale(t0.Add(3*time.Hour + 6*time.Minute)) {
 		t.Error("a 5-minute threshold was not honoured")
+	}
+}
+
+// TestStaleSurvivesRestart: the flag and its start are kept in monStaleSince,
+// so a restart in the middle of a silence neither forgets it nor announces it
+// a second time; the contact that ends it clears the setting and reports the
+// whole silence.
+func TestStaleSurvivesRestart(t *testing.T) {
+	m := newMaintenanceTestService(t)
+	rec := &staleRecorder{}
+	SetMonStaleNotifier(rec)
+	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+
+	m.TouchMonLastContact(t0)
+	if !m.CheckMonStale(t0.Add(20 * time.Minute)) {
+		t.Fatal("STALE not declared past the threshold")
+	}
+	if since, err := (&SettingService{}).GetMonStaleSince(); err != nil || since != t0.UnixMilli() {
+		t.Errorf("monStaleSince = %d, %v; want %d", since, err, t0.UnixMilli())
+	}
+
+	// Restart: every in-memory cache is gone, the settings stay.
+	resetMonContactForTest()
+	resetMonStaleForTest()
+	SetMonStaleNotifier(rec)
+	if stale, since := m.IsMonStale(); !stale || since != t0.UnixMilli() {
+		t.Errorf("after a restart IsMonStale = %v, %d; want true, %d", stale, since, t0.UnixMilli())
+	}
+	if m.CheckMonStale(t0.Add(40 * time.Minute)) {
+		t.Error("STALE announced again after a restart")
+	}
+	if got := m.StaleMsWithin(t0.UnixMilli(), t0.Add(time.Hour).UnixMilli(), t0.Add(40*time.Minute)); got != 40*60000 {
+		t.Errorf("open stretch after a restart = %d ms, want %d", got, 40*60000)
+	}
+	if len(rec.stale) != 1 {
+		t.Errorf("silent announced %d times, want once", len(rec.stale))
+	}
+
+	m.TouchMonLastContact(t0.Add(50 * time.Minute))
+	if stale, _ := m.IsMonStale(); stale {
+		t.Error("a contact after the restart did not clear STALE")
+	}
+	if len(rec.back) != 1 || rec.back[0] != 50*time.Minute {
+		t.Errorf("back notification = %v, want one of 50m", rec.back)
+	}
+	if since, _ := (&SettingService{}).GetMonStaleSince(); since != 0 {
+		t.Errorf("monStaleSince = %d after the silence ended, want 0", since)
+	}
+	resetMonStaleForTest()
+	if stale, _ := m.IsMonStale(); stale {
+		t.Error("a finished silence came back after another restart")
+	}
+}
+
+// TestStaleNotDeclaredWhileMonitoringIsOff: with monEnable=false nobody is
+// expected to call, so silence is not news — STALE is neither declared nor
+// sent, and one left over from before the switch is dropped without a word.
+func TestStaleNotDeclaredWhileMonitoringIsOff(t *testing.T) {
+	m := newMaintenanceTestService(t)
+	rec := &staleRecorder{}
+	SetMonStaleNotifier(rec)
+	settings := &SettingService{}
+	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+
+	m.TouchMonLastContact(t0)
+	if err := settings.SetMonEnable(false); err != nil {
+		t.Fatal(err)
+	}
+	if m.CheckMonStale(t0.Add(time.Hour)) {
+		t.Error("STALE declared with monitoring off")
+	}
+	if stale, _ := m.IsMonStale(); stale || len(rec.stale) != 0 {
+		t.Errorf("stale = %v, notifications %v; want neither", stale, rec.stale)
+	}
+
+	// Declared while on, then monitoring is switched off.
+	if err := settings.SetMonEnable(true); err != nil {
+		t.Fatal(err)
+	}
+	if !m.CheckMonStale(t0.Add(2 * time.Hour)) {
+		t.Fatal("STALE not declared with monitoring on")
+	}
+	if err := settings.SetMonEnable(false); err != nil {
+		t.Fatal(err)
+	}
+	if m.CheckMonStale(t0.Add(3 * time.Hour)) {
+		t.Error("CheckMonStale reported a transition with monitoring off")
+	}
+	if stale, _ := m.IsMonStale(); stale {
+		t.Error("STALE kept after monitoring was switched off")
+	}
+	if since, _ := settings.GetMonStaleSince(); since != 0 {
+		t.Errorf("monStaleSince = %d with monitoring off, want 0", since)
+	}
+	if len(rec.stale) != 1 || len(rec.back) != 0 {
+		t.Errorf("notifications stale=%v back=%v; want the one silent and no back", rec.stale, rec.back)
 	}
 }
 

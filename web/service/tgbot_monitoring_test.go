@@ -267,6 +267,7 @@ func TestMonitoringDigest(t *testing.T) {
 	monRegister(t,
 		MonClient{Id: "ams-1", Name: "Amsterdam", Region: "eu-west", State: "ONLINE"},
 		MonClient{Id: "fra-1", Name: "Frankfurt", Region: "eu-central", State: "OFFLINE"},
+		MonClient{Id: "new-1", Name: "Newcomer", Region: "pl", State: "NEVER"},
 	)
 
 	// A minute inside the window, so the sliding start of Summary cannot clip
@@ -298,7 +299,8 @@ func TestMonitoringDigest(t *testing.T) {
 		"· 1 incidents",
 		"Reality spare: no data",
 		"Worst: Reality main via direct · Amsterdam (eu-west) · 90.0 % (cov ",
-		"mon-clients offline: Frankfurt (eu-central)",
+		"mon-clients offline: Frankfurt (eu-central)\r\n",
+		"mon-clients awaiting first heartbeat: Newcomer (pl)",
 		"Monitoring silent: 12 min",
 	} {
 		if !strings.Contains(digest, want) {

@@ -20,7 +20,12 @@ import (
 //     never arrived counts neither as success nor as failure, it only lowers
 //     coverage.
 //   - coverage = buckets received / buckets expected, where expected is one
-//     fine bucket per mon-client per bucket width in the window.
+//     fine bucket per bucket width in the window for every mon-client that is
+//     ONLINE now and probes that (inbound, path) — it has a target there or
+//     sent buckets for it — and received counts the buckets of those same
+//     mon-clients. An OFFLINE mon-client owes nothing, and one that has never
+//     sent a heartbeat (NEVER) is listed apart rather than as offline
+//     (SBKubric/3ax-ui-monitoring#50, item 7).
 //   - an incident is a target event with to_state = DOWN inside the window.
 
 // monSummaryWindowCurrent is the longest window still served from
@@ -31,8 +36,8 @@ const monSummaryWindowCurrent = 24 * time.Hour
 // arrived before its uptime is trusted enough to be called the worst one.
 const monWorstMinCoverage = 0.5
 
-// MonSummaryPath is one path (direct or proxy) of one inbound, folded over
-// every mon-client. Uptime is nil when no probe result landed in the window
+// MonSummaryPath is one path (direct, proxy or a hop of the chain) of one
+// inbound, folded over every mon-client. Uptime is nil when no probe result landed in the window
 // at all, which is not the same as 0 % uptime.
 type MonSummaryPath struct {
 	Path     string   `json:"path"`
@@ -57,9 +62,9 @@ type MonSummaryTarget struct {
 	Coverage      float64 `json:"coverage"`
 }
 
-// MonSummaryInbound is one enabled inbound. Paths holds direct before proxy
-// and only the ones with data; an inbound probed by nobody still appears,
-// with no paths at all.
+// MonSummaryInbound is one enabled inbound. Paths holds direct, then proxy,
+// then hop paths (edge:<name>, inner:<name>) by name, and only the ones with
+// data; an inbound probed by nobody still appears, with no paths at all.
 type MonSummaryInbound struct {
 	Kind      string           `json:"kind"`
 	InboundId int              `json:"inboundId"`
@@ -70,17 +75,24 @@ type MonSummaryInbound struct {
 }
 
 // MonSummary is the whole window: per-inbound availability, the worst target,
-// the mon-clients that are not ONLINE right now, and how long the panel
-// considered monitoring silent.
+// the mon-clients that are offline right now, those still waiting for their
+// first heartbeat, and how long the panel considered monitoring silent.
 type MonSummary struct {
-	From           int64               `json:"from"`
-	To             int64               `json:"to"`
-	Inbounds       []MonSummaryInbound `json:"inbounds"`
-	Worst          *MonSummaryTarget   `json:"worst"`
-	OfflineClients []MonClient         `json:"offlineClients"`
-	StaleMs        int64               `json:"staleMs"`
-	StaleNow       bool                `json:"staleNow"`
+	From            int64               `json:"from"`
+	To              int64               `json:"to"`
+	Inbounds        []MonSummaryInbound `json:"inbounds"`
+	Worst           *MonSummaryTarget   `json:"worst"`
+	OfflineClients  []MonClient         `json:"offlineClients"`
+	AwaitingClients []MonClient         `json:"awaitingClients"`
+	StaleMs         int64               `json:"staleMs"`
+	StaleNow        bool                `json:"staleNow"`
 }
+
+// Registry states of a mon-client as mon-server reports them in the snapshot.
+const (
+	monClientOnline = "ONLINE"
+	monClientNever  = "NEVER"
+)
 
 // monSummaryRow is one GROUP BY row: everything one mon-client measured for
 // one (inbound, path) inside the window.
@@ -95,8 +107,59 @@ type monSummaryRow struct {
 	StepMs      int64
 }
 
-// monSummaryPaths is the order paths appear in, everywhere.
-var monSummaryPaths = []string{model.MonPathDirect, model.MonPathProxy}
+// monSummaryPathRank puts direct and proxy first; every other path (the hops
+// of the chain) follows by name.
+var monSummaryPathRank = map[string]int{model.MonPathDirect: 0, model.MonPathProxy: 1}
+
+// orderedSummaryPaths is the order paths appear in, everywhere.
+func orderedSummaryPaths[V any](paths map[string]V) []string {
+	out := make([]string, 0, len(paths))
+	for p := range paths {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ri, iKnown := monSummaryPathRank[out[i]]
+		rj, jKnown := monSummaryPathRank[out[j]]
+		switch {
+		case iKnown && jKnown:
+			return ri < rj
+		case iKnown != jKnown:
+			return iKnown
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// summaryProbing is, per (inbound, path), the ONLINE mon-clients that probe
+// it: the ones with a target row there, plus any that sent buckets for it in
+// the window (rows).
+func summaryProbing(rows []monSummaryRow, online map[string]bool) (map[MonInboundRef]map[string]map[string]bool, error) {
+	var targets []model.MonTarget
+	if err := database.GetDB().Select("mon_client_id", "inbound_kind", "inbound_id", "path").Find(&targets).Error; err != nil {
+		return nil, err
+	}
+	out := map[MonInboundRef]map[string]map[string]bool{}
+	add := func(ref MonInboundRef, path, client string) {
+		if !online[client] {
+			return
+		}
+		if out[ref] == nil {
+			out[ref] = map[string]map[string]bool{}
+		}
+		if out[ref][path] == nil {
+			out[ref][path] = map[string]bool{}
+		}
+		out[ref][path][client] = true
+	}
+	for _, t := range targets {
+		add(MonInboundRef{t.InboundKind, t.InboundId}, t.Path, t.MonClientId)
+	}
+	for _, r := range rows {
+		add(MonInboundRef{r.InboundKind, r.InboundId}, r.Path, r.MonClientId)
+	}
+	return out, nil
+}
 
 // Summary folds the window [now−window, now) into the numbers the digest and
 // the summary handler print. Windows up to 24h read mon_stats_current;
@@ -131,7 +194,26 @@ func (s *MonitoringService) Summary(now time.Time, window time.Duration) (*MonSu
 	if perClient < 1 {
 		perClient = 1
 	}
-	expectedPerPath := perClient * len(clients)
+
+	names := map[string]MonClient{}
+	online := map[string]bool{}
+	offline := []MonClient{}
+	awaiting := []MonClient{}
+	for _, c := range clients {
+		names[c.Id] = c
+		switch c.State {
+		case monClientOnline:
+			online[c.Id] = true
+		case monClientNever:
+			awaiting = append(awaiting, c)
+		default:
+			offline = append(offline, c)
+		}
+	}
+	probing, err := summaryProbing(rows, online)
+	if err != nil {
+		return nil, err
+	}
 
 	byPath := map[MonInboundRef]map[string]*MonSummaryPath{}
 	byTarget := map[MonInboundRef]map[string][]monSummaryRow{}
@@ -143,25 +225,18 @@ func (s *MonitoringService) Summary(now time.Time, window time.Duration) (*MonSu
 		}
 		p := byPath[ref][r.Path]
 		if p == nil {
-			p = &MonSummaryPath{Path: r.Path, Expected: expectedPerPath}
+			p = &MonSummaryPath{Path: r.Path, Expected: perClient * len(probing[ref][r.Path])}
 			byPath[ref][r.Path] = p
 		}
 		p.NOk += r.NOk
 		p.NFail += r.NFail
-		p.Received += r.Received
+		if online[r.MonClientId] {
+			p.Received += r.Received
+		}
 		byTarget[ref][r.Path] = append(byTarget[ref][r.Path], r)
 	}
 
-	names := map[string]MonClient{}
-	offline := []MonClient{}
-	for _, c := range clients {
-		names[c.Id] = c
-		if c.State != "ONLINE" {
-			offline = append(offline, c)
-		}
-	}
-
-	out := &MonSummary{From: from, To: to, Inbounds: []MonSummaryInbound{}, OfflineClients: offline}
+	out := &MonSummary{From: from, To: to, Inbounds: []MonSummaryInbound{}, OfflineClients: offline, AwaitingClients: awaiting}
 	for _, ib := range inbounds {
 		if !ib.Enable {
 			continue
@@ -170,11 +245,9 @@ func (s *MonitoringService) Summary(now time.Time, window time.Duration) (*MonSu
 		sum := MonSummaryInbound{Kind: ib.Kind, InboundId: ib.InboundId, Remark: ib.Remark,
 			Paths: []MonSummaryPath{}, Incidents: incidents[ref]}
 		var received, expected int
-		for _, path := range monSummaryPaths {
+		paths := orderedSummaryPaths(byPath[ref])
+		for _, path := range paths {
 			p := byPath[ref][path]
-			if p == nil {
-				continue
-			}
 			if n := p.NOk + p.NFail; n > 0 {
 				u := float64(p.NOk) / float64(n)
 				p.Uptime = &u
@@ -190,7 +263,7 @@ func (s *MonitoringService) Summary(now time.Time, window time.Duration) (*MonSu
 		// The worst target is looked for among the same enabled inbounds, in
 		// the same order, so a tie always resolves to the first of
 		// (kind, inboundId, path, monClientId).
-		for _, path := range monSummaryPaths {
+		for _, path := range paths {
 			targets := byTarget[ref][path]
 			sort.Slice(targets, func(i, j int) bool { return targets[i].MonClientId < targets[j].MonClientId })
 			for _, r := range targets {

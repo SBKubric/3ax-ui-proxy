@@ -13,9 +13,10 @@ import (
 // monProbeTtlHours, monRetentionDays, monRollupRetentionDays,
 // monRollupStepMinutes — are also fields of entity.AllSetting and travel
 // through the settings form. State — monProbeSubId, monProbeLastEnsured,
-// monLastContact, monClientsSnapshot — is written by the monitoring service and
-// job as mon-server talks to the panel, and is reachable only through the
-// accessors here, so a settings save cannot roll it back.
+// monLastContact, monStaleSince, monClientsSnapshot — is written by the
+// monitoring service and job as mon-server talks to the panel, and is
+// reachable only through the accessors here, so a settings save cannot roll
+// it back.
 
 // monTokenLength matches the panel's own secret: 32 characters from
 // random.Seq, which mon-server presents as a bearer token.
@@ -112,6 +113,18 @@ func (s *SettingService) GetMonLastContact() (int64, error) {
 
 func (s *SettingService) SetMonLastContact(value int64) error {
 	return s.setInt64("monLastContact", value)
+}
+
+// GetMonStaleSince is the last contact before the silence the panel has
+// declared STALE, in milliseconds; 0 while monitoring is not STALE. Kept so a
+// restart in the middle of a silence neither forgets it nor announces it
+// again.
+func (s *SettingService) GetMonStaleSince() (int64, error) {
+	return s.getInt64("monStaleSince")
+}
+
+func (s *SettingService) SetMonStaleSince(value int64) error {
+	return s.setInt64("monStaleSince", value)
 }
 
 // GetMonClientsSnapshot is the JSON array of mon-clients from the last

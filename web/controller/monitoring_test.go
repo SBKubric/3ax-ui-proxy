@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
@@ -151,14 +153,19 @@ func TestMonRoutesSpeakTheContract(t *testing.T) {
 		t.Errorf("body over 1 MiB: %d", w.Code)
 	}
 
-	// Bad bodies: 400 invalid_body with the offending field.
-	if w := monRequest(r, "POST", "/mon/v1/events", monTestToken, `{"events":[{"id":"x","kind":"foo"}]}`); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_body") {
+	// A bad element is rejected by index inside a 200; only an unreadable
+	// body is 400 invalid_body.
+	if w := monRequest(r, "POST", "/mon/v1/events", monTestToken, `{"events":[{"id":"x","kind":"foo"}]}`); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), `"accepted":0`) || !strings.Contains(w.Body.String(), `"rejected":[{"index":0,"id":"x","error":"events[0].id: `) {
 		t.Errorf("bad event: %d %s", w.Code, w.Body.String())
 	}
-	if w := monRequest(r, "POST", "/mon/v1/events", monTestToken, `not json`); w.Code != http.StatusBadRequest {
-		t.Errorf("not json: %d %s", w.Code, w.Body.String())
+	for _, body := range []string{`not json`, `{"events":{}}`, `{"events":[]} {}`} {
+		if w := monRequest(r, "POST", "/mon/v1/events", monTestToken, body); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_body") {
+			t.Errorf("%s: %d %s", body, w.Code, w.Body.String())
+		}
 	}
-	if w := monRequest(r, "POST", "/mon/v1/stats", monTestToken, `{"stats":[{"monClientId":"ams-1","inboundKind":"xray","inboundId":1,"path":"proxy","bucketStart":7}]}`); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "stats[0].bucketStart") {
+	if w := monRequest(r, "POST", "/mon/v1/stats", monTestToken, `{"stats":[{"monClientId":"ams-1","inboundKind":"xray","inboundId":1,"path":"proxy","bucketStart":7}]}`); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), `"rejected":[{"index":0,"error":"stats[0].bucketStart: `) {
 		t.Errorf("bad stat: %d %s", w.Code, w.Body.String())
 	}
 	var m map[string]any
@@ -199,5 +206,73 @@ func TestMonRoutesSpeakTheContract(t *testing.T) {
 	}
 	if w := monRequest(r, "GET", "/mon/v1/state", monTestToken, ""); !strings.Contains(w.Body.String(), `"subId":null`) {
 		t.Errorf("state after delete: %s", w.Body.String())
+	}
+}
+
+// TestMonEventsAndStatsPerElement: a mixed batch is applied in part — the
+// valid elements land, each bad one is named by index (and id) in rejected —
+// unknown fields at any level are ignored, and a hop path is an ordinary
+// path.
+func TestMonEventsAndStatsPerElement(t *testing.T) {
+	r := newMonRouter(t)
+	enableMonitoring(t)
+	db := database.GetDB()
+	if err := db.Create(&model.Inbound{Id: 1, Port: 10001, Protocol: model.VLESS, Tag: "in-1", Remark: "r", Enable: true,
+		Settings: `{"clients":[],"decryption":"none"}`, StreamSettings: `{"network":"tcp","security":"none"}`, Sniffing: "{}"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := monRequest(r, "POST", "/mon/v1/events", monTestToken, `{"batchId":"b-1","events":[
+		{"id":"019254a0-7c3e-7d2a-9b4f-1f2e3d4c5b6a","ts":1757721540000,"kind":"target","monClientId":"ams-1","inboundKind":"xray","inboundId":1,"path":"edge:ams-2","from":"UP","to":"DOWN","reason":"tls_timeout","notified":true,"hopRole":"edge"},
+		{"id":"019254a0-8a11-7e30-8c2d-2a3b4c5d6e7f","ts":1757721545000,"kind":"mon_client","monClientId":"msk-1","from":"ONLINE","to":"SLEEPING","notified":true},
+		{"id":"019254a0-9b22-7f41-9d3e-3b4c5d6e7f80","ts":"late","kind":"panel","to":"PANEL_DOWN"},
+		{"id":"019254a0-ac33-7052-8e4f-4c5d6e7f8091","ts":1757721546000,"kind":"mon_client","monClientId":"msk-1","from":"","to":"ONLINE","notified":true}
+	]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mixed events: %d %s", w.Code, w.Body.String())
+	}
+	var ev struct {
+		Accepted int `json:"accepted"`
+		Rejected []struct {
+			Index int    `json:"index"`
+			Id    string `json:"id"`
+			Error string `json:"error"`
+		} `json:"rejected"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Accepted != 2 || len(ev.Rejected) != 2 ||
+		ev.Rejected[0].Index != 1 || ev.Rejected[0].Id != "019254a0-8a11-7e30-8c2d-2a3b4c5d6e7f" || !strings.Contains(ev.Rejected[0].Error, "events[1].to") ||
+		ev.Rejected[1].Index != 2 || ev.Rejected[1].Id != "019254a0-9b22-7f41-9d3e-3b4c5d6e7f80" {
+		t.Errorf("mixed events result: %s", w.Body.String())
+	}
+	var target model.MonTarget
+	if err := db.Where("path = ?", "edge:ams-2").First(&target).Error; err != nil || target.State != "DOWN" {
+		t.Errorf("edge target: %+v %v", target, err)
+	}
+
+	bucket := (time.Now().UnixMilli() / 300000) * 300000
+	b := strconv.FormatInt(bucket, 10)
+	w = monRequest(r, "POST", "/mon/v1/stats", monTestToken, `{"stats":[
+		{"monClientId":"ams-1","inboundKind":"xray","inboundId":1,"path":"inner:core-1","bucketStart":`+b+`,"nOk":5,"nFail":0,"latencyMinMs":41,"latencyAvgMs":47,"latencyMaxMs":58,"handshakeMs":null,"jitterMs":3},
+		{"monClientId":"ams-1","inboundKind":"xray","inboundId":1,"path":"hop:core-1","bucketStart":`+b+`,"nOk":5,"nFail":0}
+	]}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"accepted":1`) ||
+		!strings.Contains(w.Body.String(), `"rejected":[{"index":1,"error":"stats[1].path: unknown value \"hop:core-1\""}]`) {
+		t.Errorf("mixed stats: %d %s", w.Code, w.Body.String())
+	}
+
+	// An all-good batch still carries an empty rejected list, so mon-server
+	// can tell the new answer from the old one.
+	w = monRequest(r, "POST", "/mon/v1/stats", monTestToken, `{"stats":[]}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"rejected":[]`) {
+		t.Errorf("empty stats: %d %s", w.Code, w.Body.String())
+	}
+
+	// Unknown fields are ignored on the other routes too.
+	w = monRequest(r, "POST", "/mon/v1/probe/ensure", monTestToken, `{"monClients":[{"id":"ams-1","state":"ONLINE","paths":["direct"]}],"generation":2}`)
+	if w.Code != http.StatusOK {
+		t.Errorf("ensure with unknown fields: %d %s", w.Code, w.Body.String())
 	}
 }

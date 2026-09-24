@@ -216,7 +216,8 @@
       refreshTimer: null,
       targetColumns: [
         { title: '{{ i18n "pages.monitoring.monClient" }}', width: 140, scopedSlots: { customRender: 'monClient' } },
-        { title: '{{ i18n "pages.monitoring.path" }}', width: 70, scopedSlots: { customRender: 'path' } },
+        // Wide enough for a hop path (edge:<name>, inner:<name>), shown as it came.
+        { title: '{{ i18n "pages.monitoring.path" }}', width: 120, scopedSlots: { customRender: 'path' } },
         { title: '{{ i18n "pages.monitoring.state" }}', width: 100, scopedSlots: { customRender: 'state' } },
         { title: '{{ i18n "pages.monitoring.for" }}', width: 70, scopedSlots: { customRender: 'since' } },
         { title: '{{ i18n "pages.monitoring.uptime24" }}', width: 110, align: 'right', scopedSlots: { customRender: 'uptime24' } },

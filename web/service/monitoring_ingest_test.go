@@ -1,7 +1,7 @@
 package service
 
 import (
-	"errors"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -36,33 +36,113 @@ func targetEvent(id string, ts int64, from, to, reason string) MonEventIn {
 		Path: "proxy", From: from, To: to, Reason: reason}
 }
 
-func TestApplyEventsRejectsTheWholeBatchOnBadInput(t *testing.T) {
+// TestApplyEventsRejectsOnlyTheBadElements: a batch is validated element by
+// element — the valid ones are applied, each invalid one is named by its
+// index in the batch (and its id, when it has one) and nothing about it is
+// written. One bad event no longer costs mon-server the whole batch.
+func TestApplyEventsRejectsOnlyTheBadElements(t *testing.T) {
 	m := newMonitoringTestService(t)
 	monInbound(t, 1, model.VLESS, true, model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice"})
 
-	bad := []MonEventIn{targetEvent(ev1, 1000, "UP", "DOWN", "tls_timeout"), {Id: ev2, Ts: 1001, Kind: "foo", To: "DOWN"}}
-	var monErr *MonError
-	_, err := m.ApplyEvents(bad)
-	if !errors.As(err, &monErr) || monErr.Status != 400 || monErr.Code != "invalid_body" || !strings.Contains(monErr.Message, "events[1].kind") {
-		t.Fatalf("err = %v, want 400 invalid_body naming events[1].kind", err)
+	res, err := m.ApplyEvents([]MonEventIn{
+		targetEvent(ev1, 1000, "UP", "DOWN", "tls_timeout"),
+		{Id: ev2, Ts: 1001, Kind: "foo", To: "DOWN"},
+		{Id: ev3, Ts: 1002, Kind: "panel", From: "PANEL_UP", To: "PANEL_DOWN"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyEvents: %v", err)
 	}
-	var n int64
-	database.GetDB().Model(&model.MonEvent{}).Count(&n)
-	if n != 0 {
-		t.Errorf("a rejected batch wrote %d events", n)
+	if res.Accepted != 2 || len(res.Rejected) != 1 {
+		t.Fatalf("result = %+v, want 2 accepted and 1 rejected", res)
 	}
+	if r := res.Rejected[0]; r.Index != 1 || r.Id != ev2 || !strings.Contains(r.Error, "events[1].kind") {
+		t.Errorf("rejected = %+v, want index 1, id %s, an error naming events[1].kind", r, ev2)
+	}
+	var stored []string
+	database.GetDB().Model(&model.MonEvent{}).Order("ts").Pluck("id", &stored)
+	if len(stored) != 2 || stored[0] != ev1 || stored[1] != ev3 {
+		t.Errorf("stored events = %v, want [%s %s]", stored, ev1, ev3)
+	}
+
 	for _, tc := range []MonEventIn{
 		{Id: "not-a-uuid", Ts: 1, Kind: "panel", To: "PANEL_DOWN"},
-		{Id: strings.ToUpper(ev1), Ts: 1, Kind: "panel", To: "PANEL_DOWN"},
-		{Id: ev1, Ts: 1, Kind: "target", MonClientId: "ams 1", InboundKind: "xray", Path: "proxy", To: "DOWN"},
-		{Id: ev1, Ts: 1, Kind: "target", MonClientId: "ams-1", InboundKind: "wg", Path: "proxy", To: "DOWN"},
-		{Id: ev1, Ts: 1, Kind: "target", MonClientId: "ams-1", InboundKind: "xray", Path: "tunnel", To: "DOWN"},
-		{Id: ev1, Ts: 1, Kind: "target", MonClientId: "ams-1", InboundKind: "xray", Path: "proxy", To: "ONLINE"},
-		{Id: ev1, Ts: 1, Kind: "mon_client", To: "OFFLINE"},
-		{Id: ev1, Ts: 1, Kind: "panel", To: "DOWN"},
+		{Id: strings.ToUpper(ev4), Ts: 1, Kind: "panel", To: "PANEL_DOWN"},
+		{Id: ev4, Ts: 1, Kind: "target", MonClientId: "ams 1", InboundKind: "xray", Path: "proxy", To: "DOWN"},
+		{Id: ev4, Ts: 1, Kind: "target", MonClientId: "ams-1", InboundKind: "wg", Path: "proxy", To: "DOWN"},
+		{Id: ev4, Ts: 1, Kind: "target", MonClientId: "ams-1", InboundKind: "xray", Path: "tunnel", To: "DOWN"},
+		{Id: ev4, Ts: 1, Kind: "target", MonClientId: "ams-1", InboundKind: "xray", Path: "edge:", To: "DOWN"},
+		{Id: ev4, Ts: 1, Kind: "target", MonClientId: "ams-1", InboundKind: "xray", Path: "proxy", To: "ONLINE"},
+		{Id: ev4, Ts: 1, Kind: "mon_client", To: "OFFLINE"},
+		{Id: ev4, Ts: 1, Kind: "mon_client", MonClientId: "msk-1", From: "NEVER", To: "ONLINE"},
+		{Id: ev4, Ts: 1, Kind: "panel", To: "DOWN"},
 	} {
-		if _, err := m.ApplyEvents([]MonEventIn{tc}); err == nil {
-			t.Errorf("accepted %+v", tc)
+		res, err := m.ApplyEvents([]MonEventIn{tc})
+		if err != nil || res.Accepted != 0 || len(res.Rejected) != 1 || res.Rejected[0].Index != 0 {
+			t.Errorf("%+v: res=%+v err=%v, want it rejected at index 0", tc, res, err)
+		}
+	}
+	var n int64
+	database.GetDB().Model(&model.MonEvent{}).Where("id = ?", ev4).Count(&n)
+	if n != 0 {
+		t.Errorf("a rejected event was written")
+	}
+}
+
+// TestApplyEventsFromRaw: an element that does not even decode into an
+// event — a string where a number belongs — is rejected on its own, with the
+// id recovered when the element carries one; unknown fields are ignored.
+func TestApplyEventsFromRaw(t *testing.T) {
+	m := newMonitoringTestService(t)
+	monInbound(t, 1, model.VLESS, true, model.Client{ID: "aaaaaaaa-0000-0000-0000-000000000001", Email: "alice"})
+
+	res, err := m.ApplyEventsRaw([]json.RawMessage{
+		json.RawMessage(`{"id":"` + ev1 + `","ts":"soon","kind":"panel","to":"PANEL_DOWN"}`),
+		json.RawMessage(`{"id":"` + ev2 + `","ts":1000,"kind":"target","monClientId":"ams-1","inboundKind":"xray","inboundId":1,"path":"edge:ams-2","from":"","to":"DOWN","reason":"tcp_refused","notified":true,"hopRole":"edge"}`),
+		json.RawMessage(`42`),
+	})
+	if err != nil {
+		t.Fatalf("ApplyEventsRaw: %v", err)
+	}
+	if res.Accepted != 1 || len(res.Rejected) != 2 {
+		t.Fatalf("result = %+v, want 1 accepted and 2 rejected", res)
+	}
+	if r := res.Rejected[0]; r.Index != 0 || r.Id != ev1 || !strings.Contains(r.Error, "events[0]") {
+		t.Errorf("rejected[0] = %+v, want index 0 with id %s", r, ev1)
+	}
+	if r := res.Rejected[1]; r.Index != 2 || r.Id != "" {
+		t.Errorf("rejected[1] = %+v, want index 2 without an id", r)
+	}
+	var target model.MonTarget
+	if err := database.GetDB().Where("path = ?", "edge:ams-2").First(&target).Error; err != nil || target.State != "DOWN" {
+		t.Errorf("edge target = %+v, %v; want a DOWN row under path edge:ams-2", target, err)
+	}
+}
+
+// TestMonPathGrammar: direct | proxy | edge:<hop name> | inner:<hop name>,
+// the hop name by the chain registry's own rule; nothing else.
+func TestMonPathGrammar(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		ok   bool
+	}{
+		{"direct", true},
+		{"proxy", true},
+		{"edge:ams-1", true},
+		{"inner:core-1", true},
+		{"edge:" + strings.Repeat("a", 32), true},
+		{"edge:" + strings.Repeat("a", 33), false},
+		{"edge:", false},
+		{"inner:", false},
+		{"edge:AMS", false},
+		{"edge:ams_1", false},
+		{"inner:core 1", false},
+		{"hop:ams-1", false},
+		{"Direct", false},
+		{"tunnel", false},
+		{"", false},
+	} {
+		if got := validMonPath(tc.path); got != tc.ok {
+			t.Errorf("validMonPath(%q) = %v, want %v", tc.path, got, tc.ok)
 		}
 	}
 }
@@ -243,9 +323,23 @@ func TestUpsertStatsAndRollup(t *testing.T) {
 		t.Errorf("handshake rollup: %+v (%v)", direct, direct.HandshakeMs)
 	}
 
-	var monErr *MonError
-	if _, err := m.UpsertStats([]MonStatIn{stat("ams-1", 1, "proxy", hour+1, 1, 0, nil, nil, nil)}); !errors.As(err, &monErr) || monErr.Status != 400 {
-		t.Errorf("unaligned bucket: err = %v, want 400", err)
+	// Bad elements are rejected by index; the good one beside them lands.
+	res, err = m.UpsertStats([]MonStatIn{
+		stat("ams-1", 1, "proxy", hour+1, 1, 0, nil, nil, nil),
+		stat("ams-1", 1, "inner:core-1", hour, 3, 0, i64(5), i64(6), i64(7)),
+		stat("ams-1", 1, "tunnel", hour, 1, 0, nil, nil, nil),
+	})
+	if err != nil {
+		t.Fatalf("mixed stats batch: %v", err)
+	}
+	if res.Accepted != 1 || len(res.Rejected) != 2 || res.Rejected[0].Index != 0 || res.Rejected[1].Index != 2 ||
+		!strings.Contains(res.Rejected[0].Error, "stats[0].bucketStart") || !strings.Contains(res.Rejected[1].Error, "stats[2].path") {
+		t.Errorf("mixed stats batch: %+v", res)
+	}
+	var inner int64
+	db.Model(&model.MonStatsCurrent{}).Where("path = ?", "inner:core-1").Count(&inner)
+	if inner != 1 {
+		t.Errorf("%d inner:core-1 rows, want 1", inner)
 	}
 }
 

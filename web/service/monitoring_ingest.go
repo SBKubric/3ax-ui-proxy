@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/logger"
@@ -63,17 +65,31 @@ type MonIgnored struct {
 	Error string `json:"error"`
 }
 
-// MonEventsResult is the body of a successful POST /events.
+// MonRejected names one batch element that failed validation. Index is its
+// position in the batch as sent; Id is the event's id when it had one. A
+// rejected element is not retried: mon-server logs Error and drops it
+// (SBKubric/3ax-ui-monitoring#50, item 3).
+type MonRejected struct {
+	Index int    `json:"index"`
+	Id    string `json:"id,omitempty"`
+	Error string `json:"error"`
+}
+
+// MonEventsResult is the body of a successful POST /events. Accepted counts
+// the events stored by this call; duplicates and ignored elements are
+// settled too, only rejected ones were not taken.
 type MonEventsResult struct {
-	Accepted   int          `json:"accepted"`
-	Duplicates int          `json:"duplicates"`
-	Ignored    []MonIgnored `json:"ignored"`
+	Accepted   int           `json:"accepted"`
+	Rejected   []MonRejected `json:"rejected"`
+	Duplicates int           `json:"duplicates"`
+	Ignored    []MonIgnored  `json:"ignored"`
 }
 
 // MonStatsResult is the body of a successful POST /stats.
 type MonStatsResult struct {
-	Accepted int          `json:"accepted"`
-	Ignored  []MonIgnored `json:"ignored"`
+	Accepted int           `json:"accepted"`
+	Rejected []MonRejected `json:"rejected"`
+	Ignored  []MonIgnored  `json:"ignored"`
 }
 
 // Reasons an element lands in ignored.
@@ -118,12 +134,35 @@ var (
 	monClientStates    = map[string]bool{"ONLINE": true, "OFFLINE": true}
 	monPanelStates     = map[string]bool{"PANEL_UP": true, "PANEL_DOWN": true}
 	monInboundKinds    = map[string]bool{model.MonInboundKindXray: true, model.MonInboundKindAwg: true}
-	monPaths           = map[string]bool{model.MonPathDirect: true, model.MonPathProxy: true}
 	monTargetStateRank = map[string]int{model.MonStateDown: 0, model.MonStateFlapping: 1, model.MonStateUnknown: 2, model.MonStateUp: 3, model.MonStatePaused: 4}
 )
 
 func errInvalidBody(format string, args ...any) *MonError {
 	return &MonError{400, "invalid_body", fmt.Sprintf(format, args...)}
+}
+
+// Path prefixes of the chain's hops (docs/spec/proxy-chain.md §6).
+const (
+	monPathEdgePrefix  = "edge:"
+	monPathInnerPrefix = "inner:"
+)
+
+// validMonPath is the path grammar of the contract: direct | proxy |
+// edge:<name> | inner:<name>, where <name> follows the chain registry's rule
+// for a hop name. The name is not looked up in the registry — the panel is a
+// passive receiver, and a hop it does not know is just another path.
+func validMonPath(path string) bool {
+	switch path {
+	case model.MonPathDirect, model.MonPathProxy:
+		return true
+	}
+	if name, ok := strings.CutPrefix(path, monPathEdgePrefix); ok {
+		return chain.NameValid(name)
+	}
+	if name, ok := strings.CutPrefix(path, monPathInnerPrefix); ok {
+		return chain.NameValid(name)
+	}
+	return false
 }
 
 func validateMonEvent(i int, e *MonEventIn) error {
@@ -152,7 +191,7 @@ func validateMonEvent(i int, e *MonEventIn) error {
 		if e.InboundId < 0 {
 			return at("inboundId", "must not be negative")
 		}
-		if !monPaths[e.Path] {
+		if !validMonPath(e.Path) {
 			return at("path", "unknown value %q", e.Path)
 		}
 	case model.MonEventKindMonClient:
@@ -190,7 +229,7 @@ func validateMonStat(i int, s *MonStatIn) error {
 	if s.InboundId < 0 {
 		return at("inboundId", "must not be negative")
 	}
-	if !monPaths[s.Path] {
+	if !validMonPath(s.Path) {
 		return at("path", "unknown value %q", s.Path)
 	}
 	if s.BucketStart <= 0 || s.BucketStart%monBucketMs != 0 {
@@ -222,27 +261,96 @@ func (s *MonitoringService) knownInbounds() (map[MonInboundRef]bool, error) {
 
 // --- events ------------------------------------------------------------------
 
-// ApplyEvents is POST /events. The batch is validated whole before anything
-// is written, then applied in ts order inside one transaction: each event
-// goes into the feed once (a repeated id is a duplicate, not an error), a
-// target event moves its mon_targets row forward unless it is older than the
-// state already there, and events of unknown inbounds are skipped and named
-// in ignored. After the commit the Telegram hook sees the stored events that
-// still want a notification.
-func (s *MonitoringService) ApplyEvents(batch []MonEventIn) (*MonEventsResult, error) {
-	for i := range batch {
-		if err := validateMonEvent(i, &batch[i]); err != nil {
-			return nil, err
-		}
+// rejectedMessage is the text a MonRejected carries: the field-scoped
+// message of a validation error, or the error itself.
+func rejectedMessage(err error) string {
+	if me, ok := err.(*MonError); ok {
+		return me.Message
 	}
+	return err.Error()
+}
+
+// decodeMonElements unmarshals each raw batch element into a T. An element
+// that does not decode (a string where a number belongs, a bare number) is
+// rejected on its own; the batch goes on. Unknown fields are ignored
+// (contract §1). The events decoder recovers the id of a broken element with
+// idOf so mon-server can name it.
+func decodeMonElements[T any](what string, raw []json.RawMessage, idOf func(json.RawMessage) string) ([]T, []int, []MonRejected) {
+	items := make([]T, 0, len(raw))
+	indexes := make([]int, 0, len(raw))
+	rejected := []MonRejected{}
+	for i, r := range raw {
+		var v T
+		if err := json.Unmarshal(r, &v); err != nil {
+			rej := MonRejected{Index: i, Error: fmt.Sprintf("%s[%d]: %v", what, i, err)}
+			if idOf != nil {
+				rej.Id = idOf(r)
+			}
+			rejected = append(rejected, rej)
+			continue
+		}
+		items = append(items, v)
+		indexes = append(indexes, i)
+	}
+	return items, indexes, rejected
+}
+
+// rawEventId is the id of an event that did not decode, when its id field at
+// least is a string.
+func rawEventId(r json.RawMessage) string {
+	var probe struct {
+		Id any `json:"id"`
+	}
+	if json.Unmarshal(r, &probe) != nil {
+		return ""
+	}
+	id, _ := probe.Id.(string)
+	return id
+}
+
+// ApplyEventsRaw is POST /events as it comes off the wire: each element is
+// decoded on its own, so one malformed element is rejected by index instead
+// of failing the body.
+func (s *MonitoringService) ApplyEventsRaw(raw []json.RawMessage) (*MonEventsResult, error) {
+	items, indexes, rejected := decodeMonElements[MonEventIn]("events", raw, rawEventId)
+	return s.applyEvents(items, indexes, rejected)
+}
+
+// ApplyEvents is POST /events. Every event is validated on its own; an
+// invalid one is named in rejected by its index and not written, the rest
+// are applied in ts order inside one transaction: each event goes into the
+// feed once (a repeated id is a duplicate, not an error), a target event
+// moves its mon_targets row forward unless it is older than the state already
+// there, and events of unknown inbounds are skipped and named in ignored.
+// After the commit the Telegram hook sees the stored events that still want a
+// notification.
+func (s *MonitoringService) ApplyEvents(batch []MonEventIn) (*MonEventsResult, error) {
+	indexes := make([]int, len(batch))
+	for i := range indexes {
+		indexes[i] = i
+	}
+	return s.applyEvents(batch, indexes, []MonRejected{})
+}
+
+// applyEvents does the work of ApplyEvents; indexes[k] is the position of
+// batch[k] in the body as sent, which is what a rejection names.
+func (s *MonitoringService) applyEvents(batch []MonEventIn, indexes []int, rejected []MonRejected) (*MonEventsResult, error) {
+	ordered := make([]MonEventIn, 0, len(batch))
+	for k := range batch {
+		if err := validateMonEvent(indexes[k], &batch[k]); err != nil {
+			rejected = append(rejected, MonRejected{Index: indexes[k], Id: batch[k].Id, Error: rejectedMessage(err)})
+			continue
+		}
+		ordered = append(ordered, batch[k])
+	}
+	sort.SliceStable(rejected, func(i, j int) bool { return rejected[i].Index < rejected[j].Index })
 	known, err := s.knownInbounds()
 	if err != nil {
 		return nil, err
 	}
-	ordered := append([]MonEventIn(nil), batch...)
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Ts < ordered[j].Ts })
 
-	res := &MonEventsResult{Ignored: []MonIgnored{}}
+	res := &MonEventsResult{Rejected: rejected, Ignored: []MonIgnored{}}
 	var pending []model.MonEvent
 	now := time.Now().UnixMilli()
 
@@ -356,16 +464,37 @@ func (k monStatKey) String() string {
 	return fmt.Sprintf("%s/%s/%d/%s/%d", k.MonClientId, k.InboundKind, k.InboundId, k.Path, k.BucketStart)
 }
 
-// UpsertStats is POST /stats. The batch is validated whole; buckets older
-// than monRetentionDays or for unknown inbounds are named in ignored; the
-// rest replace their current-stats row by key, and every rollup bucket they
-// touch is recomputed from current rows in the same transaction.
+// UpsertStatsRaw is POST /stats as it comes off the wire, decoding each
+// element on its own like ApplyEventsRaw.
+func (s *MonitoringService) UpsertStatsRaw(raw []json.RawMessage) (*MonStatsResult, error) {
+	items, indexes, rejected := decodeMonElements[MonStatIn]("stats", raw, nil)
+	return s.upsertStats(items, indexes, rejected)
+}
+
+// UpsertStats is POST /stats. Every bucket is validated on its own; an
+// invalid one is named in rejected by its index; buckets older than
+// monRetentionDays or for unknown inbounds are named in ignored; the rest
+// replace their current-stats row by key, and every rollup bucket they touch
+// is recomputed from current rows in the same transaction.
 func (s *MonitoringService) UpsertStats(batch []MonStatIn) (*MonStatsResult, error) {
-	for i := range batch {
-		if err := validateMonStat(i, &batch[i]); err != nil {
-			return nil, err
-		}
+	indexes := make([]int, len(batch))
+	for i := range indexes {
+		indexes[i] = i
 	}
+	return s.upsertStats(batch, indexes, []MonRejected{})
+}
+
+// upsertStats does the work of UpsertStats; indexes as in applyEvents.
+func (s *MonitoringService) upsertStats(batch []MonStatIn, indexes []int, rejected []MonRejected) (*MonStatsResult, error) {
+	valid := make([]MonStatIn, 0, len(batch))
+	for k := range batch {
+		if err := validateMonStat(indexes[k], &batch[k]); err != nil {
+			rejected = append(rejected, MonRejected{Index: indexes[k], Error: rejectedMessage(err)})
+			continue
+		}
+		valid = append(valid, batch[k])
+	}
+	sort.SliceStable(rejected, func(i, j int) bool { return rejected[i].Index < rejected[j].Index })
 	known, err := s.knownInbounds()
 	if err != nil {
 		return nil, err
@@ -374,11 +503,11 @@ func (s *MonitoringService) UpsertStats(batch []MonStatIn) (*MonStatsResult, err
 	cutoff := s.retentionCutoff(now)
 	stepMs := s.rollupStepMs()
 
-	res := &MonStatsResult{Ignored: []MonIgnored{}}
+	res := &MonStatsResult{Rejected: rejected, Ignored: []MonIgnored{}}
 	touched := map[monStatKey]bool{} // rollup buckets to recompute, keyed by their own start
 
 	err = database.GetDB().Transaction(func(tx *gorm.DB) error {
-		for _, in := range batch {
+		for _, in := range valid {
 			key := monStatKey{in.MonClientId, in.InboundKind, in.InboundId, in.Path, in.BucketStart}
 			switch {
 			case !known[MonInboundRef{in.InboundKind, in.InboundId}]:
