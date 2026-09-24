@@ -2,38 +2,191 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./media/3ax-ui-dark.png">
-    <img alt="3ax-ui" src="./media/3ax-ui-light.png">
+    <source media="(prefers-color-scheme: dark)" srcset="./media/sane-3x-ui-dark.svg">
+    <img alt="sane-3x-ui" src="./media/sane-3x-ui-light.svg" width="480">
   </picture>
 </p>
 
-[![Release](https://img.shields.io/github/v/release/coinman-dev/3ax-ui.svg)](https://github.com/coinman-dev/3ax-ui/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/coinman-dev/3ax-ui/release.yml.svg)](https://github.com/coinman-dev/3ax-ui/actions)
-[![GO Version](https://img.shields.io/github/go-mod/go-version/coinman-dev/3ax-ui.svg)](#)
-[![Downloads](https://img.shields.io/github/downloads/coinman-dev/3ax-ui/total.svg)](https://github.com/coinman-dev/3ax-ui/releases/latest)
+[![Release](https://img.shields.io/github/v/release/SBKubric/sane-3x-ui.svg?include_prereleases)](https://github.com/SBKubric/sane-3x-ui/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/SBKubric/sane-3x-ui/release.yml.svg)](https://github.com/SBKubric/sane-3x-ui/actions)
+[![GO Version](https://img.shields.io/github/go-mod/go-version/SBKubric/sane-3x-ui.svg)](#)
 [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 
-**3AX-UI** — форк панели управления [3x-ui](https://github.com/MHSanaei/3x-ui), расширенный встроенными протоколами обхода блокировок, которых нет в оригинале: **AmneziaWG** (по 3.1 включительно), **native WireGuard** с нативным IPv6 и **MTProto** (прокси Telegram). Всё это можно увести за один порт 443, на котором сервер отвечает браузеру обычным сайтом.
+**sane-3x-ui** — панель 3x-ui, которая держится без постоянного присмотра. Она построена на [3AX-UI](https://github.com/coinman-dev/3ax-ui), который добавляет к [3x-ui](https://github.com/MHSanaei/3x-ui) AmneziaWG, native WireGuard, MTProto и nginx-фронт на одном порту 443. Сверху sane-3x-ui добавляет то, что нужно, чтобы сервер оставался доступен при блокировках, и чтобы вы узнавали, когда он недоступен:
 
-> **A** в названии означает **Amnezia** — протокол, с которого начался этот форк и который остаётся его главным отличием от оригинала.
+- **Цепочка прокси.** Реальный сервер прячется за цепочкой одноразовых прокси-фронтов. Клиенты видят только внешний. Когда его блокируют, вы меняете его на новый, а панель, inbound'ы и клиенты остаются на месте. См. [Цепочка прокси](#1-цепочка-прокси-противодействие-блокировкам).
+- **Мониторинг доступности inbound'ов.** Внешний [mon-server](https://github.com/SBKubric/3ax-ui-monitoring) проверяет каждый inbound снаружи через пробные аккаунты, напрямую и через цепочку. Панель показывает состояние каждого inbound'а и шлёт в Telegram уведомления DOWN/UP. См. [Мониторинг](#2-мониторинг-доступности-inbounds-mon-server).
+- **Развёртывание с голых VPS.** Один Ansible-плейбук из [sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator) ставит панель, вводит звенья в цепочку и, если нужен мониторинг, добавляет mon-server и mon-client. См. [Развёртывание через Ansible](#3-развёртывание-через-ansible).
+- **Проверено на живом стенде.** Релизы с цепочкой и мониторингом прогоняются целиком на стенде из пяти VPS (панель, два звена, mon-server, mon-client), а найденные там ошибки исправляются здесь. См. [Исправления со стенда](#4-исправления-со-стенда).
+
+Всё из 3AX-UI и 3x-ui продолжает работать: VLESS, VMess, Trojan, Shadowsocks, WireGuard, AmneziaWG, MTProto, подписки и Telegram-бот.
 
 > [!IMPORTANT]
 > Проект предназначен для личного использования. Пожалуйста, не используйте его в незаконных целях.
 
+## Другие версии панели
+
+sane-3x-ui — одна из трёх родственных панелей. Если вам не нужны ни цепочка, ни мониторинг, возможно, вам больше подойдёт одна из других:
+
+| Панель | Что это | Когда выбирать |
+|--------|---------|----------------|
+| [3x-ui](https://github.com/MHSanaei/3x-ui) от MHSanaei | Оригинальная панель Xray: VLESS, VMess, Trojan, Shadowsocks, WireGuard; самое большое сообщество | вам хватает протоколов Xray |
+| [3AX-UI](https://github.com/coinman-dev/3ax-ui) от coinman-dev | 3x-ui плюс AmneziaWG (по 3.1), native WireGuard с IPv6, MTProto, маскировка nginx на порту 443 | нужны эти протоколы на одном сервере, без цепочки и мониторинга |
+| **sane-3x-ui** (этот репозиторий) | 3AX-UI плюс цепочка прокси, мониторинг inbound'ов и развёртывание через Ansible | сервер блокируют, и вы хотите менять фронты, а не переносить панель, и видеть, когда inbound падает |
+
+Возможности из раздела [Унаследовано от 3AX-UI](#унаследовано-от-3ax-ui) пришли из 3AX-UI.
+
 ## Быстрый старт
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh) --beta
 ```
 
-Для установки последней pre-release версии:
+> Цепочка и мониторинг выходят в pre-release'ах `v1.9.0-chain.*`, поэтому `--beta`. Без него установщик берёт последний стабильный релиз (`v1.8.1.x`), где их нет.
 
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh) --beta
-```
+Как добавить прокси-фронты — в разделе [Цепочка прокси](#1-цепочка-прокси-противодействие-блокировкам). Как развернуть панель, звенья и мониторинг с нуля — в разделе [Развёртывание через Ansible](#3-развёртывание-через-ansible).
+
 ---
 
-## Зачем эта панель?
+## Что добавляет sane-3x-ui
+
+### 1. Цепочка прокси (противодействие блокировкам)
+
+Когда IP или домен сервера попадает под блокировку, обычно приходится переносить всю панель. **sane-3x-ui** позволяет вместо этого спрятать реальный сервер за **цепочкой** дешёвых одноразовых **прокси-фронтов**: клиенты видят только самый внешний, и при блокировке вы просто заменяете его новым — реальный сервер (со всеми инбаундами, клиентами и историей трафика) продолжает работать, а его адрес нигде не светится.
+
+**Цепочка** — это связный список звеньев между клиентами и реальным сервером. Каждое **звено** релеит на следующее и по той же дороге забирает подписки:
+
+```
+клиенты ──▶ edge front ──▶ inner front ──▶ … ──▶ реальный сервер
+```
+
+Звено, которое видят клиенты, — **edge front**; звенья, которые знают только соседи, — **inner front**. Звено знает **только своего next hop** и никогда — то, что за ним. На панель приходится одна цепочка; цепочка из одного звена — обычный случай, и next hop у этого звена — сама панель.
+
+**а) Реестр цепочки (на реальной панели).** Цепочка живёт в **Настройки панели → Подписка → Chain**: имя каждого звена, роль (`inner` / `edge`), хост, порядок и признак **активного** edge. Активное edge панель подставляет во все генерируемые конфиги и ссылки подписки; SNI / TLS / Reality не трогаются. Через Telegram-бота:
+
+```
+/proxy                 список звеньев, их роли и состояния
+/proxy <имя>           сделать это edge активным
+/proxy off             выключить подмену; ссылки указывают на реальный сервер
+```
+
+В реестре же живёт `chainExtraPorts` — порты, которые реальный сервер обслуживает *вне* xray (AmneziaWG / WireGuard, сайдкар MTProto) и которые панель не может вычитать из своего xray-конфига. Всё остальное, что релеят звенья, панель считает сама.
+
+**Предусловие: сервер подписок панели должен быть включён** (`subEnable`). Ручки цепочки (`/chain/v1/*`) живут именно на нём, и с выключенным сервером ни одно звено не войдёт и не получит обновление; если в реестре есть звенья, а сервер выключен, панель пишет WARN при старте. Если на панели задан `subDomain`, его валидатор срабатывает раньше маршрутов цепочки — тогда звенья обязаны ходить на панель по этому домену (`PROXY_NEXT_HOP=<subDomain>`), а не по голому IP.
+
+**б) Режим запуска `x-ui proxy`.** Одноразовая машина запускает тот же бинарь как одно звено и делает две вещи:
+
+- **Релеит трафик** — xray `dokodemo-door` (L4 passthrough) форвардит каждый relayed port на next hop (сырой TCP+UDP, dual-stack). TLS/Reality терминируются на реальном сервере, поэтому **ключей на звене нет**. Какие порты релеить, приходит в **документе цепочки**, который звено опрашивает у своего next hop: усечённая выписка из реестра, где видно само звено, всё снаружи от него и список портов — и ничего глубже.
+- **Раздаёт подписку** — ходит за `/sub` и `/json` к своему next hop и отдаёт их: приложения получают сырую подписку, браузеры — кастомную страницу (статистика трафика, QR, кнопка **Copy VLESS JSON** и список приложений).
+
+**Введение звена в цепочку.** Всегда изнутри наружу: сначала панель, потом ближайшее к ней звено, потом следующее, edge — последним. Заведение звена в реестре ревизию цепочки **не двигает**: пока звено `pending`, его в документе ещё нет и менять там нечего — ревизия бампается один раз, когда бокс действительно вошёл.
+
+1. На панели **Настройки → Подписка → Chain** → завести звено (имя, роль, хост). Панель **один раз** покажет **join-токен** (32 символа, живёт 24 часа) и больше не покажет никогда; просрочился или потерялся — «перевыпустить токен».
+2. На боксе запустите установщик в режиме прокси с этим токеном:
+
+```bash
+XUI_PROXY_MODE=1 \
+PROXY_NEXT_HOP=<ip-или-домен-next-hop> \
+PROXY_NEXT_HOP_SUB_PORT=2096 \
+PROXY_JOIN_TOKEN=<токен из п.1> \
+PROXY_DOMAIN=edge.example.com \
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh)
+```
+
+Установщик пишет `/etc/x-ui/proxy.json`, выпускает TLS, **входит в цепочку до старта сервиса**, и футер печатает вывод `x-ui chain status`. Без `PROXY_JOIN_TOKEN` бокс поднимается в *режиме bootstrap*: отдаёт только одноразовую **страницу входа**, ссылку на которую печатает футер и повторно покажет `x-ui chain join-url`; токен вставляется в неё, и релей стартует в тот момент, когда вход принят.
+
+3. Если звено — edge и должно смотреть на клиентов, сделайте его активным (пункт **а**).
+
+**Переменные установщика** (режим прокси):
+
+| Переменная | Дефолт | Смысл |
+|---|---|---|
+| `XUI_PROXY_MODE` | — | `1` — ставить этот хост как звено цепочки |
+| `PROXY_NEXT_HOP` | — | **обязательна** — адрес next hop: inner front, а для самого внутреннего звена — реальный сервер |
+| `PROXY_NEXT_HOP_SUB_PORT` | `2096` | порт сервера подписок next hop (подписки, `/chain/v1/*`) |
+| `PROXY_NEXT_HOP_SCHEME` | `https` | `http` или `https` для этого порта |
+| `PROXY_JOIN_TOKEN` | — | одноразовый токен из реестра; без него бокс отдаёт страницу входа |
+| `PROXY_TLS` | `letsencrypt-ip` | как звено получает TLS для своего порта подписок: `letsencrypt-ip`, `none` или `manual` |
+| `PROXY_TLS_IPV6` | выкл. | `1` — пускать ACME-клиент и по IPv6; по умолчанию он прибит к IPv4, потому что dual-stack-коннект к CA с бокса без рабочего IPv6 съедает весь таймаут и acme.sh сдаётся. Вне режима прокси тот же переключатель зовётся `XUI_TLS_IPV6=1` и действует и на доменный сертификат панели |
+| `PROXY_DOMAIN` | Host запроса | публичный хост бокса: ссылки подписки и URL страницы входа |
+| `PROXY_SUB_PORT` | `2096` | собственный порт подписок звена |
+| `PROXY_SUB_LISTEN` | все интерфейсы | адрес привязки для него |
+| `PROXY_RELAY_LISTEN` | `::` | адрес привязки релея (`0.0.0.0` на хостах без IPv6) |
+| `PROXY_CERT` / `PROXY_KEY` | — | пути к TLS, имеют смысл только при `PROXY_TLS=manual` |
+
+При дефолтном `PROXY_TLS=letsencrypt-ip` установщик выпускает сертификат Let's Encrypt **на IP-адрес бокса** — домена у свежего одноразового фронта обычно нет, а IP-сертификаты Let's Encrypt выдаёт только по профилю `shortlived`, поэтому такой сертификат живёт около шести дней и продлевается автоматически. Для этого нужен свободный порт 80 — и при выпуске, и при каждом продлении; если его нет, установщик печатает WARN, а бокс работает без TLS и отдаёт страницу входа по обычному HTTP с предупреждающим баннером. Бокс, через который цепочка релеит 80-й порт, такой сертификат держать не может — ставьте его с `PROXY_TLS=manual` или `none`.
+
+**CLI** (тот же бинарь в обеих ролях):
+
+```
+x-ui chain ports      # панель: relayed ports, которые уедут в документ цепочки
+x-ui chain join-url   # бокс:   ссылка на страницу входа, пока она жива
+x-ui chain status     # бокс:   имя, роль, next hop, ревизия, relayed ports, последняя волна
+x-ui chain rejoin --next-hop <host> [--sub-port 2096] [--scheme https] --token <t>
+                      # бокс:   перецепить звено на новый next hop свежим токеном
+```
+
+Настройки лежат в `/etc/x-ui/proxy.json` (0600), последний принятый документ цепочки — в `/etc/x-ui/chain/`; бокс работает как сервис `x-ui`, запуская `x-ui proxy`, а `update.sh` сам определяет звено и обновляет его в режиме прокси, не трогая ни конфиг, ни состояние цепочки, ни сертификат. Бокс, на котором остался `proxy.json` доцепочной эпохи, останавливает обновление **до** подмены бинаря и продолжает релеить на текущей версии, пока его не переустановят как звено. Чтобы *переустановить* поверх существующего бокса без терминала, ответьте на вопрос «already installed» цифрой `2` (`printf '2\n' | XUI_PROXY_MODE=1 … bash <(curl …)`) — по умолчанию установщик переключается на скрипт обновления.
+
+Удаление звена, починка цепочки после гибели inner'а и полный проход по стенду — в [docs/runbooks/proxy-front.md](docs/runbooks/proxy-front.md).
+
+**Мониторинг.** Mon-server проверяет каждый inbound дважды: `direct` (напрямую на реальный сервер) и `proxy` (через активное edge и всю цепочку), так что «сломалась цепочка» и «упал сервер» выглядят по-разному. Отдельные строки на каждое звено (`edge:<имя>` / `inner:<имя>`), чтобы отличать «edge заблокировали» от «inner умер», описаны в спецификации, но ещё не сделаны ([#87](https://github.com/SBKubric/sane-3x-ui/issues/87)). См. [Мониторинг](#2-мониторинг-доступности-inbounds-mon-server).
+
+> **Важно:** реальный сервер видит все проксированные подключения с IP соседнего звена, поэтому per-client IP-лимит и лог IP не отражают реальные адреса клиентов для проксированного трафика.
+
+### 2. Мониторинг доступности inbound'ов (mon-server)
+
+**sane-3x-ui** умеет сообщать о состоянии каждого inbound'а внешнему **mon-server** — отдельному проекту, [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring), — чьи собственные mon-клиенты опрашивают inbound'ы снаружи через специально сгенерированные для них **пробные аккаунты**. Результаты приходят обратно по небольшому API `/mon/v1/*` с авторизацией по bearer-токену; сама панель пассивна и ничего не хранит, пока mon-server не обратится к ней.
+
+Благодаря этому в панели появляются страница **Monitoring** (состояние по каждому inbound'у, лента событий, спарклайны задержки и доступности), колонка **Health** и фильтр `down` в таблице inbound'ов, уведомления в Telegram при переходах DOWN/UP и отдельный блок в ежедневном дайджесте, а также флаг **STALE**, если mon-server молчит дольше настроенного порога (по умолчанию 15 минут). Пробные аккаунты называются с префиксом `probe-`, отмечаются бейджем `probe` и не учитываются в счётчиках онлайна, статистике Telegram и синхронизации с LDAP.
+
+Токен и переключатель — в **Настройки панели → Monitoring** (включение, токен с кнопками Copy / Regenerate, порог "устаревания", срок хранения, строка пробного набора с кнопкой Remove), либо из консоли:
+
+```
+x-ui setting -showMonToken
+x-ui setting -resetMonToken
+x-ui setting -monEnable true
+```
+
+— то же самое доступно пунктом **27** меню `x-ui` и через сокращение `x-ui mon-token`. Перегенерация мгновенно делает старый токен недействительным, поэтому конфиг mon-server нужно обновить сразу же.
+
+Подробности — в репозитории выше, в [спецификации панели мониторинга](docs/spec/monitoring-panel.md) и в [описании протокола обмена](docs/spec/monitoring-contract.md).
+
+> **Важно:** по умолчанию мониторинг выключен — пока он не включён и не выпущен токен, `/mon/v1` отвечает обычным 404.
+
+### 3. Развёртывание через Ansible
+
+[SBKubric/sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator) разворачивает всю установку по inventory: панель, звенья цепочки и, при желании, [mon-server и mon-client](https://github.com/SBKubric/3ax-ui-monitoring). Профиль задаётся выбором inventory: `stand-chain` — панель и цепочка, `stand-full` — панель, цепочка и мониторинг.
+
+```sh
+ansible-playbook -i inventories/stand-full site.yml --ask-vault-pass     # установить или привести к нужному состоянию
+ansible-playbook -i inventories/stand-full verify.yml --ask-vault-pass   # только проверки
+ansible-playbook -i inventories/stand-full wipe.yml -e wipe_confirm=yes --ask-vault-pass   # начать с нуля
+```
+
+- `site.yml` ставит закреплённые теги релизов, задаёт учётные данные панели из ansible-vault, создаёт inbound'ы из inventory и вводит звенья в цепочку изнутри наружу. Список звеньев в inventory — источник истины для реестра цепочки (добавление, перевыпуск токена, активное edge, удаление).
+- Он же настраивает mon-server через его admin API, автоматически одобряет mon-client по pairing code и подключает уведомления в Telegram.
+- `verify.yml` завершает прогон: панель доступна, звенья в цепочке, все цели мониторинга UP.
+- ОС на серверах: Debian 12/13 или Ubuntu 22.04/24.04.
+
+Подробности, включая runbook «стенд с нуля», — в README оркестратора.
+
+### 4. Исправления со стенда
+
+Прогоны цепочки и мониторинга целиком на живом стенде выявили ошибки, до которых юнит-тесты не доходили. Некоторые из исправлений:
+
+- **MTU AWG и паддинг AmneziaWG 2.0.** MTU по умолчанию теперь `1420 − S4`, чтобы полноразмерный пакет с транспортным паддингом помещался в канал с MTU 1500. Раньше TLS через AWG зависал после handshake.
+- **Порты цепочки из таблицы inbound'ов.** Порты, которые релеит звено, берутся из inbound'ов панели, а не из `bin/config.json`, так что новый inbound доходит до каждого звена.
+- **Исправления установщика.** ACME по умолчанию ходит по IPv4. Тег версии, переданный без TTY, больше не теряется. `--beta` больше не оставляет сервер без службы. Существующая установка обновляется `update.sh` этого форка, а не upstream'а.
+- **Подписки.** Пользователи VLESS получают `"encryption":"none"` в JSON-подписке. Ссылка на страницу профиля несёт собственный адрес и порт прокси.
+
+---
+
+## Унаследовано от 3AX-UI
+
+Остальные возможности пришли из [3AX-UI](https://github.com/coinman-dev/3ax-ui) без изменений.
+
+### Зачем 3AX-UI?
 
 Оригинальная 3x-ui построена вокруг ядра **Xray** и поддерживает VLESS, VMess, Trojan, Shadowsocks и WireGuard. Но самые востребованные сегодня средства обхода DPI в оригинале отсутствуют:
 
@@ -45,9 +198,6 @@ bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/instal
 
 А затем прячет их: фронтенд на nginx уводит за порт 443 всё, что объявляет имя сервера, и там же отвечает всем остальным обычным сайтом — один открытый порт вместо четырёх.
 
----
-
-## Главные отличия от оригинальной 3x-ui
 
 ### 1. Полная поддержка AmneziaWG (1.x, 2.0, 3.0 и 3.1)
 
@@ -226,8 +376,8 @@ xray-core inbound'ы `mixed` (SOCKS5) и `http` теперь использую�
 Скрипты `install.sh` и `update.sh` определяют, что их запускают из клонированного репозитория (наличие файлов + проверка `BASH_SOURCE`) и **собирают бинарь панели на месте из локальных исходников** вместо скачивания готового релиза с GitHub.
 
 ```bash
-git clone https://github.com/coinman-dev/3ax-ui.git
-cd 3ax-ui
+git clone https://github.com/SBKubric/sane-3x-ui.git
+cd sane-3x-ui
 sudo bash install.sh
 ```
 
@@ -250,13 +400,7 @@ Install panel in debug / diagnostic mode (localhost only)? [y/N]
 
 Стеки протоколов (AmneziaWG, native WireGuard, MTProto, xray) ставятся в debug-режиме как обычно — на loopback ограничен только web-доступ к самой панели.
 
-### 12. Дополнительно
-
-- **Telegram-бот:** отправка ссылок и QR клиенту прямо в чат при его создании; рассылка AWG-конфигов привязанным клиентам (для перехода на 2.0).
-- **Настраиваемый размер QR-кодов:** 300 / 450 (по умолчанию) / 600 px.
-- **Безопасный URL подписки по умолчанию:** при установке путь подписки генерируется со случайным 12-символьным суффиксом (например `/sub-Xk92mPqLvzRt/`) вместо `/sub/`.
-
-### 11. Цепочка прокси (противодействие блокировкам)
+### 12. Цепочка прокси (противодействие блокировкам)
 
 Когда IP или домен сервера попадает под блокировку, обычно приходится переносить всю панель. **3AX-UI** позволяет вместо этого спрятать реальный сервер за **цепочкой** дешёвых одноразовых **прокси-фронтов**: клиенты видят только самый внешний, и при блокировке вы просто заменяете его новым — реальный сервер (со всеми инбаундами, клиентами и историей трафика) продолжает работать, а его адрес нигде не светится.
 
@@ -362,6 +506,12 @@ x-ui setting -monEnable true
 
 ---
 
+### 13. Дополнительно
+
+- **Telegram-бот:** отправка ссылок и QR клиенту прямо в чат при его создании; управление панелью и уведомления о её состоянии.
+- **Настраиваемый размер QR-кодов:** 300 / 450 (по умолчанию) / 600 px.
+- **Безопасный URL подписки по умолчанию:** при установке путь подписки генерируется со случайным 12-символьным суффиксом (например `/sub-Xk92mPqLvzRt/`) вместо `/sub/`.
+
 ## Требования к серверу
 
 - **ОС:** Ubuntu 22.04+ / Debian 11+
@@ -376,24 +526,24 @@ x-ui setting -monEnable true
 ## Установка
 
 ```bash
-# Стабильная версия
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh)
+# Стабильная версия (v1.8.1.x: без цепочки и мониторинга)
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh)
 
 # Последняя pre-release версия
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh) --beta
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh) --beta
 
 # Конкретная версия
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh) v1.2.1
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh) v1.9.0-chain.6
 ```
 
 ## Обновление панели
 
 ```bash
 # Стабильная версия
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/update.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/update.sh)
 
 # Последняя pre-release версия
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/update.sh) --beta
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/update.sh) --beta
 ```
 
 ---
@@ -429,12 +579,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/update
 
 ## Основа
 
-3AX-UI основан на **[3x-ui](https://github.com/MHSanaei/3x-ui)** за авторством [MHSanaei](https://github.com/MHSanaei). Все оригинальные возможности (VLESS, VMess, Trojan, Shadowsocks, WireGuard, Xray, подписки, Telegram-бот и т.д.) полностью сохранены.
+sane-3x-ui — форк **[3AX-UI](https://github.com/coinman-dev/3ax-ui)** за авторством [coinman-dev](https://github.com/coinman-dev), который, в свою очередь, основан на **[3x-ui](https://github.com/MHSanaei/3x-ui)** за авторством [MHSanaei](https://github.com/MHSanaei). Все оригинальные возможности (VLESS, VMess, Trojan, Shadowsocks, WireGuard, Xray, подписки, Telegram-бот и т.д.) полностью сохранены, как и AmneziaWG, native WireGuard и MTProto из 3AX-UI.
+
+Мониторинг (mon-server и mon-client) живёт в [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring), развёртывание — в [SBKubric/sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator).
 
 MTProto-прокси работает на сайдкаре **[mtg](https://github.com/9seconds/mtg)** (одно-секретный) и его форке **[mtg-multi](https://github.com/dolonet/mtg-multi)** (многопользовательский).
 
 ## Благодарности
 
+- [coinman-dev](https://github.com/coinman-dev) — автор 3AX-UI, на котором построен этот форк
 - [MHSanaei](https://github.com/MHSanaei/) — автор оригинальной 3x-ui
 - [alireza0](https://github.com/alireza0/) — автор оригинальной x-ui
 - [9seconds/mtg](https://github.com/9seconds/mtg) и [dolonet/mtg-multi](https://github.com/dolonet/mtg-multi) — MTProto-сайдкары
