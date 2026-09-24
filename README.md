@@ -318,9 +318,9 @@ The installer writes `/etc/x-ui/proxy.json`, issues TLS, **joins the chain befor
 | `PROXY_SUB_PORT` | `2096` | this hop's own subscription port |
 | `PROXY_SUB_LISTEN` | all interfaces | bind address for it |
 | `PROXY_RELAY_LISTEN` | `::` | bind address of the relay (`0.0.0.0` on hosts without IPv6) |
-| `PROXY_CERT` / `PROXY_KEY` | — | TLS paths, only meaningful with `PROXY_TLS=manual` |
+| `PROXY_CERT` / `PROXY_KEY` | — | TLS paths, only meaningful with `PROXY_TLS=manual`; there they are required — absolute paths to readable PEM files, or the install stops before changing anything |
 
-With the default `PROXY_TLS=letsencrypt-ip` the installer issues a Let's Encrypt certificate **for the box's own IP address** — a fresh disposable front has no domain, and Let's Encrypt only issues IP certificates under the `shortlived` profile, so it is valid for about six days and renewed automatically. That needs port 80 free, both at issue time and at every renewal; if it is not, the installer warns and the box runs without TLS, serving its join page over plain HTTP with a warning banner. A box that relays port 80 through the chain cannot hold such a certificate — install it with `PROXY_TLS=manual` or `none`.
+With the default `PROXY_TLS=letsencrypt-ip` the installer issues a Let's Encrypt certificate **for the box's own IP address** — a fresh disposable front has no domain, and Let's Encrypt only issues IP certificates under the `shortlived` profile, so it is valid for about six days and renewed automatically. That needs port 80 free, both at issue time and at every renewal; if it is not, the installer warns and the box runs without TLS, serving its join page over plain HTTP with a warning banner. A box that relays port 80 through the chain cannot hold such a certificate — install it with `PROXY_TLS=manual` or `none`. A reinstall keeps the IP certificate already on the box (in `/root/cert/ip`, valid for more than a day and renewed by acme.sh) instead of issuing a new one.
 
 **CLI** (the same binary in both roles):
 
