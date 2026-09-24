@@ -16,7 +16,7 @@
 
 - **Цепочка прокси.** Реальный сервер прячется за цепочкой одноразовых прокси-фронтов. Клиенты видят только внешний. Когда его блокируют, вы меняете его на новый, а панель, inbound'ы и клиенты остаются на месте. См. [Цепочка прокси](#1-цепочка-прокси-противодействие-блокировкам).
 - **Мониторинг доступности inbound'ов.** Внешний [mon-server](https://github.com/SBKubric/3ax-ui-monitoring) проверяет каждый inbound снаружи через пробные аккаунты, напрямую и через цепочку. Панель показывает состояние каждого inbound'а и шлёт в Telegram уведомления DOWN/UP. См. [Мониторинг](#2-мониторинг-доступности-inbounds-mon-server).
-- **Развёртывание с голых VPS.** Один Ansible-плейбук из [3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator) ставит панель, вводит звенья в цепочку и, если нужен мониторинг, добавляет mon-server и mon-client. См. [Развёртывание через Ansible](#3-развёртывание-через-ansible).
+- **Развёртывание с голых VPS.** Один Ansible-плейбук из [sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator) ставит панель, вводит звенья в цепочку и, если нужен мониторинг, добавляет mon-server и mon-client. См. [Развёртывание через Ansible](#3-развёртывание-через-ansible).
 - **Проверено на живом стенде.** Релизы с цепочкой и мониторингом прогоняются целиком на стенде из пяти VPS (панель, два звена, mon-server, mon-client), а найденные там ошибки исправляются здесь. См. [Исправления со стенда](#4-исправления-со-стенда).
 
 Всё из 3AX-UI и 3x-ui продолжает работать: VLESS, VMess, Trojan, Shadowsocks, WireGuard, AmneziaWG, MTProto, подписки и Telegram-бот.
@@ -156,7 +156,7 @@ x-ui setting -monEnable true
 
 ### 3. Развёртывание через Ansible
 
-[SBKubric/3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator) разворачивает всю установку по inventory: панель, звенья цепочки и, при желании, [mon-server и mon-client](https://github.com/SBKubric/3ax-ui-monitoring). Профиль задаётся выбором inventory: `stand-chain` — панель и цепочка, `stand-full` — панель, цепочка и мониторинг.
+[SBKubric/sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator) разворачивает всю установку по inventory: панель, звенья цепочки и, при желании, [mon-server и mon-client](https://github.com/SBKubric/3ax-ui-monitoring). Профиль задаётся выбором inventory: `stand-chain` — панель и цепочка, `stand-full` — панель, цепочка и мониторинг.
 
 ```sh
 ansible-playbook -i inventories/stand-full site.yml --ask-vault-pass     # установить или привести к нужному состоянию
@@ -475,7 +475,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/updat
 
 sane-3x-ui — форк **[3AX-UI](https://github.com/coinman-dev/3ax-ui)** за авторством [coinman-dev](https://github.com/coinman-dev), который, в свою очередь, основан на **[3x-ui](https://github.com/MHSanaei/3x-ui)** за авторством [MHSanaei](https://github.com/MHSanaei). Все оригинальные возможности (VLESS, VMess, Trojan, Shadowsocks, WireGuard, Xray, подписки, Telegram-бот и т.д.) полностью сохранены, как и AmneziaWG, native WireGuard и MTProto из 3AX-UI.
 
-Мониторинг (mon-server и mon-client) живёт в [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring), развёртывание — в [SBKubric/3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator).
+Мониторинг (mon-server и mon-client) живёт в [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring), развёртывание — в [SBKubric/sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator).
 
 MTProto-прокси работает на сайдкаре **[mtg](https://github.com/9seconds/mtg)** (одно-секретный) и его форке **[mtg-multi](https://github.com/dolonet/mtg-multi)** (многопользовательский).
 

@@ -16,7 +16,7 @@
 
 - **Proxy chain.** The real server hides behind a chain of disposable proxy fronts. Clients only see the outermost one. When it gets blocked, you replace it and the panel, inbounds and clients stay where they are. See [Proxy chain](#1-proxy-chain-anti-blocking).
 - **Inbound health monitoring.** An external [mon-server](https://github.com/SBKubric/3ax-ui-monitoring) probes every inbound from outside through probe accounts, both directly and through the chain. The panel shows each inbound's health and sends DOWN/UP alerts to Telegram. See [Monitoring](#2-inbound-health-monitoring-mon-server).
-- **Deploy from bare VPS.** One Ansible playbook in [3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator) installs the panel, joins the chain hops and adds mon-server and mon-client when you want monitoring. See [Deploy with Ansible](#3-deploy-with-ansible).
+- **Deploy from bare VPS.** One Ansible playbook in [sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator) installs the panel, joins the chain hops and adds mon-server and mon-client when you want monitoring. See [Deploy with Ansible](#3-deploy-with-ansible).
 - **Tested on a real stand.** The chain and monitoring releases are run end to end on a five-VPS stand (panel, two hops, mon-server, mon-client), and the bugs found there are fixed here. See [Fixes from the stand](#4-fixes-from-the-stand).
 
 Everything from 3AX-UI and 3x-ui keeps working: VLESS, VMess, Trojan, Shadowsocks, WireGuard, AmneziaWG, MTProto, subscriptions and the Telegram bot.
@@ -156,7 +156,7 @@ See the repo above, the [monitoring panel spec](docs/spec/monitoring-panel.md) a
 
 ### 3. Deploy with Ansible
 
-[SBKubric/3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator) deploys a whole installation from an inventory: the panel, its chain hops and, optionally, [mon-server and mon-client](https://github.com/SBKubric/3ax-ui-monitoring). The profile is the inventory: `stand-chain` gives panel + chain, `stand-full` gives panel + chain + monitoring.
+[SBKubric/sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator) deploys a whole installation from an inventory: the panel, its chain hops and, optionally, [mon-server and mon-client](https://github.com/SBKubric/3ax-ui-monitoring). The profile is the inventory: `stand-chain` gives panel + chain, `stand-full` gives panel + chain + monitoring.
 
 ```sh
 ansible-playbook -i inventories/stand-full site.yml --ask-vault-pass     # install or converge
@@ -475,7 +475,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/updat
 
 sane-3x-ui is a fork of **[3AX-UI](https://github.com/coinman-dev/3ax-ui)** by [coinman-dev](https://github.com/coinman-dev), which in turn is based on **[3x-ui](https://github.com/MHSanaei/3x-ui)** by [MHSanaei](https://github.com/MHSanaei). All original features (VLESS, VMess, Trojan, Shadowsocks, WireGuard, Xray, subscriptions, Telegram bot, etc.) are fully preserved, as are 3AX-UI's AmneziaWG, native WireGuard and MTProto.
 
-Monitoring (mon-server and mon-client) lives in [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring), deployment in [SBKubric/3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator).
+Monitoring (mon-server and mon-client) lives in [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring), deployment in [SBKubric/sane-3x-ui-orchestrator](https://github.com/SBKubric/sane-3x-ui-orchestrator).
 
 The MTProto proxy runs on the **[mtg](https://github.com/9seconds/mtg)** sidecar (single-secret) and its **[mtg-multi](https://github.com/dolonet/mtg-multi)** fork (multi-user).
 
