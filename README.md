@@ -2,38 +2,191 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./media/3ax-ui-dark.png">
-    <img alt="3ax-ui" src="./media/3ax-ui-light.png">
+    <source media="(prefers-color-scheme: dark)" srcset="./media/sane-3x-ui-dark.svg">
+    <img alt="sane-3x-ui" src="./media/sane-3x-ui-light.svg" width="480">
   </picture>
 </p>
 
-[![Release](https://img.shields.io/github/v/release/coinman-dev/3ax-ui.svg)](https://github.com/coinman-dev/3ax-ui/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/coinman-dev/3ax-ui/release.yml.svg)](https://github.com/coinman-dev/3ax-ui/actions)
-[![GO Version](https://img.shields.io/github/go-mod/go-version/coinman-dev/3ax-ui.svg)](#)
-[![Downloads](https://img.shields.io/github/downloads/coinman-dev/3ax-ui/total.svg)](https://github.com/coinman-dev/3ax-ui/releases/latest)
+[![Release](https://img.shields.io/github/v/release/SBKubric/sane-3x-ui.svg?include_prereleases)](https://github.com/SBKubric/sane-3x-ui/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/SBKubric/sane-3x-ui/release.yml.svg)](https://github.com/SBKubric/sane-3x-ui/actions)
+[![GO Version](https://img.shields.io/github/go-mod/go-version/SBKubric/sane-3x-ui.svg)](#)
 [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 
-**3AX-UI** is a fork of [3x-ui](https://github.com/MHSanaei/3x-ui) with built-in censorship-circumvention protocols the original lacks: **AmneziaWG** (through 3.1), **native WireGuard** with native IPv6, and **MTProto** (a Telegram proxy) — all of which it can hide behind a single port 443, where the server answers a browser with an ordinary website.
+**sane-3x-ui** is a 3x-ui panel built to stay up without constant attention. It builds on [3AX-UI](https://github.com/coinman-dev/3ax-ui), which adds AmneziaWG, native WireGuard, MTProto and an nginx front on a single port 443 to [3x-ui](https://github.com/MHSanaei/3x-ui). On top of that, it adds what you need to keep a server reachable when it gets blocked and to know when it isn't:
 
-> The **A** in the name stands for **Amnezia** — the protocol this fork started with and still its key difference from the original.
+- **Proxy chain.** The real server hides behind a chain of disposable proxy fronts. Clients only see the outermost one. When it gets blocked, you replace it and the panel, inbounds and clients stay where they are. See [Proxy chain](#1-proxy-chain-anti-blocking).
+- **Inbound health monitoring.** An external [mon-server](https://github.com/SBKubric/3ax-ui-monitoring) probes every inbound from outside through probe accounts, both directly and through the chain. The panel shows each inbound's health and sends DOWN/UP alerts to Telegram. See [Monitoring](#2-inbound-health-monitoring-mon-server).
+- **Deploy from bare VPS.** One Ansible playbook in [3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator) installs the panel, joins the chain hops and adds mon-server and mon-client when you want monitoring. See [Deploy with Ansible](#3-deploy-with-ansible).
+- **Tested on a real stand.** The chain and monitoring releases are run end to end on a five-VPS stand (panel, two hops, mon-server, mon-client), and the bugs found there are fixed here. See [Fixes from the stand](#4-fixes-from-the-stand).
+
+Everything from 3AX-UI and 3x-ui keeps working: VLESS, VMess, Trojan, Shadowsocks, WireGuard, AmneziaWG, MTProto, subscriptions and the Telegram bot.
 
 > [!IMPORTANT]
 > This project is intended for personal use only. Please do not use it for illegal purposes.
 
+## Alternative versions
+
+sane-3x-ui is one of three related panels. If you need neither a chain nor monitoring, one of the others may suit you better:
+
+| Panel | What it is | Choose it when |
+|-------|------------|----------------|
+| [3x-ui](https://github.com/MHSanaei/3x-ui) by MHSanaei | The original Xray panel: VLESS, VMess, Trojan, Shadowsocks, WireGuard; the largest community | Xray protocols are all you need |
+| [3AX-UI](https://github.com/coinman-dev/3ax-ui) by coinman-dev | 3x-ui plus AmneziaWG (through 3.1), native WireGuard with IPv6, MTProto, nginx camouflage on port 443 | you want those protocols on one server, without a chain or monitoring |
+| **sane-3x-ui** (this repo) | 3AX-UI plus the proxy chain, inbound health monitoring and Ansible deployment | your server gets blocked and you want to swap fronts instead of moving the panel, and see when an inbound goes down |
+
+The features listed under [Inherited from 3AX-UI](#inherited-from-3ax-ui) come from 3AX-UI.
+
 ## Quick Start
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh) --beta
 ```
 
-To install the latest pre-release version:
+> The chain and monitoring ship in the `v1.9.0-chain.*` pre-releases, hence `--beta`. Without it the installer takes the latest stable release (`v1.8.1.x`), which has neither.
 
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh) --beta
-```
+To add proxy fronts, see [Proxy chain](#1-proxy-chain-anti-blocking). To deploy the panel, hops and monitoring from scratch, see [Deploy with Ansible](#3-deploy-with-ansible).
+
 ---
 
-## Why this panel?
+## Added in sane-3x-ui
+
+### 1. Proxy chain (anti-blocking)
+
+When a server's IP or domain gets blocked you normally have to migrate the whole panel. **sane-3x-ui** can instead hide the real server behind a **chain** of cheap, disposable **proxy fronts**: clients only ever see the outermost one, so when it gets blocked you throw it away and spin up a new one — the real server (with all your inbounds, clients and traffic history) keeps running untouched and its address is never exposed.
+
+A **chain** is a list of hops between the clients and the real server. Each **hop** relays to the next one and pulls subscriptions down the same path:
+
+```
+clients ──▶ edge front ──▶ inner front ──▶ … ──▶ real server
+```
+
+The hop clients see is the **edge front**; the ones only their neighbours know are **inner fronts**. A hop knows **only its own next hop** — never what lies beyond it. One panel has one chain; a chain of one hop is the ordinary case, and that hop's next hop is the panel itself.
+
+**a) The chain registry (on the real panel).** The chain lives in **Panel Settings → Subscription → Chain**: each hop's name, role (`inner` / `edge`), host and order, plus which edge is the **active** one. The active edge is what the panel substitutes into every generated client config and subscription link; SNI / TLS / Reality identity is left untouched. From the Telegram bot:
+
+```
+/proxy                 list the hops, their roles and states
+/proxy <name>          make that edge the active one
+/proxy off             stop substituting; links point at the real server
+```
+
+The registry also holds `chainExtraPorts` — the ports the real server serves *outside* xray (AmneziaWG / WireGuard listeners, the MTProto sidecar), which the panel cannot read out of its xray config. Everything else the hops relay, the panel works out itself.
+
+**Prerequisite: the panel's subscription server must be on** (`subEnable`). The chain's own routes (`/chain/v1/*`) live on it, so with it off no hop can join or receive updates; the panel logs a WARN at start if the registry has hops and the subscription server is off. If the panel has a `subDomain` set, its domain check runs before the chain routes — hops must then point at that domain (`PROXY_NEXT_HOP=<subDomain>`), not at a bare IP.
+
+**b) Proxy run mode (`x-ui proxy`).** A disposable box runs the same binary as one hop and does two things:
+
+- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every relayed port to its next hop (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on a hop**. Which ports to relay arrives in the **chain document** the hop polls from its next hop — a truncated excerpt of the registry that shows the hop itself, everything outward of it and the port list, and nothing deeper.
+- **Serves subscriptions** — it fetches `/sub` and `/json` from its next hop and re-serves them: apps get the raw subscription, browsers get a custom page (traffic stats, QR, a **Copy VLESS JSON** button, and a curated app list).
+
+**Joining a hop to the chain.** Always work inwards-out: the panel first, then the innermost hop, then outwards, edge last. Creating the hop in the registry does **not** bump the chain revision — a `pending` hop is not in the document yet, so there is nothing in it to change; the revision moves once, when the box actually joins.
+
+1. On the panel, **Settings → Subscription → Chain** → add the hop (name, role, host). The panel shows a one-time **join token** (32 characters, valid 24 hours) — once, and never again; if it expires or is lost, press *reissue token*.
+2. On the box, run the installer in proxy mode with that token:
+
+```bash
+XUI_PROXY_MODE=1 \
+PROXY_NEXT_HOP=<next-hop-ip-or-domain> \
+PROXY_NEXT_HOP_SUB_PORT=2096 \
+PROXY_JOIN_TOKEN=<token from step 1> \
+PROXY_DOMAIN=edge.example.com \
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh)
+```
+
+The installer writes `/etc/x-ui/proxy.json`, issues TLS, **joins the chain before it starts the service**, and the footer prints `x-ui chain status`. Without `PROXY_JOIN_TOKEN` the box comes up in *bootstrap mode* instead: it serves only a one-time **join page**, whose link the footer prints and `x-ui chain join-url` prints again; the token goes into that page, and the relay starts the moment the join is accepted.
+
+3. When the hop is an edge and should face clients, make it the active one (step **a**).
+
+**Install variables** (proxy mode):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `XUI_PROXY_MODE` | — | `1` installs this host as a chain hop |
+| `PROXY_NEXT_HOP` | — | **required** — the next hop's address: an inner front, or the real server for the innermost hop |
+| `PROXY_NEXT_HOP_SUB_PORT` | `2096` | the next hop's subscription port (subscriptions, `/chain/v1/*`) |
+| `PROXY_NEXT_HOP_SCHEME` | `https` | `http` or `https` for that port |
+| `PROXY_JOIN_TOKEN` | — | the one-time token from the registry; without it the box serves a join page |
+| `PROXY_TLS` | `letsencrypt-ip` | how this hop gets TLS for its own subscription port: `letsencrypt-ip`, `none` or `manual` |
+| `PROXY_TLS_IPV6` | off | `1` runs the ACME client over IPv6 as well; by default it is pinned to IPv4, because a dual-stack connect to the CA from a box without working IPv6 costs the whole connect timeout and acme.sh gives up. Spelled `XUI_TLS_IPV6=1` outside proxy mode — it is the same switch, and it governs the panel's domain certificate too |
+| `PROXY_DOMAIN` | request host | this box's public host, used in subscription links and the join-page URL |
+| `PROXY_SUB_PORT` | `2096` | this hop's own subscription port |
+| `PROXY_SUB_LISTEN` | all interfaces | bind address for it |
+| `PROXY_RELAY_LISTEN` | `::` | bind address of the relay (`0.0.0.0` on hosts without IPv6) |
+| `PROXY_CERT` / `PROXY_KEY` | — | TLS paths, only meaningful with `PROXY_TLS=manual` |
+
+With the default `PROXY_TLS=letsencrypt-ip` the installer issues a Let's Encrypt certificate **for the box's own IP address** — a fresh disposable front has no domain, and Let's Encrypt only issues IP certificates under the `shortlived` profile, so it is valid for about six days and renewed automatically. That needs port 80 free, both at issue time and at every renewal; if it is not, the installer warns and the box runs without TLS, serving its join page over plain HTTP with a warning banner. A box that relays port 80 through the chain cannot hold such a certificate — install it with `PROXY_TLS=manual` or `none`.
+
+**CLI** (the same binary in both roles):
+
+```
+x-ui chain ports      # panel: the relayed ports the chain document will carry
+x-ui chain join-url   # box:   the pending join-page link
+x-ui chain status     # box:   name, role, next hop, revision, relayed ports, last wave
+x-ui chain rejoin --next-hop <host> [--sub-port 2096] [--scheme https] --token <t>
+                      # box:   point this hop at a new next hop with a fresh token
+```
+
+Settings live in `/etc/x-ui/proxy.json` (0600) and the last accepted chain document in `/etc/x-ui/chain/`; the box runs `x-ui proxy` as the `x-ui` service, and `update.sh` auto-detects a hop and updates it in proxy mode, leaving the config, the chain state and the certificate alone. A box still carrying a pre-chain `proxy.json` stops the update **before** the binary is replaced and keeps relaying on its current version until it is reinstalled as a hop. To *reinstall* over an existing box non-interactively, answer the "already installed" prompt with `2` (`printf '2\n' | XUI_PROXY_MODE=1 … bash <(curl …)`); the default switches to the update script instead.
+
+Removing a hop, repairing the chain after an inner front dies and the full stand walkthrough are in [docs/runbooks/proxy-front.md](docs/runbooks/proxy-front.md).
+
+**Monitoring.** A mon-server probes every inbound twice: `direct` (straight to the real server) and `proxy` (through the active edge and the whole chain), so "the chain is broken" and "the server is down" look different. Separate lines per hop (`edge:<name>` / `inner:<name>`), to tell "the edge is blocked" from "an inner hop died", are specified but not built yet ([#87](https://github.com/SBKubric/sane-3x-ui/issues/87)). See [Monitoring](#2-inbound-health-monitoring-mon-server).
+
+> **Note:** the real server sees every relayed connection coming from the neighbouring hop's IP, so per-client IP-limit and the IP log won't reflect real client IPs for relayed traffic.
+
+### 2. Inbound health monitoring (mon-server)
+
+**sane-3x-ui** can report each inbound's health to an external **mon-server** — a separate project, [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring) — whose own mon-clients probe the inbounds from outside through generated **probe accounts**. Results come back over a small bearer-token API under `/mon/v1/*`; the panel is passive and stores nothing until a mon-server talks to it.
+
+This gives the panel a **Monitoring** page (per-inbound state, event feed, latency/availability sparklines), a **Health** column and a `down` filter in the Inbounds table, Telegram alerts on DOWN/UP plus a block in the daily digest, and a **STALE** flag once the mon-server goes silent past the configured threshold (15 minutes by default). Probe accounts carry a `probe-` prefix, show a `probe` badge, and are excluded from online counts, Telegram stats and LDAP sync.
+
+Get the token in **Panel Settings → Monitoring** (enable switch, token with Copy / Regenerate, stale threshold, retention, probe-set line with Remove), or from the CLI:
+
+```
+x-ui setting -showMonToken
+x-ui setting -resetMonToken
+x-ui setting -monEnable true
+```
+
+— also menu item **27** in `x-ui`, or the `x-ui mon-token` shortcut. Regenerating invalidates the old token at once, so update the mon-server config right away.
+
+See the repo above, the [monitoring panel spec](docs/spec/monitoring-panel.md) and the [wire contract](docs/spec/monitoring-contract.md).
+
+> **Note:** monitoring is off by default — until enabled with a token issued, `/mon/v1` answers a bare 404.
+
+### 3. Deploy with Ansible
+
+[SBKubric/3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator) deploys a whole installation from an inventory: the panel, its chain hops and, optionally, [mon-server and mon-client](https://github.com/SBKubric/3ax-ui-monitoring). The profile is the inventory: `stand-chain` gives panel + chain, `stand-full` gives panel + chain + monitoring.
+
+```sh
+ansible-playbook -i inventories/stand-full site.yml --ask-vault-pass     # install or converge
+ansible-playbook -i inventories/stand-full verify.yml --ask-vault-pass   # checks only
+ansible-playbook -i inventories/stand-full wipe.yml -e wipe_confirm=yes --ask-vault-pass   # start from scratch
+```
+
+- `site.yml` installs pinned release tags, sets the panel credentials from ansible-vault, creates the inbounds listed in the inventory, and joins hops inside-out. The hop list in the inventory is the source of truth for the chain registry (add, reissue, set active, delete).
+- It also configures mon-server through its admin API, approves mon-client automatically by pairing code, and sets up Telegram alerts.
+- `verify.yml` finishes the run: panel reachable, hops joined, and every monitoring target UP.
+- Target OS: Debian 12/13 or Ubuntu 22.04/24.04.
+
+The details are in the orchestrator's README, including the runbook for building a stand from scratch.
+
+### 4. Fixes from the stand
+
+Running the chain and monitoring end-to-end on a real stand turned up bugs the unit tests never hit. Some of the fixes:
+
+- **AWG MTU and AmneziaWG 2.0 padding.** The default MTU is now `1420 − S4`, so a full-size packet plus the transport padding still fits a 1500-byte link. Previously TLS through AWG stalled after the handshake.
+- **Chain ports from the inbounds table.** The ports a hop relays come from the panel's inbounds, not from `bin/config.json`, so a newly added inbound reaches every hop.
+- **Installer fixes.** ACME runs over IPv4 by default. A version tag passed without a TTY is no longer dropped. `--beta` no longer leaves a box without the service. An existing install is handed to this fork's `update.sh`, not upstream's.
+- **Subscriptions.** VLESS users get `"encryption":"none"` in the JSON subscription. The profile page URL carries the proxy's own address and port.
+
+---
+
+## Inherited from 3AX-UI
+
+The rest of the feature set comes from [3AX-UI](https://github.com/coinman-dev/3ax-ui) unchanged.
+
+### Why 3AX-UI?
 
 The original 3x-ui is built around the **Xray** core and supports VLESS, VMess, Trojan, Shadowsocks, and WireGuard. But the most useful DPI-circumvention tools today are missing from the original:
 
@@ -45,9 +198,6 @@ The original 3x-ui is built around the **Xray** core and supports VLESS, VMess, 
 
 And then it hides them. An nginx front-end puts every protocol that announces a server name behind port 443, and answers anyone else there with an ordinary website — one open port instead of four.
 
----
-
-## Key differences from 3x-ui
 
 ### 1. Full AmneziaWG support (1.x, 2.0, 3.0 and 3.1)
 
@@ -226,8 +376,8 @@ The install script (`install.sh`) automatically:
 Both `install.sh` and `update.sh` detect when they are being run from inside a cloned repository (file presence + a BASH_SOURCE safety check) and **build the panel binary on the spot from the local source** instead of downloading the pre-built release tarball.
 
 ```bash
-git clone https://github.com/coinman-dev/3ax-ui.git
-cd 3ax-ui
+git clone https://github.com/SBKubric/sane-3x-ui.git
+cd sane-3x-ui
 sudo bash install.sh
 ```
 
@@ -256,112 +406,6 @@ Protocol stacks (AmneziaWG, native WireGuard, MTProto, xray) install normally in
 - **Configurable QR code size:** 300 / 450 (default) / 600 px.
 - **Secure subscription URL by default:** on install the subscription path is generated with a random 12-character suffix (e.g. `/sub-Xk92mPqLvzRt/`) instead of `/sub/`.
 
-### 11. Proxy chain (anti-blocking)
-
-When a server's IP or domain gets blocked you normally have to migrate the whole panel. **3AX-UI** can instead hide the real server behind a **chain** of cheap, disposable **proxy fronts**: clients only ever see the outermost one, so when it gets blocked you throw it away and spin up a new one — the real server (with all your inbounds, clients and traffic history) keeps running untouched and its address is never exposed.
-
-A **chain** is a list of hops between the clients and the real server. Each **hop** relays to the next one and pulls subscriptions down the same path:
-
-```
-clients ──▶ edge front ──▶ inner front ──▶ … ──▶ real server
-```
-
-The hop clients see is the **edge front**; the ones only their neighbours know are **inner fronts**. A hop knows **only its own next hop** — never what lies beyond it. One panel has one chain; a chain of one hop is the ordinary case, and that hop's next hop is the panel itself.
-
-**a) The chain registry (on the real panel).** The chain lives in **Panel Settings → Subscription → Chain**: each hop's name, role (`inner` / `edge`), host and order, plus which edge is the **active** one. The active edge is what the panel substitutes into every generated client config and subscription link; SNI / TLS / Reality identity is left untouched. From the Telegram bot:
-
-```
-/proxy                 list the hops, their roles and states
-/proxy <name>          make that edge the active one
-/proxy off             stop substituting; links point at the real server
-```
-
-The registry also holds `chainExtraPorts` — the ports the real server serves *outside* xray (AmneziaWG / WireGuard listeners, the MTProto sidecar), which the panel cannot read out of its xray config. Everything else the hops relay, the panel works out itself.
-
-**Prerequisite: the panel's subscription server must be on** (`subEnable`). The chain's own routes (`/chain/v1/*`) live on it, so with it off no hop can join or receive updates; the panel logs a WARN at start if the registry has hops and the subscription server is off. If the panel has a `subDomain` set, its domain check runs before the chain routes — hops must then point at that domain (`PROXY_NEXT_HOP=<subDomain>`), not at a bare IP.
-
-**b) Proxy run mode (`x-ui proxy`).** A disposable box runs the same binary as one hop and does two things:
-
-- **Relays traffic** — an xray `dokodemo-door` L4 passthrough forwards every relayed port to its next hop (raw TCP+UDP, dual-stack). TLS/Reality terminate on the real server, so **no keys ever live on a hop**. Which ports to relay arrives in the **chain document** the hop polls from its next hop — a truncated excerpt of the registry that shows the hop itself, everything outward of it and the port list, and nothing deeper.
-- **Serves subscriptions** — it fetches `/sub` and `/json` from its next hop and re-serves them: apps get the raw subscription, browsers get a custom page (traffic stats, QR, a **Copy VLESS JSON** button, and a curated app list).
-
-**Joining a hop to the chain.** Always work inwards-out: the panel first, then the innermost hop, then outwards, edge last. Creating the hop in the registry does **not** bump the chain revision — a `pending` hop is not in the document yet, so there is nothing in it to change; the revision moves once, when the box actually joins.
-
-1. On the panel, **Settings → Subscription → Chain** → add the hop (name, role, host). The panel shows a one-time **join token** (32 characters, valid 24 hours) — once, and never again; if it expires or is lost, press *reissue token*.
-2. On the box, run the installer in proxy mode with that token:
-
-```bash
-XUI_PROXY_MODE=1 \
-PROXY_NEXT_HOP=<next-hop-ip-or-domain> \
-PROXY_NEXT_HOP_SUB_PORT=2096 \
-PROXY_JOIN_TOKEN=<token from step 1> \
-PROXY_DOMAIN=edge.example.com \
-bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/install.sh)
-```
-
-The installer writes `/etc/x-ui/proxy.json`, issues TLS, **joins the chain before it starts the service**, and the footer prints `x-ui chain status`. Without `PROXY_JOIN_TOKEN` the box comes up in *bootstrap mode* instead: it serves only a one-time **join page**, whose link the footer prints and `x-ui chain join-url` prints again; the token goes into that page, and the relay starts the moment the join is accepted.
-
-3. When the hop is an edge and should face clients, make it the active one (step **a**).
-
-**Install variables** (proxy mode):
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `XUI_PROXY_MODE` | — | `1` installs this host as a chain hop |
-| `PROXY_NEXT_HOP` | — | **required** — the next hop's address: an inner front, or the real server for the innermost hop |
-| `PROXY_NEXT_HOP_SUB_PORT` | `2096` | the next hop's subscription port (subscriptions, `/chain/v1/*`) |
-| `PROXY_NEXT_HOP_SCHEME` | `https` | `http` or `https` for that port |
-| `PROXY_JOIN_TOKEN` | — | the one-time token from the registry; without it the box serves a join page |
-| `PROXY_TLS` | `letsencrypt-ip` | how this hop gets TLS for its own subscription port: `letsencrypt-ip`, `none` or `manual` |
-| `PROXY_TLS_IPV6` | off | `1` runs the ACME client over IPv6 as well; by default it is pinned to IPv4, because a dual-stack connect to the CA from a box without working IPv6 costs the whole connect timeout and acme.sh gives up. Spelled `XUI_TLS_IPV6=1` outside proxy mode — it is the same switch, and it governs the panel's domain certificate too |
-| `PROXY_DOMAIN` | request host | this box's public host, used in subscription links and the join-page URL |
-| `PROXY_SUB_PORT` | `2096` | this hop's own subscription port |
-| `PROXY_SUB_LISTEN` | all interfaces | bind address for it |
-| `PROXY_RELAY_LISTEN` | `::` | bind address of the relay (`0.0.0.0` on hosts without IPv6) |
-| `PROXY_CERT` / `PROXY_KEY` | — | TLS paths, only meaningful with `PROXY_TLS=manual` |
-
-With the default `PROXY_TLS=letsencrypt-ip` the installer issues a Let's Encrypt certificate **for the box's own IP address** — a fresh disposable front has no domain, and Let's Encrypt only issues IP certificates under the `shortlived` profile, so it is valid for about six days and renewed automatically. That needs port 80 free, both at issue time and at every renewal; if it is not, the installer warns and the box runs without TLS, serving its join page over plain HTTP with a warning banner. A box that relays port 80 through the chain cannot hold such a certificate — install it with `PROXY_TLS=manual` or `none`.
-
-**CLI** (the same binary in both roles):
-
-```
-x-ui chain ports      # panel: the relayed ports the chain document will carry
-x-ui chain join-url   # box:   the pending join-page link
-x-ui chain status     # box:   name, role, next hop, revision, relayed ports, last wave
-x-ui chain rejoin --next-hop <host> [--sub-port 2096] [--scheme https] --token <t>
-                      # box:   point this hop at a new next hop with a fresh token
-```
-
-Settings live in `/etc/x-ui/proxy.json` (0600) and the last accepted chain document in `/etc/x-ui/chain/`; the box runs `x-ui proxy` as the `x-ui` service, and `update.sh` auto-detects a hop and updates it in proxy mode, leaving the config, the chain state and the certificate alone. A box still carrying a pre-chain `proxy.json` stops the update **before** the binary is replaced and keeps relaying on its current version until it is reinstalled as a hop. To *reinstall* over an existing box non-interactively, answer the "already installed" prompt with `2` (`printf '2\n' | XUI_PROXY_MODE=1 … bash <(curl …)`); the default switches to the update script instead.
-
-Removing a hop, repairing the chain after an inner front dies and the full stand walkthrough are in [docs/runbooks/proxy-front.md](docs/runbooks/proxy-front.md).
-
-**Monitoring.** A mon-server probes each hop separately, so a chain shows up as `direct` plus one line per hop — which is how you tell "the edge is blocked" from "the inner one died". See section 12.
-
-> **Note:** the real server sees every relayed connection coming from the neighbouring hop's IP, so per-client IP-limit and the IP log won't reflect real client IPs for relayed traffic.
-
-### 12. Inbound health monitoring (mon-server)
-
-**3AX-UI** can report each inbound's health to an external **mon-server** — a separate project, [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring) — whose own mon-clients probe the inbounds from outside through generated **probe accounts**. Results come back over a small bearer-token API under `/mon/v1/*`; the panel is passive and stores nothing until a mon-server talks to it.
-
-This gives the panel a **Monitoring** page (per-inbound state, event feed, latency/availability sparklines), a **Health** column and a `down` filter in the Inbounds table, Telegram alerts on DOWN/UP plus a block in the daily digest, and a **STALE** flag once the mon-server goes silent past the configured threshold (15 minutes by default). Probe accounts carry a `probe-` prefix, show a `probe` badge, and are excluded from online counts, Telegram stats and LDAP sync.
-
-Get the token in **Panel Settings → Monitoring** (enable switch, token with Copy / Regenerate, stale threshold, retention, probe-set line with Remove), or from the CLI:
-
-```
-x-ui setting -showMonToken
-x-ui setting -resetMonToken
-x-ui setting -monEnable true
-```
-
-— also menu item **27** in `x-ui`, or the `x-ui mon-token` shortcut. Regenerating invalidates the old token at once, so update the mon-server config right away.
-
-See the repo above, the [monitoring panel spec](https://github.com/SBKubric/3ax-ui-proxy/blob/29-monitoring-spec/docs/spec/monitoring-panel.md) and the [wire contract](https://github.com/SBKubric/3ax-ui-proxy/blob/29-monitoring-spec/docs/spec/monitoring-contract.md).
-
-> **Note:** monitoring is off by default — until enabled with a token issued, `/mon/v1` answers a bare 404.
-
----
-
 ## Server requirements
 
 - **OS:** Ubuntu 22.04+ / Debian 11+
@@ -376,24 +420,24 @@ See the repo above, the [monitoring panel spec](https://github.com/SBKubric/3ax-
 ## Installation
 
 ```bash
-# Stable release
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh)
+# Stable release (v1.8.1.x: no chain, no monitoring)
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh)
 
 # Latest pre-release
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh) --beta
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh) --beta
 
 # Specific version
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh) v1.2.1
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/install.sh) v1.9.0-chain.6
 ```
 
 ## Panel Update
 
 ```bash
 # Stable release
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/update.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/update.sh)
 
 # Latest pre-release
-bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/update.sh) --beta
+bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/sane-3x-ui/main/update.sh) --beta
 ```
 
 ---
@@ -429,12 +473,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/update
 
 ## Based on
 
-3AX-UI is based on **[3x-ui](https://github.com/MHSanaei/3x-ui)** by [MHSanaei](https://github.com/MHSanaei). All original features (VLESS, VMess, Trojan, Shadowsocks, WireGuard, Xray, subscriptions, Telegram bot, etc.) are fully preserved.
+sane-3x-ui is a fork of **[3AX-UI](https://github.com/coinman-dev/3ax-ui)** by [coinman-dev](https://github.com/coinman-dev), which in turn is based on **[3x-ui](https://github.com/MHSanaei/3x-ui)** by [MHSanaei](https://github.com/MHSanaei). All original features (VLESS, VMess, Trojan, Shadowsocks, WireGuard, Xray, subscriptions, Telegram bot, etc.) are fully preserved, as are 3AX-UI's AmneziaWG, native WireGuard and MTProto.
+
+Monitoring (mon-server and mon-client) lives in [SBKubric/3ax-ui-monitoring](https://github.com/SBKubric/3ax-ui-monitoring), deployment in [SBKubric/3ax-ui-orchestrator](https://github.com/SBKubric/3ax-ui-orchestrator).
 
 The MTProto proxy runs on the **[mtg](https://github.com/9seconds/mtg)** sidecar (single-secret) and its **[mtg-multi](https://github.com/dolonet/mtg-multi)** fork (multi-user).
 
 ## Acknowledgements
 
+- [coinman-dev](https://github.com/coinman-dev) — author of 3AX-UI, the fork this one builds on
 - [MHSanaei](https://github.com/MHSanaei/) — author of the original 3x-ui
 - [alireza0](https://github.com/alireza0/) — author of the original x-ui
 - [9seconds/mtg](https://github.com/9seconds/mtg) and [dolonet/mtg-multi](https://github.com/dolonet/mtg-multi) — MTProto sidecars
