@@ -34,10 +34,14 @@ export default defineConfig({
   // asserts the never-issued token of a fresh database, which the CLI spec
   // issues. Within a project, file order is not a guarantee Playwright gives —
   // a dependency is.
+  //
+  // monitoring-api.spec.ts posts events and stats through the contract, so it
+  // comes last of all: it turns monitoring on, issues its own token and leaves
+  // targets behind.
   projects: [
     {
       name: 'panel',
-      testIgnore: /monitoring-(settings|cli)\.spec\.ts/,
+      testIgnore: /monitoring-(settings|cli|api)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },
     {
@@ -51,6 +55,13 @@ export default defineConfig({
       name: 'mon-server-contact-cli',
       testMatch: /monitoring-cli\.spec\.ts/,
       dependencies: ['mon-server-contact'],
+      workers: 1,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'mon-server-events',
+      testMatch: /monitoring-api\.spec\.ts/,
+      dependencies: ['mon-server-contact-cli'],
       workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },

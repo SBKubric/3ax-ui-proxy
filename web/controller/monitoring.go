@@ -93,10 +93,10 @@ func (a *MonitoringController) fail(c *gin.Context, err error) {
 
 // readBody decodes a JSON body of at most 1 MiB into dst. A body over the
 // limit is 413 batch_too_large, anything undecodable 400 invalid_body.
+// Unknown fields are ignored (contract §1: compatible changes add fields).
 func (a *MonitoringController) readBody(c *gin.Context, dst any) bool {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, monMaxBodyBytes)
 	dec := json.NewDecoder(c.Request.Body)
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
@@ -190,10 +190,12 @@ func (a *MonitoringController) probeDelete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// POST /events
+// POST /events. The elements stay raw here: the service decodes and
+// validates each on its own, so one bad element is a rejection by index
+// rather than a 400 for the whole batch.
 func (a *MonitoringController) events(c *gin.Context) {
 	var body struct {
-		Events []service.MonEventIn `json:"events"`
+		Events []json.RawMessage `json:"events"`
 	}
 	if !a.readBody(c, &body) {
 		return
@@ -201,7 +203,7 @@ func (a *MonitoringController) events(c *gin.Context) {
 	if a.tooLarge(c, "events", len(body.Events), monMaxEvents) {
 		return
 	}
-	res, err := a.monitoringService.ApplyEvents(body.Events)
+	res, err := a.monitoringService.ApplyEventsRaw(body.Events)
 	if err != nil {
 		a.fail(c, err)
 		return
@@ -209,10 +211,10 @@ func (a *MonitoringController) events(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
-// POST /stats
+// POST /stats, element by element like POST /events.
 func (a *MonitoringController) stats(c *gin.Context) {
 	var body struct {
-		Stats []service.MonStatIn `json:"stats"`
+		Stats []json.RawMessage `json:"stats"`
 	}
 	if !a.readBody(c, &body) {
 		return
@@ -220,7 +222,7 @@ func (a *MonitoringController) stats(c *gin.Context) {
 	if a.tooLarge(c, "stats", len(body.Stats), monMaxStats) {
 		return
 	}
-	res, err := a.monitoringService.UpsertStats(body.Stats)
+	res, err := a.monitoringService.UpsertStatsRaw(body.Stats)
 	if err != nil {
 		a.fail(c, err)
 		return
