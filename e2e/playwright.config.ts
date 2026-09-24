@@ -42,7 +42,7 @@ export default defineConfig({
   projects: [
     {
       name: 'panel',
-      testIgnore: /monitoring-(settings|cli|api|probe-configs)\.spec\.ts/,
+      testIgnore: /(monitoring-(settings|cli|api|probe-configs)|inbounds-probe-guard)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },
     {
@@ -74,6 +74,18 @@ export default defineConfig({
       name: 'mon-server-contact-probe-configs',
       testMatch: /monitoring-probe-configs\.spec\.ts/,
       dependencies: ['mon-server-events'],
+      workers: 1,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    // Runs POST /probe/ensure (a real probe to rename, #115) with a token of
+    // its own through `x-ui setting` — the same monEnable/monToken again, so
+    // it follows the probe-configs spec. The ensure also stamps monLastContact
+    // and creates a probe in every inbound, which the panel project must not
+    // see.
+    {
+      name: 'mon-server-probe-guard',
+      testMatch: /inbounds-probe-guard\.spec\.ts/,
+      dependencies: ['mon-server-contact-probe-configs'],
       workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },
