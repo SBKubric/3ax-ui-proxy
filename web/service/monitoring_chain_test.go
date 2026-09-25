@@ -146,3 +146,160 @@ func TestMonProbedPathsOrder(t *testing.T) {
 		t.Errorf("paths = %s, want %s", got, want)
 	}
 }
+
+// monPerHopChain stores the chain the per-hop ensure tests share: an inner
+// front, an active and a standby edge, and a pending edge that is not probed.
+func monPerHopChain(t *testing.T) {
+	t.Helper()
+	monHop(t, "core-1", "inner", "joined", 0, false, "10.0.0.7")
+	monHop(t, "edge-a", "edge", "joined", 0, true, "a.example.net")
+	monHop(t, "edge-b", "edge", "legacy", 0, false, "b.example.net")
+	monHop(t, "edge-c", "edge", "pending", 0, false, "c.example.net")
+}
+
+// monPerHopSnapshot: ams-1 on the default paths, msk-1 limited to part of
+// the chain (plus names outside the probed set), ber-1 probing nothing.
+func monPerHopSnapshot() []MonClient {
+	return []MonClient{
+		{Id: "msk-1", Paths: []string{"direct", "edge:edge-a", "edge:edge-c", "inner:nope", "proxy", "inner:edge-b"}},
+		{Id: "ams-1"},
+		{Id: "ber-1", Paths: []string{}},
+	}
+}
+
+func monUnallocatedList(list []MonUnallocated) string {
+	out := make([]string, 0, len(list))
+	for _, u := range list {
+		out = append(out, u.MonClientId+"/"+u.Path+"/"+u.Reason)
+	}
+	return strings.Join(out, ",")
+}
+
+// TestEnsureHandsPeersPerHop (contract 3 §4.3): with probed hops a peer goes
+// to each pair of mon-client × path the mon-client probes — hops expands to
+// every probed hop, explicit names count only inside the probed set, proxy is
+// gone — created in priority order: direct, active edge, standby edges, inner.
+func TestEnsureHandsPeersPerHop(t *testing.T) {
+	m := newMonitoringTestService(t)
+	awgTestServer(t)
+	monPerHopChain(t)
+
+	res, err := m.EnsureProbeSet(monPerHopSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "probe-awg-ams-1-direct,probe-awg-ams-1-edge-edge-a,probe-awg-ams-1-edge-edge-b,probe-awg-ams-1-inner-core-1," +
+		"probe-awg-msk-1-direct,probe-awg-msk-1-edge-edge-a"
+	if got := sortedKeys(awgProbePeers(t)); got != want {
+		t.Errorf("peers = %s, want %s", got, want)
+	}
+	var order []string
+	for _, c := range res.Created {
+		order = append(order, c.MonClientId+"/"+c.Path)
+	}
+	if got := strings.Join(order, ","); got != "ams-1/direct,msk-1/direct,ams-1/edge:edge-a,msk-1/edge:edge-a,ams-1/edge:edge-b,ams-1/inner:core-1" {
+		t.Errorf("created in order %s", got)
+	}
+	if res.Present != 6 || len(res.Unallocated) != 0 {
+		t.Errorf("ensure: %+v", res)
+	}
+
+	// The standby edge leaves the probed set: its peer goes on the next ensure.
+	monHopUpdate(t, "edge-b", map[string]any{"state": "draining"})
+	if _, err := m.EnsureProbeSet(monPerHopSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := awgProbePeers(t)["probe-awg-ams-1-edge-edge-b"]; ok {
+		t.Error("the peer of a draining hop survived ensure")
+	}
+
+	// Without probed hops the default paths mean direct and proxy again.
+	database.GetDB().Where("1 = 1").Delete(&model.ChainHop{})
+	if _, err := m.EnsureProbeSet(monPerHopSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if got := sortedKeys(awgProbePeers(t)); got != "probe-awg-ams-1-direct,probe-awg-ams-1-proxy,probe-awg-msk-1-direct,probe-awg-msk-1-proxy" {
+		t.Errorf("peers without a chain = %s", got)
+	}
+}
+
+// TestEnsureRespectsThePeerLimit (contract 3 §4.3): monProbePeerLimit caps
+// the peers by priority; the pairs beyond it get none, are listed as
+// unallocated with reason limit and have no AWG item in /probe/configs;
+// 0 lifts the cap.
+func TestEnsureRespectsThePeerLimit(t *testing.T) {
+	m := newMonitoringTestService(t)
+	awgTestServer(t)
+	monPerHopChain(t)
+	setSetting(t, "monProbePeerLimit", "3")
+
+	res, err := m.EnsureProbeSet(monPerHopSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sortedKeys(awgProbePeers(t)); got != "probe-awg-ams-1-direct,probe-awg-ams-1-edge-edge-a,probe-awg-msk-1-direct" {
+		t.Errorf("peers under the limit = %s", got)
+	}
+	if got := monUnallocatedList(res.Unallocated); got != "msk-1/edge:edge-a/limit,ams-1/edge:edge-b/limit,ams-1/inner:core-1/limit" {
+		t.Errorf("unallocated = %s", got)
+	}
+	if res.Present != 3 {
+		t.Errorf("present = %d, want 3", res.Present)
+	}
+	edgeA, err := m.ProbeConfigs("", "edge-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edgeA.Items) != 1 || edgeA.Items[0].MonClientId != "ams-1" {
+		t.Errorf("edge-a items: %+v, want ams-1's only", edgeA.Items)
+	}
+
+	setSetting(t, "monProbePeerLimit", "0")
+	res, err = m.EnsureProbeSet(monPerHopSnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Unallocated) != 0 || res.Present != 6 || len(res.Created) != 3 {
+		t.Errorf("ensure without a limit: %+v", res)
+	}
+
+	// Lowering the limit takes the peers of the lowest-priority pairs away.
+	setSetting(t, "monProbePeerLimit", "1")
+	if _, err := m.EnsureProbeSet(monPerHopSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if got := sortedKeys(awgProbePeers(t)); got != "probe-awg-ams-1-direct" {
+		t.Errorf("peers under limit 1 = %s", got)
+	}
+}
+
+// TestMonClientPathsExpansion: the paths vocabulary over a probed set.
+func TestMonClientPathsExpansion(t *testing.T) {
+	hops := []string{"direct", "edge:edge-a", "inner:core-1"}
+	plain := []string{"direct", "proxy"}
+	for _, tc := range []struct {
+		paths  []string
+		probed []string
+		want   string
+	}{
+		{nil, hops, "direct,edge:edge-a,inner:core-1"},
+		{[]string{}, hops, ""},
+		{[]string{"hops"}, hops, "edge:edge-a,inner:core-1"},
+		{[]string{"direct", "proxy", "edge:nope", "inner:edge-a"}, hops, "direct"},
+		{[]string{" inner:core-1 "}, hops, "inner:core-1"},
+		{nil, plain, "direct,proxy"},
+		{[]string{"hops"}, plain, "proxy"},
+		{[]string{"proxy", "edge:edge-a"}, plain, "proxy"},
+	} {
+		got := monClientPaths(tc.paths, tc.probed)
+		var list []string
+		for _, p := range tc.probed {
+			if got[p] {
+				list = append(list, p)
+			}
+		}
+		if strings.Join(list, ",") != tc.want || len(got) != len(list) {
+			t.Errorf("paths %v over %v = %v, want %s", tc.paths, tc.probed, got, tc.want)
+		}
+	}
+}

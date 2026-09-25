@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
@@ -122,4 +124,66 @@ func monProbedPaths(c *MonChain) []string {
 	}
 	paths = append(paths, standby...)
 	return append(paths, inner...)
+}
+
+// monProbePair is one pair of mon-client × path that gets an AmneziaWG
+// probe peer.
+type monProbePair struct {
+	MonClientId string
+	Path        string
+}
+
+// monPathHops is the paths word for every probed hop.
+const monPathHops = "hops"
+
+// monClientPaths expands a mon-client's paths over the probed set: direct;
+// hops — every probed hop, or proxy while there is none; any path of the set
+// named explicitly. A name outside the set (an unknown hop, a pending one,
+// proxy once hops are probed) gets nothing. Absent paths mean the default,
+// direct and hops.
+func monClientPaths(paths []string, probed []string) map[string]bool {
+	if paths == nil {
+		paths = []string{model.MonPathDirect, monPathHops}
+	}
+	inSet := map[string]bool{}
+	for _, p := range probed {
+		inSet[p] = true
+	}
+	out := map[string]bool{}
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p != monPathHops {
+			if inSet[p] {
+				out[p] = true
+			}
+			continue
+		}
+		for _, q := range probed {
+			if q != model.MonPathDirect {
+				out[q] = true
+			}
+		}
+	}
+	return out
+}
+
+// monProbePairs lists the pairs of mon-client × path of the snapshot in the
+// order AmneziaWG probe peers are handed out (contract 3 §4.3): by path in
+// the priority order of monProbedPaths, then by monClientId. Duplicate
+// mon-clients count once.
+func monProbePairs(snapshot []MonClient, probed []string) []monProbePair {
+	clients := sortedMonClients(snapshot)
+	wants := make([]map[string]bool, len(clients))
+	for i, mc := range clients {
+		wants[i] = monClientPaths(mc.Paths, probed)
+	}
+	pairs := []monProbePair{}
+	for _, path := range probed {
+		for i, mc := range clients {
+			if wants[i][path] {
+				pairs = append(pairs, monProbePair{MonClientId: mc.Id, Path: path})
+			}
+		}
+	}
+	return pairs
 }

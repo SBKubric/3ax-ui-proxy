@@ -59,10 +59,6 @@ type ProbeLinkRenderer interface {
 // version: the two are upgraded together.
 const MonContractVersion = 3
 
-// monProbePaths are the paths the panel serves and the AmneziaWG probe peers
-// are made for, one per mon-client each. Per-hop probing extends the list.
-var monProbePaths = []string{model.MonPathDirect, model.MonPathProxy}
-
 // monProbeSubIdLength matches an ordinary subscription id.
 const monProbeSubIdLength = 16
 
@@ -158,19 +154,37 @@ type MonClient struct {
 	Region        string `json:"region"`
 	State         string `json:"state"`
 	LastHeartbeat int64  `json:"lastHeartbeat"`
+	// Paths is what the mon-client probes (contract 3 §4.3): direct, hops
+	// (every probed hop, proxy while there is none), explicit edge:<name> /
+	// inner:<name>. Absent (null) means the default, direct and hops; an
+	// empty list means nothing.
+	Paths []string `json:"paths"`
+}
+
+// Reasons a pair of mon-client × path got no AmneziaWG probe peer.
+const (
+	MonUnallocatedPoolExhausted = "pool_exhausted" // no free address in the tunnel's pool
+	MonUnallocatedLimit         = "limit"          // beyond monProbePeerLimit
+)
+
+// MonUnallocated is a pair of mon-client × path the mon-client probes but
+// that has no AmneziaWG probe peer, and why.
+type MonUnallocated struct {
+	MonClientId string `json:"monClientId"`
+	Path        string `json:"path"`
+	Reason      string `json:"reason"`
 }
 
 // MonEnsureResult is the body of a successful POST /probe/ensure.
-// Unallocated lists the mon-clients left without an AmneziaWG probe peer on
-// some path because the tunnel's address pool is full; their items are
-// missing from /probe/configs.
+// Unallocated lists the pairs of mon-client × path left without an
+// AmneziaWG probe peer; their items are missing from /probe/configs.
 type MonEnsureResult struct {
-	SubId       string        `json:"subId"`
-	Revision    string        `json:"revision"`
-	LastEnsured int64         `json:"lastEnsured"`
-	Created     []MonProbeRef `json:"created"`
-	Present     int           `json:"present"`
-	Unallocated []string      `json:"unallocated"`
+	SubId       string           `json:"subId"`
+	Revision    string           `json:"revision"`
+	LastEnsured int64            `json:"lastEnsured"`
+	Created     []MonProbeRef    `json:"created"`
+	Present     int              `json:"present"`
+	Unallocated []MonUnallocated `json:"unallocated"`
 }
 
 // MonProbeItem is one config of GET /probe/configs: a link for an xray
@@ -561,27 +575,46 @@ func (s *MonitoringService) ensureXrayProbe(ib *model.Inbound, subId string) (bo
 }
 
 // ensureTunnelProbes reconciles the AmneziaWG probe peers to the registry
-// snapshot: one peer per mon-client × path (monProbePaths), whatever the
-// mon-client's state; every other probe peer goes — those of mon-clients that
-// left the registry and the shared probe-awg of contract v1. Stale peers are
-// deleted before new ones are made so their addresses are free again. A peer
-// the address pool has no room for is skipped with a warning and its
-// mon-client reported in unallocated; any other failure stops the ensure.
+// snapshot: one peer per pair of mon-client × path the mon-client probes
+// (monProbePairs: its paths expanded over the probed set), whatever the
+// mon-client's state, up to monProbePeerLimit pairs in priority order; every
+// other probe peer goes — those of pairs beyond the limit, of paths that left
+// the probed set, of mon-clients that left the registry, and the shared
+// probe-awg of contract v1. Stale peers are deleted before new ones are made
+// so their addresses are free again, and new ones are made in priority order.
+// A pair beyond the limit, or one the address pool has no room for (logged),
+// is reported in unallocated with its reason; any other failure stops the
+// ensure.
 //
 // The shared subId is not bound to the peers: tunnel clients carry no subId
 // until the tunnel subscription feature (docs/spec/tunnel-subscription.md)
 // lands; its TunnelSubscriptionService.Set is the hook to call here when it
 // does.
-func (s *MonitoringService) ensureTunnelProbes(snapshot []MonClient) (created []MonProbeRef, present int, unallocated []string, err error) {
+func (s *MonitoringService) ensureTunnelProbes(snapshot []MonClient) (created []MonProbeRef, present int, unallocated []MonUnallocated, err error) {
+	chain, err := monChainTx(nil)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	limit, err := s.settingService.GetMonProbePeerLimit()
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	pairs := monProbePairs(snapshot, monProbedPaths(chain))
+	unallocated = []MonUnallocated{}
+	if limit > 0 && len(pairs) > limit {
+		for _, p := range pairs[limit:] {
+			unallocated = append(unallocated, MonUnallocated{MonClientId: p.MonClientId, Path: p.Path, Reason: MonUnallocatedLimit})
+		}
+		pairs = pairs[:limit]
+	}
+
 	clients, err := s.awgService.GetClients()
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	want := map[string]bool{}
-	for _, mc := range snapshot {
-		for _, path := range monProbePaths {
-			want[ProbeTunnelEmail(mc.Id, path)] = true
-		}
+	for _, p := range pairs {
+		want[ProbeTunnelEmail(p.MonClientId, p.Path)] = true
 	}
 	have := map[string]bool{}
 	for _, c := range clients {
@@ -598,33 +631,30 @@ func (s *MonitoringService) ensureTunnelProbes(snapshot []MonClient) (created []
 	}
 
 	created = []MonProbeRef{}
-	unallocated = []string{}
-	for _, mc := range sortedMonClients(snapshot) {
-		missed := false
-		for _, path := range monProbePaths {
-			email := ProbeTunnelEmail(mc.Id, path)
-			if have[email] {
-				present++
+	var exhausted []MonUnallocated
+	for _, p := range pairs {
+		email := ProbeTunnelEmail(p.MonClientId, p.Path)
+		if have[email] {
+			present++
+			continue
+		}
+		peer := NewProbeTunnelClient(p.MonClientId, p.Path)
+		if err := s.awgService.addClient(&peer, true); err != nil {
+			if errors.Is(err, ipam.ErrPoolExhausted) {
+				logger.Warningf("monitoring: no AmneziaWG probe peer for mon-client %s on %s: %v", p.MonClientId, p.Path, err)
+				exhausted = append(exhausted, MonUnallocated{MonClientId: p.MonClientId, Path: p.Path, Reason: MonUnallocatedPoolExhausted})
 				continue
 			}
-			peer := NewProbeTunnelClient(mc.Id, path)
-			if err := s.awgService.addClient(&peer, true); err != nil {
-				if errors.Is(err, ipam.ErrPoolExhausted) {
-					logger.Warningf("monitoring: no AmneziaWG probe peer for mon-client %s on %s: %v", mc.Id, path, err)
-					missed = true
-					continue
-				}
-				return nil, 0, nil, err
-			}
-			have[email] = true
-			present++
-			created = append(created, MonProbeRef{Kind: model.MonInboundKindAwg, InboundId: 0, MonClientId: mc.Id, Path: path})
+			return nil, 0, nil, err
 		}
-		if missed {
-			unallocated = append(unallocated, mc.Id)
-		}
+		have[email] = true
+		present++
+		created = append(created, MonProbeRef{Kind: model.MonInboundKindAwg, InboundId: 0, MonClientId: p.MonClientId, Path: p.Path})
 	}
-	return created, present, unallocated, nil
+	if len(unallocated) > 0 {
+		logger.Warningf("monitoring: %d pairs of mon-client × path are beyond monProbePeerLimit=%d and get no AmneziaWG probe peer", len(unallocated), limit)
+	}
+	return created, present, append(exhausted, unallocated...), nil
 }
 
 // sortedMonClients is the snapshot sorted by id with duplicates dropped, so
@@ -661,8 +691,8 @@ func validateSnapshot(snapshot []MonClient) error {
 // monProbeLastEnsured, replaces the mon-client snapshot with the body, and
 // drops mon_targets of mon-clients that left the registry. A monClientId
 // outside the v2 grammar is 400 before anything changes. A full tunnel
-// address pool is not an error: the result lists the mon-clients it left
-// without a peer. Any other failure to create a client is reported as 503
+// address pool or the peer limit is not an error: the result lists the pairs
+// of mon-client × path left without a peer, with the reason. Any other failure to create a client is reported as 503
 // xray_unavailable; whatever was created stays, and the next ensure finishes
 // the set.
 func (s *MonitoringService) EnsureProbeSet(snapshot []MonClient) (*MonEnsureResult, error) {
@@ -686,7 +716,7 @@ func (s *MonitoringService) EnsureProbeSet(snapshot []MonClient) (*MonEnsureResu
 	}
 	created := []MonProbeRef{}
 	present := 0
-	unallocated := []string{}
+	unallocated := []MonUnallocated{}
 	for _, ib := range inbounds {
 		switch {
 		case monXrayProtocols[ib.Protocol]:

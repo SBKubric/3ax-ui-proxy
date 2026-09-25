@@ -721,7 +721,8 @@ func TestEnsureSurvivesAFullTunnelPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure with a full pool: %v", err)
 	}
-	if strings.Join(res.Unallocated, ",") != "c-1" || res.Present != 5 || len(res.Created) != 5 {
+	if len(res.Unallocated) != 1 || res.Unallocated[0] != (MonUnallocated{MonClientId: "c-1", Path: "proxy", Reason: "pool_exhausted"}) ||
+		res.Present != 5 || len(res.Created) != 5 {
 		t.Errorf("ensure with a full pool: %+v", res)
 	}
 	direct, err := m.ProbeConfigs("203.0.113.10", "", "")
@@ -880,12 +881,6 @@ func TestProbeConfigsThroughAHop(t *testing.T) {
 	monHop(t, "edge-c", "edge", "draining", 0, false, "c.example.net")
 	if _, err := m.EnsureProbeSet([]MonClient{{Id: "ams-1"}}); err != nil {
 		t.Fatal(err)
-	}
-	for _, path := range []string{"inner:core-1", "edge:edge-a"} {
-		peer := NewProbeTunnelClient("ams-1", path)
-		if err := m.awgService.addClient(&peer, true); err != nil {
-			t.Fatal(err)
-		}
 	}
 	peers := awgProbePeers(t)
 

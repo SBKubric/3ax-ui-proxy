@@ -26,7 +26,8 @@ func TestMonitoringSettingsDefaults(t *testing.T) {
 		t.Fatalf("GetAllSetting: %v", err)
 	}
 	if all.MonEnable || all.MonToken != "" || all.MonStaleMinutes != 15 || all.MonProbeTtlHours != 24 ||
-		all.MonRetentionDays != 7 || all.MonRollupRetentionDays != 30 || all.MonRollupStepMinutes != 60 {
+		all.MonRetentionDays != 7 || all.MonRollupRetentionDays != 30 || all.MonRollupStepMinutes != 60 ||
+		all.MonProbePeerLimit != 32 {
 		t.Errorf("AllSetting monitoring defaults: %+v", struct {
 			Enable                                             bool
 			Token                                              string
@@ -60,6 +61,7 @@ func TestMonitoringSettingsRoundTrip(t *testing.T) {
 	all.MonRetentionDays = 3
 	all.MonRollupRetentionDays = 60
 	all.MonRollupStepMinutes = 30
+	all.MonProbePeerLimit = 0
 	if err := s.UpdateAllSetting(all); err != nil {
 		t.Fatalf("UpdateAllSetting: %v", err)
 	}
@@ -69,7 +71,8 @@ func TestMonitoringSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("GetAllSetting: %v", err)
 	}
 	if !got.MonEnable || got.MonToken != all.MonToken || got.MonStaleMinutes != 5 || got.MonProbeTtlHours != 48 ||
-		got.MonRetentionDays != 3 || got.MonRollupRetentionDays != 60 || got.MonRollupStepMinutes != 30 {
+		got.MonRetentionDays != 3 || got.MonRollupRetentionDays != 60 || got.MonRollupStepMinutes != 30 ||
+		got.MonProbePeerLimit != 0 {
 		t.Errorf("AllSetting round-trip lost a monitoring field: %+v", got)
 	}
 
@@ -105,6 +108,7 @@ func TestMonitoringSettingsRoundTrip(t *testing.T) {
 	checkInt("GetMonRetentionDays", s.GetMonRetentionDays, 3)
 	checkInt("GetMonRollupRetentionDays", s.GetMonRollupRetentionDays, 60)
 	checkInt("GetMonRollupStepMinutes", s.GetMonRollupStepMinutes, 30)
+	checkInt("GetMonProbePeerLimit", s.GetMonProbePeerLimit, 0)
 
 	// The typed setters take the same path the form does.
 	if err := s.SetMonEnable(false); err != nil {
@@ -125,12 +129,15 @@ func TestMonitoringSettingsRoundTrip(t *testing.T) {
 	if err := s.SetMonRollupStepMinutes(15); err != nil {
 		t.Fatalf("SetMonRollupStepMinutes: %v", err)
 	}
+	if err := s.SetMonProbePeerLimit(8); err != nil {
+		t.Fatalf("SetMonProbePeerLimit: %v", err)
+	}
 	if err := s.SetMonToken("other"); err != nil {
 		t.Fatalf("SetMonToken: %v", err)
 	}
 	got, _ = s.GetAllSetting()
 	if got.MonEnable || got.MonStaleMinutes != 20 || got.MonProbeTtlHours != 12 || got.MonRetentionDays != 14 ||
-		got.MonRollupRetentionDays != 90 || got.MonRollupStepMinutes != 15 || got.MonToken != "other" {
+		got.MonRollupRetentionDays != 90 || got.MonRollupStepMinutes != 15 || got.MonToken != "other" || got.MonProbePeerLimit != 8 {
 		t.Errorf("typed setters not visible through AllSetting: %+v", got)
 	}
 

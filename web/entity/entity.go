@@ -114,6 +114,9 @@ type AllSetting struct {
 	MonRetentionDays       int    `json:"monRetentionDays" form:"monRetentionDays"`
 	MonRollupRetentionDays int    `json:"monRollupRetentionDays" form:"monRollupRetentionDays"`
 	MonRollupStepMinutes   int    `json:"monRollupStepMinutes" form:"monRollupStepMinutes"`
+	// MonProbePeerLimit caps the AmneziaWG probe peers (contract 3 §4.3);
+	// 0 is no cap.
+	MonProbePeerLimit int `json:"monProbePeerLimit" form:"monProbePeerLimit"`
 
 	// LDAP settings
 	LdapEnable     bool   `json:"ldapEnable" form:"ldapEnable"`
