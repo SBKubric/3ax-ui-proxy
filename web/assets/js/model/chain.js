@@ -24,7 +24,7 @@ const ChainApi = {
     list() {
         return HttpUtil.get(ChainApi._base + 'list');
     },
-    /** One health badge per hop; UNKNOWN for all of them until #87 lands. */
+    /** One health badge per hop: {name, role, state} (§6.4). */
     health() {
         return HttpUtil.get(ChainApi._base + 'hops/health');
     },
@@ -69,6 +69,9 @@ const ChainUtil = {
     ROLE_INNER: 'inner',
     ROLE_EDGE: 'edge',
 
+    /** The badge of a hop with no monitoring data (pending, draining, new). */
+    HEALTH_NONE: 'NONE',
+
     /** The tag colour of a state; legacy is deliberately colourless. */
     stateColor(state) {
         return { pending: 'orange', joined: 'green', legacy: 'default', draining: 'red' }[state] || 'default';
@@ -76,10 +79,11 @@ const ChainUtil = {
 
     /**
      * The health badge's class, reusing the Monitoring page's styles
-     * (§7.4): mon-state-up / -down / -unknown.
+     * (§7.4): mon-state-up / -down / … / -stale, and mon-state-none for a
+     * hop without data.
      */
     healthClass(health) {
-        return 'mon-state mon-state-' + String(health || 'unknown').toLowerCase();
+        return 'mon-state mon-state-' + String(health || ChainUtil.HEALTH_NONE).toLowerCase();
     },
 
     /** "2026-09-21 12:00 UTC" — the one format a join token's expiry reads in. */

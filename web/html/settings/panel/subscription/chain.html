@@ -34,7 +34,7 @@
                 <a-tag color="geekblue" :style="{ marginInlineStart: '6px' }">{{ i18n "pages.settings.chain.roleInner"}}</a-tag>
                 <a-tag :color="stateColor(hop.state)">[[ stateLabel(hop.state) ]]</a-tag>
                 <span :class="healthClass(hop)" :title="healthOf(hop)"
-                    :data-testid="'chain-hop-' + hop.name + '-health'">[[ healthOf(hop) ]]</span>
+                    :data-testid="'chain-hop-' + hop.name + '-health'">[[ healthLabel(hop) ]]</span>
                 <span class="mon-muted" :data-testid="'chain-hop-' + hop.name + '-freshness'"
                     :title="lastSeenText(hop)">[[ freshnessText(hop) ]]</span>
                 <!-- A departing hop carries no buttons: draining is terminal
@@ -68,7 +68,7 @@
                 <a-tag color="purple" :style="{ marginInlineStart: '6px' }">{{ i18n "pages.settings.chain.roleEdge"}}</a-tag>
                 <a-tag :color="stateColor(hop.state)">[[ stateLabel(hop.state) ]]</a-tag>
                 <span :class="healthClass(hop)" :title="healthOf(hop)"
-                    :data-testid="'chain-hop-' + hop.name + '-health'">[[ healthOf(hop) ]]</span>
+                    :data-testid="'chain-hop-' + hop.name + '-health'">[[ healthLabel(hop) ]]</span>
                 <span class="mon-muted" :data-testid="'chain-hop-' + hop.name + '-freshness'"
                     :title="lastSeenText(hop)">[[ freshnessText(hop) ]]</span>
                 <a-tag v-if="hop.isActive" color="green"
@@ -225,6 +225,9 @@
             draining: '{{ i18n "pages.settings.chain.state.draining" }}',
         },
         empty: '{{ i18n "pages.settings.chain.empty" }}',
+        // The badge of a hop nobody probes yet (pending, draining) or has no
+        // data on: grey and worded apart from a target's UNKNOWN (§6.4).
+        healthNone: '{{ i18n "pages.settings.chain.healthNone" }}',
         tokenOnce: '{{ i18n "pages.settings.chain.tokenOnce" }}',
         tokenCopied: '{{ i18n "pages.settings.chain.tokenCopied" }}',
         tokenExpires: '{{ i18n "pages.settings.chain.tokenExpires" }}',
@@ -341,8 +344,14 @@
                     .replace('%s', waiting.join(', '))
                     .replace('%s', ChainUtil.stamp(card.drainUntil));
             },
+            // The state from GET hops/health: a target state, STALE, or NONE
+            // for a hop without data (§6.4).
             healthOf(hop) {
-                return this.health[hop.name] || 'UNKNOWN';
+                return this.health[hop.name] || ChainUtil.HEALTH_NONE;
+            },
+            healthLabel(hop) {
+                const state = this.healthOf(hop);
+                return state === ChainUtil.HEALTH_NONE ? this.text.healthNone : state;
             },
             healthClass(hop) {
                 return ChainUtil.healthClass(this.healthOf(hop));

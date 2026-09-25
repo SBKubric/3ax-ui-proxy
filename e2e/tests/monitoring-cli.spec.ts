@@ -61,8 +61,8 @@ test.describe('x-ui setting monitoring flags', () => {
       headers: { Authorization: `Bearer ${first}` },
     });
     expect(state.status()).toBe(200);
-    expect(state.headers()['x-mon-contract']).toBe('2');
-    expect((await state.json()).contract).toBe(2);
+    expect(state.headers()['x-mon-contract']).toBe('3');
+    expect((await state.json()).contract).toBe(3);
 
     // The panel reads monToken on every request, so a fresh reset locks the
     // previous token out immediately — with a bare 404, not a 401.

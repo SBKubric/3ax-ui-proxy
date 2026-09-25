@@ -71,8 +71,9 @@ test.describe('chain editor', () => {
     const row = authedPage.getByTestId('chain-hop-e2e-inner');
     await expect(row).toBeVisible();
     await expect(row).toContainText('pending');
-    // A pending hop has no traffic through it and no monitoring data either.
-    await expect(authedPage.getByTestId('chain-hop-e2e-inner-health')).toHaveText('UNKNOWN');
+    // A pending hop has no traffic through it and no monitoring data either:
+    // a grey "no data", not a target's UNKNOWN (proxy-chain.md §6.4).
+    await expect(authedPage.getByTestId('chain-hop-e2e-inner-health')).toHaveText('no data');
     // The token is shown whole exactly once: the panel keeps only its hash.
     const token = authedPage.getByTestId('chain-hop-e2e-inner-token');
     await expect(token).toBeVisible();

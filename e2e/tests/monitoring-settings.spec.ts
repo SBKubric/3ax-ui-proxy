@@ -54,7 +54,7 @@ test.describe('monitoring settings', () => {
       headers: { Authorization: `Bearer ${first}` },
     });
     expect(state.status()).toBe(200);
-    expect((await state.json()).contract).toBe(2);
+    expect((await state.json()).contract).toBe(3);
 
     // Regenerate again: the panel reads the setting on every request, so the
     // previous token is refused from this moment, with a bare 404 rather than
@@ -73,6 +73,27 @@ test.describe('monitoring settings', () => {
       headers: { Authorization: `Bearer ${second}` },
     });
     expect(withNew.status()).toBe(200);
+  });
+
+  test('the AmneziaWG probe peer limit starts at 32 and rides the common Save', async ({ authedPage }) => {
+    // The a-input-number puts its data-testid on a wrapper or on the input
+    // itself depending on the antd build, as the token field does.
+    const limit = () =>
+      authedPage.locator('input[data-testid="mon-probe-peer-limit"], [data-testid="mon-probe-peer-limit"] input').first();
+    const save = () => authedPage.getByRole('button', { name: 'Save', exact: true }).click();
+
+    await openMonitoringTab(authedPage);
+    await expect(limit()).toHaveValue('32');
+    await limit().fill('8');
+    await save();
+    await openMonitoringTab(authedPage);
+    await expect(limit()).toHaveValue('8');
+
+    // Back to the default, so the other specs see a fresh panel's limit.
+    await limit().fill('32');
+    await save();
+    await openMonitoringTab(authedPage);
+    await expect(limit()).toHaveValue('32');
   });
 
   test('with no probe set the line says so and Remove is disabled', async ({ authedPage }) => {
