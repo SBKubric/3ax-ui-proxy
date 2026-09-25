@@ -187,3 +187,37 @@ func monProbePairs(snapshot []MonClient, probed []string) []monProbePair {
 	}
 	return pairs
 }
+
+// pruneMonTargetsTx is the panel's half of a change to the probed set
+// (proxy-chain.md §6.1, contract §6): a hop deleted or renamed, gone out of
+// joined/legacy, the first probed hop appearing (proxy goes) or the last one
+// leaving (proxy comes back). It deletes, in the registry write's own
+// transaction, every mon_targets row whose path is no longer in the set.
+// Events and aggregates age out with the ordinary retention; nothing is sent
+// to Telegram. Every registry write calls it: working out the set again is
+// cheaper than working out which writes change it.
+func pruneMonTargetsTx(tx *gorm.DB) error {
+	chain, err := monChainTx(tx)
+	if err != nil {
+		return err
+	}
+	return tx.Where("path NOT IN ?", monProbedPaths(chain)).Delete(&model.MonTarget{}).Error
+}
+
+// deleteMonitoringByHopTx drops the stored monitoring of a hop leaving the
+// registry — targets, events and both aggregate tables of its path, and of
+// path proxy when it was the active edge — in the transaction that deletes
+// the row, as the inbound cascade does (proxy-chain.md §6.1). A rename is not
+// a deletion: the old name's history ages out with the ordinary retention.
+func deleteMonitoringByHopTx(tx *gorm.DB, hop *model.ChainHop) error {
+	paths := []string{monHopPath(hop.Role, hop.Name)}
+	if hop.IsActive {
+		paths = append(paths, model.MonPathProxy)
+	}
+	for _, m := range []any{&model.MonTarget{}, &model.MonEvent{}, &model.MonStatsCurrent{}, &model.MonStatsRollup{}} {
+		if err := tx.Where("path IN ?", paths).Delete(m).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
