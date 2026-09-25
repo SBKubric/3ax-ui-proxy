@@ -591,6 +591,11 @@
 "coverage" = "покр"
 "retired" = "выбыл"
 "viaMonServer" = "через mon-server"
+"filterAll" = "все"
+"activeEdge" = "активное edge"
+"standby" = "запасное"
+"noHealthyStandby" = "нет здорового запасного"
+"noHopData" = "нет данных"
 "worst" = "худшее"
 "heartbeat" = "hb"
 "offline" = "OFFLINE"
@@ -751,6 +756,8 @@
 "monProbeSetRemove" = "Удалить набор проб"
 "monProbeSetRemoveConfirm" = "Удалить все пробные аккаунты? mon-server создаст их заново при следующей сверке."
 "monProbeSetRemoved" = "Набор проб удалён"
+"monProbePeerLimit" = "Лимит AmneziaWG probe-пиров"
+"monProbePeerLimitDesc" = "Не больше стольких AmneziaWG probe-пиров (по одному на mon-client × path) занимают адреса пула туннеля; 0 — без лимита. Пары сверх лимита mon-server показывает как PAUSED no_probe_link."
 
 # Редактор цепочки, Settings -> Subscription (docs/spec/proxy-chain.md §7.5).
 # Реестр заменил два поля proxyOverride: клиентам выдаётся хост активного edge.
@@ -822,6 +829,7 @@
 "chain.clearActive" = "Выключить оверрайд"
 "chain.clearActiveTitle" = "Выключить оверрайд?"
 "chain.clearActiveNote" = "Активного звена не останется; пока новое не выбрано, панель публикует адрес настоящего сервера."
+"chain.healthNone" = "нет данных"
 
 [pages.xray]
 "title" = "Настройки Xray"
@@ -1311,6 +1319,9 @@
 "digestOffline" = "🔌 mon-clients офлайн: {{ .Clients }}\r\n"
 "digestAwaiting" = "⏳ mon-clients ждут первого heartbeat: {{ .Clients }}\r\n"
 "digestStale" = "🟡 Мониторинг молчал: {{ .Minutes }} мин\r\n"
+"standbySwitch" = "\n↪️ Запасные: {{ .Standby }}. Переключить: /proxy {{ .Name }}"
+"standbyNoHealthy" = "\n↪️ Запасные: {{ .Standby }}. Нет здорового запасного."
+"standbyNone" = "\n↪️ Нет здорового запасного edge."
 
 [tgbot.buttons]
 "closeKeyboard" = "❌ Закрыть клавиатуру"

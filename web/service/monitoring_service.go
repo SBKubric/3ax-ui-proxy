@@ -44,20 +44,20 @@ type MonitoringService struct {
 }
 
 // ProbeLinkRenderer renders the subscription link of one client the way /sub
-// does. address is the connection address to use when useOverride is false;
-// with useOverride the proxy-front host override applies as it does for users.
+// does. A non-empty via replaces the connection address everywhere, as the
+// proxy-front host override does for users: the override host for path proxy,
+// a hop's host for a hop's path. With an empty via the address is the
+// inbound's public Listen, else address (path direct).
 type ProbeLinkRenderer interface {
-	ProbeLink(inbound *model.Inbound, email, address string, useOverride bool) string
+	ProbeLink(inbound *model.Inbound, email, address, via string) string
 }
 
 // MonContractVersion is the X-Mon-Contract the panel speaks. Version 2 gave
 // every mon-client its own AmneziaWG probe peers (SBKubric/3ax-ui-monitoring
-// #80): mon-server requires at least 2.
-const MonContractVersion = 2
-
-// monProbePaths are the paths the panel serves and the AmneziaWG probe peers
-// are made for, one per mon-client each. Per-hop probing extends the list.
-var monProbePaths = []string{model.MonPathDirect, model.MonPathProxy}
+// #80); version 3 probes through every hop of the chain
+// (SBKubric/sane-3x-ui-monitoring#61). mon-server requires exactly this
+// version: the two are upgraded together.
+const MonContractVersion = 3
 
 // monProbeSubIdLength matches an ordinary subscription id.
 const monProbeSubIdLength = 16
@@ -80,12 +80,12 @@ var (
 	ErrProbeNotEnsured = &MonError{409, "probe_not_ensured", "the probe set has not been created; call POST /probe/ensure first"}
 	// ErrLinksNotWired is a wiring mistake, not a runtime condition.
 	ErrLinksNotWired = &MonError{500, "internal", "no probe link renderer is wired into MonitoringService"}
-	// ErrUnknownHop: GET /probe/configs?hop= names no hop in the registry
-	// (proxy-chain.md §6.1). Until per-hop probing lands every name is unknown.
+	// ErrUnknownHop: GET /probe/configs?hop= (or ?edge=) names no hop in the
+	// registry, or names two different ones (proxy-chain.md §6.1).
 	ErrUnknownHop = &MonError{409, "unknown_hop", "no such hop in the chain registry"}
-	// ErrUnknownEdge is ErrUnknownHop under its first-edition code, for a
-	// request that named the hop through the ?edge= synonym.
-	ErrUnknownEdge = &MonError{409, "unknown_edge", "no such hop in the chain registry"}
+	// ErrHopNotJoined: the hop exists but is not probed — pending or
+	// draining.
+	ErrHopNotJoined = &MonError{409, "hop_not_joined", "the hop is not joined or legacy, so it is not probed"}
 )
 
 func errXrayUnavailable(err error) *MonError {
@@ -137,6 +137,7 @@ type MonState struct {
 	ServerTime   int64        `json:"serverTime"`
 	Revision     string       `json:"revision"`
 	Override     MonOverride  `json:"override"`
+	Chain        *MonChain    `json:"chain,omitempty"`
 	Probe        MonProbe     `json:"probe"`
 	Inbounds     []MonInbound `json:"inbounds"`
 	Stale        struct {
@@ -153,19 +154,37 @@ type MonClient struct {
 	Region        string `json:"region"`
 	State         string `json:"state"`
 	LastHeartbeat int64  `json:"lastHeartbeat"`
+	// Paths is what the mon-client probes (contract 3 §4.3): direct, hops
+	// (every probed hop, proxy while there is none), explicit edge:<name> /
+	// inner:<name>. Absent (null) means the default, direct and hops; an
+	// empty list means nothing.
+	Paths []string `json:"paths"`
+}
+
+// Reasons a pair of mon-client × path got no AmneziaWG probe peer.
+const (
+	MonUnallocatedPoolExhausted = "pool_exhausted" // no free address in the tunnel's pool
+	MonUnallocatedLimit         = "limit"          // beyond monProbePeerLimit
+)
+
+// MonUnallocated is a pair of mon-client × path the mon-client probes but
+// that has no AmneziaWG probe peer, and why.
+type MonUnallocated struct {
+	MonClientId string `json:"monClientId"`
+	Path        string `json:"path"`
+	Reason      string `json:"reason"`
 }
 
 // MonEnsureResult is the body of a successful POST /probe/ensure.
-// Unallocated lists the mon-clients left without an AmneziaWG probe peer on
-// some path because the tunnel's address pool is full; their items are
-// missing from /probe/configs.
+// Unallocated lists the pairs of mon-client × path left without an
+// AmneziaWG probe peer; their items are missing from /probe/configs.
 type MonEnsureResult struct {
-	SubId       string        `json:"subId"`
-	Revision    string        `json:"revision"`
-	LastEnsured int64         `json:"lastEnsured"`
-	Created     []MonProbeRef `json:"created"`
-	Present     int           `json:"present"`
-	Unallocated []string      `json:"unallocated"`
+	SubId       string           `json:"subId"`
+	Revision    string           `json:"revision"`
+	LastEnsured int64            `json:"lastEnsured"`
+	Created     []MonProbeRef    `json:"created"`
+	Present     int              `json:"present"`
+	Unallocated []MonUnallocated `json:"unallocated"`
 }
 
 // MonProbeItem is one config of GET /probe/configs: a link for an xray
@@ -296,8 +315,9 @@ const revisionEndpointHost = "probe.invalid"
 
 // Revision is the first 16 hex characters of SHA-256 over the canonical JSON
 // of everything that goes into the probe material (monitoring-contract.md
-// §4.2): the override, the probe subId, the link setting that shapes xray
-// links, and per inbound, sorted by (kind, inboundId), its target fields plus
+// §4.2): the override, the chain's active edge and probed hops (absent with an
+// empty registry), the probe subId, the link setting that shapes xray links,
+// and per inbound, sorted by (kind, inboundId), its target fields plus
 // its probe material — for an xray inbound listen, streamSettings and settings
 // with clients cut down to its probe client; for the AmneziaWG server the
 // probe peers, each as its rendered .conf. Tag and remark stay out so a
@@ -341,15 +361,23 @@ func (s *MonitoringService) Revision() (string, error) {
 	subId, _ := s.settingService.GetMonProbeSubId()
 	hiddify, _ := s.settingService.GetXrayHiddifyCompat()
 	override := s.override()
-	// encoding/json writes map keys sorted and no whitespace: the canonical
-	// form. Parsed settings and streams are maps too, so their key order in
-	// the database does not matter either.
-	canonical, err := json.Marshal(map[string]any{
+	material := map[string]any{
 		"hiddifyCompat": hiddify,
 		"inbounds":      entries,
 		"override":      map[string]any{"enabled": override.Enabled, "host": override.Host},
 		"probeSubId":    subId,
-	})
+	}
+	chain, err := monChainTx(nil)
+	if err != nil {
+		return "", err
+	}
+	if chain.probed() {
+		material["chain"] = chain.revisionMaterial()
+	}
+	// encoding/json writes map keys sorted and no whitespace: the canonical
+	// form. Parsed settings and streams are maps too, so their key order in
+	// the database does not matter either.
+	canonical, err := json.Marshal(material)
 	if err != nil {
 		return "", err
 	}
@@ -416,7 +444,7 @@ func (s *MonitoringService) tunnelProbeMaterial() ([]map[string]any, error) {
 		if !IsProbeAccount(clients[i].Email) {
 			continue
 		}
-		conf, err := s.tunnelProbeConf(&clients[i], revisionEndpointHost, false)
+		conf, err := s.tunnelProbeConf(&clients[i], revisionEndpointHost)
 		if err != nil {
 			return nil, err
 		}
@@ -426,8 +454,8 @@ func (s *MonitoringService) tunnelProbeMaterial() ([]map[string]any, error) {
 	return peers, nil
 }
 
-// State is GET /state: the sanitised inbounds, the override, the probe set
-// and the revision. No side effects.
+// State is GET /state: the sanitised inbounds, the override, the chain, the
+// probe set and the revision. No side effects.
 func (s *MonitoringService) State() (*MonState, error) {
 	inbounds, err := s.Inbounds()
 	if err != nil {
@@ -443,8 +471,13 @@ func (s *MonitoringService) State() (*MonState, error) {
 	if err != nil {
 		stale = 15
 	}
+	chain, err := monChainTx(nil)
+	if err != nil {
+		return nil, err
+	}
 	st := &MonState{
 		Contract:     MonContractVersion,
+		Chain:        chain,
 		PanelVersion: config.GetVersion(),
 		ServerTime:   time.Now().UnixMilli(),
 		Revision:     rev,
@@ -542,27 +575,46 @@ func (s *MonitoringService) ensureXrayProbe(ib *model.Inbound, subId string) (bo
 }
 
 // ensureTunnelProbes reconciles the AmneziaWG probe peers to the registry
-// snapshot: one peer per mon-client × path (monProbePaths), whatever the
-// mon-client's state; every other probe peer goes — those of mon-clients that
-// left the registry and the shared probe-awg of contract v1. Stale peers are
-// deleted before new ones are made so their addresses are free again. A peer
-// the address pool has no room for is skipped with a warning and its
-// mon-client reported in unallocated; any other failure stops the ensure.
+// snapshot: one peer per pair of mon-client × path the mon-client probes
+// (monProbePairs: its paths expanded over the probed set), whatever the
+// mon-client's state, up to monProbePeerLimit pairs in priority order; every
+// other probe peer goes — those of pairs beyond the limit, of paths that left
+// the probed set, of mon-clients that left the registry, and the shared
+// probe-awg of contract v1. Stale peers are deleted before new ones are made
+// so their addresses are free again, and new ones are made in priority order.
+// A pair beyond the limit, or one the address pool has no room for (logged),
+// is reported in unallocated with its reason; any other failure stops the
+// ensure.
 //
 // The shared subId is not bound to the peers: tunnel clients carry no subId
 // until the tunnel subscription feature (docs/spec/tunnel-subscription.md)
 // lands; its TunnelSubscriptionService.Set is the hook to call here when it
 // does.
-func (s *MonitoringService) ensureTunnelProbes(snapshot []MonClient) (created []MonProbeRef, present int, unallocated []string, err error) {
+func (s *MonitoringService) ensureTunnelProbes(snapshot []MonClient) (created []MonProbeRef, present int, unallocated []MonUnallocated, err error) {
+	chain, err := monChainTx(nil)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	limit, err := s.settingService.GetMonProbePeerLimit()
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	pairs := monProbePairs(snapshot, monProbedPaths(chain))
+	unallocated = []MonUnallocated{}
+	if limit > 0 && len(pairs) > limit {
+		for _, p := range pairs[limit:] {
+			unallocated = append(unallocated, MonUnallocated{MonClientId: p.MonClientId, Path: p.Path, Reason: MonUnallocatedLimit})
+		}
+		pairs = pairs[:limit]
+	}
+
 	clients, err := s.awgService.GetClients()
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	want := map[string]bool{}
-	for _, mc := range snapshot {
-		for _, path := range monProbePaths {
-			want[ProbeTunnelEmail(mc.Id, path)] = true
-		}
+	for _, p := range pairs {
+		want[ProbeTunnelEmail(p.MonClientId, p.Path)] = true
 	}
 	have := map[string]bool{}
 	for _, c := range clients {
@@ -579,33 +631,30 @@ func (s *MonitoringService) ensureTunnelProbes(snapshot []MonClient) (created []
 	}
 
 	created = []MonProbeRef{}
-	unallocated = []string{}
-	for _, mc := range sortedMonClients(snapshot) {
-		missed := false
-		for _, path := range monProbePaths {
-			email := ProbeTunnelEmail(mc.Id, path)
-			if have[email] {
-				present++
+	var exhausted []MonUnallocated
+	for _, p := range pairs {
+		email := ProbeTunnelEmail(p.MonClientId, p.Path)
+		if have[email] {
+			present++
+			continue
+		}
+		peer := NewProbeTunnelClient(p.MonClientId, p.Path)
+		if err := s.awgService.addClient(&peer, true); err != nil {
+			if errors.Is(err, ipam.ErrPoolExhausted) {
+				logger.Warningf("monitoring: no AmneziaWG probe peer for mon-client %s on %s: %v", p.MonClientId, p.Path, err)
+				exhausted = append(exhausted, MonUnallocated{MonClientId: p.MonClientId, Path: p.Path, Reason: MonUnallocatedPoolExhausted})
 				continue
 			}
-			peer := NewProbeTunnelClient(mc.Id, path)
-			if err := s.awgService.addClient(&peer, true); err != nil {
-				if errors.Is(err, ipam.ErrPoolExhausted) {
-					logger.Warningf("monitoring: no AmneziaWG probe peer for mon-client %s on %s: %v", mc.Id, path, err)
-					missed = true
-					continue
-				}
-				return nil, 0, nil, err
-			}
-			have[email] = true
-			present++
-			created = append(created, MonProbeRef{Kind: model.MonInboundKindAwg, InboundId: 0, MonClientId: mc.Id, Path: path})
+			return nil, 0, nil, err
 		}
-		if missed {
-			unallocated = append(unallocated, mc.Id)
-		}
+		have[email] = true
+		present++
+		created = append(created, MonProbeRef{Kind: model.MonInboundKindAwg, InboundId: 0, MonClientId: p.MonClientId, Path: p.Path})
 	}
-	return created, present, unallocated, nil
+	if len(unallocated) > 0 {
+		logger.Warningf("monitoring: %d pairs of mon-client × path are beyond monProbePeerLimit=%d and get no AmneziaWG probe peer", len(unallocated), limit)
+	}
+	return created, present, append(exhausted, unallocated...), nil
 }
 
 // sortedMonClients is the snapshot sorted by id with duplicates dropped, so
@@ -642,8 +691,8 @@ func validateSnapshot(snapshot []MonClient) error {
 // monProbeLastEnsured, replaces the mon-client snapshot with the body, and
 // drops mon_targets of mon-clients that left the registry. A monClientId
 // outside the v2 grammar is 400 before anything changes. A full tunnel
-// address pool is not an error: the result lists the mon-clients it left
-// without a peer. Any other failure to create a client is reported as 503
+// address pool or the peer limit is not an error: the result lists the pairs
+// of mon-client × path left without a peer, with the reason. Any other failure to create a client is reported as 503
 // xray_unavailable; whatever was created stays, and the next ensure finishes
 // the set.
 func (s *MonitoringService) EnsureProbeSet(snapshot []MonClient) (*MonEnsureResult, error) {
@@ -667,7 +716,7 @@ func (s *MonitoringService) EnsureProbeSet(snapshot []MonClient) (*MonEnsureResu
 	}
 	created := []MonProbeRef{}
 	present := 0
-	unallocated := []string{}
+	unallocated := []MonUnallocated{}
 	for _, ib := range inbounds {
 		switch {
 		case monXrayProtocols[ib.Protocol]:
@@ -724,31 +773,28 @@ func (s *MonitoringService) dropTargetsOutside(snapshot []MonClient) error {
 
 // tunnelProbeConf renders the AmneziaWG probe .conf the way the panel renders
 // every client config, with the endpoint host chosen by the caller: the
-// override host for the proxy path, the given host for the direct path.
-func (s *MonitoringService) tunnelProbeConf(client *model.TunnelClient, host string, useOverride bool) (string, error) {
+// override host for the proxy path, a hop's host for its path, the given host
+// for the direct path.
+func (s *MonitoringService) tunnelProbeConf(client *model.TunnelClient, host string) (string, error) {
 	server, err := s.awgService.GetServer()
 	if err != nil {
 		return "", err
 	}
-	if useOverride {
-		overrideHost, on := s.settingService.GetProxyOverride()
-		return tunnel.GenerateClientConfig(tunnel.AWG, withProxyOverride(server, overrideHost, on), *client), nil
-	}
-	direct := *server
-	direct.Endpoint = tunnel.ReplaceEndpointHost(server.Endpoint, host)
-	return tunnel.GenerateClientConfig(tunnel.AWG, &direct, *client), nil
+	endpoint := *server
+	endpoint.Endpoint = tunnel.ReplaceEndpointHost(server.Endpoint, host)
+	return tunnel.GenerateClientConfig(tunnel.AWG, &endpoint, *client), nil
 }
 
 // ProbeConfigs is GET /probe/configs: the probe set's material for one path.
 // With an empty host the links carry the host override (path "proxy"); with a
-// host they carry that host instead (path "direct"). Disabled inbounds are
-// left out, as in a subscription, so mon-server sees them PAUSED.
-//
-// hop and edge are ?hop= and its synonym ?edge= (proxy-chain.md §6.1). Until
-// per-hop probing lands no hop is known, so any name is 409 unknown_hop
-// (unknown_edge when asked through ?edge= alone) rather than the proxy path.
+// host they carry that host instead (path "direct"); with hop — or its synonym
+// edge — they carry that hop's host from the registry (path edge:<name> or
+// inner:<name>, proxy-chain.md §6.1), whatever the hop's role and whether it
+// is active. Disabled inbounds are left out, as in a subscription, so
+// mon-server sees them PAUSED.
 func (s *MonitoringService) ProbeConfigs(host, hop, edge string) (*MonProbeConfigs, error) {
-	if err := unknownHop(hop, edge); err != nil {
+	hopRow, err := s.probeHop(hop, edge)
+	if err != nil {
 		return nil, err
 	}
 	subId, err := s.settingService.GetMonProbeSubId()
@@ -759,13 +805,16 @@ func (s *MonitoringService) ProbeConfigs(host, hop, edge string) (*MonProbeConfi
 		return nil, ErrProbeNotEnsured
 	}
 	host = strings.TrimSpace(host)
-	useOverride := host == ""
-	path := model.MonPathDirect
-	if useOverride {
-		if _, on := s.settingService.GetProxyOverride(); !on {
+	path, via := model.MonPathDirect, ""
+	switch {
+	case hopRow != nil:
+		path, via = monHopPath(hopRow.Role, hopRow.Name), hopRow.Host
+	case host == "":
+		overrideHost, on := s.settingService.GetProxyOverride()
+		if !on {
 			return nil, ErrOverrideDisabled
 		}
-		path = model.MonPathProxy
+		path, via = model.MonPathProxy, overrideHost
 	}
 
 	inbounds, err := s.inboundService.GetAllInbounds()
@@ -793,13 +842,17 @@ func (s *MonitoringService) ProbeConfigs(host, hop, edge string) (*MonProbeConfi
 			}
 			// One link per inbound: the first, should a renderer hand back a
 			// multi-link inbound (§4.3).
-			link, _, _ := strings.Cut(links.ProbeLink(ib, probe.Email, host, useOverride), "\n")
+			link, _, _ := strings.Cut(links.ProbeLink(ib, probe.Email, host, via), "\n")
 			if link == "" {
 				continue
 			}
 			items = append(items, MonProbeItem{Kind: model.MonInboundKindXray, InboundId: ib.Id, Link: link})
 		case ib.Protocol == model.AmneziaWG:
-			peers, err := s.tunnelProbeItems(path, host, useOverride)
+			endpoint := via
+			if endpoint == "" {
+				endpoint = host
+			}
+			peers, err := s.tunnelProbeItems(path, endpoint)
 			if err != nil {
 				return nil, err
 			}
@@ -825,9 +878,10 @@ func (s *MonitoringService) ProbeConfigs(host, hop, edge string) (*MonProbeConfi
 
 // tunnelProbeItems renders the AmneziaWG items of one path: for each
 // mon-client of the registry snapshot, its peer for that path, named by
-// monClientId. A mon-client without a peer (the pool was full, or ensure has
-// not run since it joined) has no item.
-func (s *MonitoringService) tunnelProbeItems(path, host string, useOverride bool) ([]MonProbeItem, error) {
+// monClientId, with host as the endpoint. A mon-client without a peer (it
+// does not probe the path, the pool was full, the peer limit left it out, or
+// ensure has not run since it joined) has no item.
+func (s *MonitoringService) tunnelProbeItems(path, host string) ([]MonProbeItem, error) {
 	clients, err := s.awgService.GetClients()
 	if err != nil {
 		return nil, err
@@ -844,7 +898,7 @@ func (s *MonitoringService) tunnelProbeItems(path, host string, useOverride bool
 		if peer == nil {
 			continue
 		}
-		conf, err := s.tunnelProbeConf(peer, host, useOverride)
+		conf, err := s.tunnelProbeConf(peer, host)
 		if err != nil {
 			return nil, err
 		}
@@ -853,19 +907,33 @@ func (s *MonitoringService) tunnelProbeItems(path, host string, useOverride bool
 	return items, nil
 }
 
-// unknownHop answers the ?hop= / ?edge= mode of GET /probe/configs before
-// the chain registry is consulted for it: blank parameters are absent, any
-// name is unknown. Two different names are refused as unknown_hop as well.
-func unknownHop(hop, edge string) error {
+// probeHop resolves the ?hop= / ?edge= mode of GET /probe/configs: nil when
+// neither is given (blank counts as absent), the registry row of the named
+// hop otherwise. Two different names, or a name the registry does not have,
+// is unknown_hop; a hop that is not joined or legacy is hop_not_joined.
+func (s *MonitoringService) probeHop(hop, edge string) (*model.ChainHop, error) {
 	hop, edge = strings.TrimSpace(hop), strings.TrimSpace(edge)
+	name := hop
 	switch {
 	case hop == "" && edge == "":
-		return nil
+		return nil, nil
 	case hop == "":
-		return ErrUnknownEdge
-	default:
-		return ErrUnknownHop
+		name = edge
+	case edge != "" && edge != hop:
+		return nil, ErrUnknownHop
 	}
+	var row model.ChainHop
+	err := database.GetDB().Where("name = ?", name).First(&row).Error
+	if database.IsNotFound(err) {
+		return nil, ErrUnknownHop
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !monHopProbed(row.State) {
+		return nil, ErrHopNotJoined
+	}
+	return &row, nil
 }
 
 // removeXrayProbe deletes the probe client of an inbound, with its traffic

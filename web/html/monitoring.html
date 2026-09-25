@@ -64,6 +64,25 @@
                   <div class="mon-muted" :style="{ marginTop: '12px' }" v-else>
                     {{ i18n "pages.monitoring.noData" }}
                   </div>
+                  <!-- Per hop (proxy-chain.md §6.4): whether the active edge
+                       works and which standby would, then one chip per path
+                       to narrow every card's table to it. -->
+                  <div data-testid="mon-chain-summary" :style="{ marginTop: '12px' }" v-if="chainSummary">
+                    {{ i18n "pages.monitoring.activeEdge" }} <b>[[ chainSummary.active.name ]]</b>
+                    <span :class="stateClass(chainSummary.active.state)">[[ hopLabel(chainSummary.active) ]]</span>
+                    ·
+                    <template v-if="chainSummary.standby">
+                      {{ i18n "pages.monitoring.standby" }} <b>[[ chainSummary.standby.name ]]</b>
+                      <span :class="stateClass(chainSummary.standby.state)">[[ hopLabel(chainSummary.standby) ]]</span>
+                    </template>
+                    <span class="mon-muted" v-else>{{ i18n "pages.monitoring.noHealthyStandby" }}</span>
+                  </div>
+                  <a-radio-group data-testid="mon-path-filter" v-if="pathChips.length > 2" :value="pathFilter"
+                    button-style="solid" size="small" :style="{ marginTop: '12px' }"
+                    @change="event => pathFilter = event.target.value">
+                    <a-radio-button v-for="chip in pathChips" :key="chip.path" :value="chip.path"
+                      :data-testid="'mon-path-' + chip.path">[[ chip.label ]]<template v-if="chip.active"> ★</template></a-radio-button>
+                  </a-radio-group>
                 </a-card>
               </a-col>
 
@@ -86,7 +105,7 @@
                           '—' ]]</span>
                       </div>
 
-                      <a-table :columns="targetColumns" :data-source="inbound.targets"
+                      <a-table :columns="targetColumns" :data-source="visibleTargets(inbound)"
                         :row-key="target => target.monClientId + ':' + target.path"
                         :row-class-name="target => target.retired ? 'mon-retired' : ''" :pagination="false"
                         :scroll="isMobile ? {} : { x: 640 }" size="small" :style="{ marginTop: '8px' }">
@@ -96,7 +115,7 @@
                             "pages.monitoring.retired" }}</a-tag>
                         </template>
                         <template slot="path" slot-scope="text, target">
-                          <a-tag :color="target.path === 'proxy' ? 'blue' : ''" :style="{ margin: 0 }">[[ target.path
+                          <a-tag :color="pathColor(target.path)" :style="{ margin: 0 }">[[ target.path
                             ]]</a-tag>
                         </template>
                         <template slot="state" slot-scope="text, target">
@@ -188,6 +207,15 @@
   const MON_REFRESH_MS = 10000;
   const MON_EVENT_LIMIT = 50;
   const MON_DEFAULT_RANGE = '7d';
+  // Words the per-hop chips and summary print from script.
+  const MON_TEXT = {
+    filterAll: '{{ i18n "pages.monitoring.filterAll" }}',
+    noHopData: '{{ i18n "pages.monitoring.noHopData" }}',
+  };
+  // A hop's badge without data (pending, draining, not yet reported).
+  const MON_HOP_NONE = 'NONE';
+  // Which standby the summary names: the best that is not DOWN and has data.
+  const MON_STANDBY_RANK = { UP: 0, FLAPPING: 1, UNKNOWN: 2, PAUSED: 3, STALE: 4 };
 
   const app = new Vue({
     delimiters: ['[[', ']]'],
@@ -211,6 +239,10 @@
         inbounds: [],
       },
       events: [],
+      // GET /panel/api/chain/hops/health: {name, role, state, active} per hop.
+      chainHops: [],
+      // The path every card's table is narrowed to; 'all' shows every target.
+      pathFilter: 'all',
       // "kind:id" → { range, stats } for each card's own chart.
       charts: {},
       refreshTimer: null,
@@ -232,6 +264,36 @@
       MonUtil() {
         return MonUtil;
       },
+      // direct, proxy while some target still has it, the inner fronts and
+      // edges of the chain (the active one starred), then any other path a
+      // target reports — the registry and the targets may disagree for a
+      // minute while mon-server catches up.
+      pathChips() {
+        const chips = [{ path: 'all', label: MON_TEXT.filterAll }];
+        const seen = {};
+        const add = (path, active) => {
+          if (seen[path]) return;
+          seen[path] = true;
+          chips.push({ path: path, label: path, active: !!active });
+        };
+        const reported = [];
+        this.targets.inbounds.forEach(inbound => inbound.targets.forEach(t => reported.push(t.path)));
+        add('direct');
+        if (reported.includes('proxy')) add('proxy');
+        this.chainHops.forEach(hop => add(hop.role + ':' + hop.name, hop.active));
+        reported.forEach(path => add(path));
+        return chips;
+      },
+      // "active edge edge-a DOWN · standby edge-b UP" (§6.4): the active edge's
+      // own state beside the best standby, as the Telegram hint picks it.
+      chainSummary() {
+        const active = this.chainHops.find(hop => hop.role === 'edge' && hop.active);
+        if (!active) return null;
+        const standby = this.chainHops
+          .filter(hop => hop.role === 'edge' && !hop.active && hop.state in MON_STANDBY_RANK)
+          .sort((a, b) => MON_STANDBY_RANK[a.state] - MON_STANDBY_RANK[b.state] || a.name.localeCompare(b.name));
+        return { active: active, standby: standby[0] || null };
+      },
     },
     methods: {
       loading(spinning = true) {
@@ -252,6 +314,10 @@
         msg.obj.inbounds = msg.obj.inbounds || [];
         this.targets = msg.obj;
       },
+      async loadHops() {
+        const msg = await MonApi.hopsHealth();
+        if (msg.success && Array.isArray(msg.obj)) this.chainHops = msg.obj;
+      },
       async loadEvents() {
         const msg = await MonApi.events(MON_EVENT_LIMIT);
         if (msg.success && Array.isArray(msg.obj)) this.events = msg.obj;
@@ -270,6 +336,7 @@
       },
       async refresh() {
         await this.loadTargets();
+        await this.loadHops();
         await this.loadEvents();
         // Every card's chart follows the same clock as the rest of the page,
         // at whatever range the operator left it on.
@@ -287,6 +354,19 @@
       },
       stateTitle(state) {
         return this.targets.stale ? state : '';
+      },
+      visibleTargets(inbound) {
+        if (this.pathFilter === 'all') return inbound.targets;
+        return inbound.targets.filter(target => target.path === this.pathFilter);
+      },
+      pathColor(path) {
+        if (path === 'proxy') return 'blue';
+        if (path.startsWith('edge:')) return 'purple';
+        if (path.startsWith('inner:')) return 'geekblue';
+        return '';
+      },
+      hopLabel(hop) {
+        return hop.state === MON_HOP_NONE ? MON_TEXT.noHopData : hop.state;
       },
       eventTone(event) {
         if (event.kind === 'mon_client') return event.to === 'ONLINE' ? 'up' : 'down';

@@ -591,6 +591,11 @@
 "coverage" = "cov"
 "retired" = "retired"
 "viaMonServer" = "via mon-server"
+"filterAll" = "all"
+"activeEdge" = "active edge"
+"standby" = "standby"
+"noHealthyStandby" = "no healthy standby"
+"noHopData" = "no data"
 "worst" = "worst"
 "heartbeat" = "hb"
 "offline" = "OFFLINE"
@@ -751,6 +756,8 @@
 "monProbeSetRemove" = "Remove probe set"
 "monProbeSetRemoveConfirm" = "Remove every probe account? The mon-server recreates them on its next ensure."
 "monProbeSetRemoved" = "Probe set removed"
+"monProbePeerLimit" = "AmneziaWG probe peer limit"
+"monProbePeerLimitDesc" = "At most this many AmneziaWG probe peers (one per mon-client × path) take addresses from the tunnel pool; 0 = no limit. Pairs beyond it are PAUSED no_probe_link on the mon-server."
 
 # Chain editor, Settings -> Subscription (docs/spec/proxy-chain.md §7.5). The
 # registry replaces the two proxyOverride fields: the host handed out in links
@@ -823,6 +830,7 @@
 "chain.clearActive" = "Turn override off"
 "chain.clearActiveTitle" = "Turn the override off?"
 "chain.clearActiveNote" = "No edge stays active until you choose one again; the panel publishes the real server's address in the meantime."
+"chain.healthNone" = "no data"
 
 [pages.xray]
 "title" = "Xray конфігурації"
@@ -1307,6 +1315,9 @@
 "digestOffline" = "🔌 mon-clients offline: {{ .Clients }}\r\n"
 "digestAwaiting" = "⏳ mon-clients awaiting first heartbeat: {{ .Clients }}\r\n"
 "digestStale" = "🟡 Monitoring silent: {{ .Minutes }} min\r\n"
+"standbySwitch" = "\n↪️ Standby: {{ .Standby }}. Switch: /proxy {{ .Name }}"
+"standbyNoHealthy" = "\n↪️ Standby: {{ .Standby }}. No healthy standby edge."
+"standbyNone" = "\n↪️ No healthy standby edge."
 
 [tgbot.buttons]
 "closeKeyboard" = "❌ Закрити клавіатуру"

@@ -48,4 +48,27 @@ test.describe('monitoring page', () => {
     // has no state to show. An em dash, not UP.
     await expect(card.getByText('—', { exact: true })).toBeVisible();
   });
+
+  test('a chain hop gets a path chip, and no summary while no edge is active', async ({
+    authedPage,
+    authedRequest,
+  }) => {
+    const name = 'e2e-mon-chip';
+    const added = await (
+      await authedRequest.post('/panel/api/chain/add', { data: { name, host: 'chip.e2e.example', role: 'inner' } })
+    ).json();
+    expect(added.success).toBe(true);
+    try {
+      await authedPage.goto('/panel/monitoring');
+      // Per hop (proxy-chain.md §6.4): one chip per hop beside all and direct.
+      await expect(authedPage.getByTestId('mon-path-filter')).toBeVisible();
+      await expect(authedPage.getByTestId('mon-path-all')).toBeVisible();
+      await expect(authedPage.getByTestId('mon-path-direct')).toBeVisible();
+      await authedPage.getByTestId(`mon-path-inner:${name}`).click();
+      // The summary speaks about the active edge, and there is none.
+      await expect(authedPage.getByTestId('mon-chain-summary')).toHaveCount(0);
+    } finally {
+      await authedRequest.post(`/panel/api/chain/del/${added.obj.hop.id}`, { data: { force: true, skipDrain: true } });
+    }
+  });
 });

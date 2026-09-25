@@ -109,7 +109,7 @@ func TestMonAuthHidesThePanel(t *testing.T) {
 	}
 
 	w := monRequest(r, "GET", "/mon/v1/state", monTestToken, "")
-	if w.Code != http.StatusOK || w.Header().Get("X-Mon-Contract") != "2" {
+	if w.Code != http.StatusOK || w.Header().Get("X-Mon-Contract") != "3" {
 		t.Fatalf("authorised GET /state: status %d header %q body %s", w.Code, w.Header().Get("X-Mon-Contract"), w.Body.String())
 	}
 	if got := (&service.MonitoringService{}).MonLastContact(); got == 0 {
@@ -119,7 +119,7 @@ func TestMonAuthHidesThePanel(t *testing.T) {
 		t.Error("monLastContact not persisted on first contact")
 	}
 	var st service.MonState
-	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.Contract != 2 || len(st.Revision) != 16 {
+	if err := json.Unmarshal(w.Body.Bytes(), &st); err != nil || st.Contract != 3 || len(st.Revision) != 16 {
 		t.Errorf("GET /state body: %v %s", err, w.Body.String())
 	}
 }
@@ -187,7 +187,7 @@ func TestMonRoutesSpeakTheContract(t *testing.T) {
 
 	// Ensure, then configs on both paths, then events and stats round-trip.
 	w := monRequest(r, "POST", "/mon/v1/probe/ensure", monTestToken, `{"monClients":[{"id":"ams-1","name":"Amsterdam","region":"NL","state":"ONLINE","lastHeartbeat":1}]}`)
-	if w.Code != http.StatusOK || w.Header().Get("X-Mon-Contract") != "2" {
+	if w.Code != http.StatusOK || w.Header().Get("X-Mon-Contract") != "3" {
 		t.Fatalf("ensure: %d %s", w.Code, w.Body.String())
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil || m["present"] != float64(1) || len(m["subId"].(string)) != 16 ||

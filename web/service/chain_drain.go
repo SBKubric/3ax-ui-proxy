@@ -143,6 +143,10 @@ func startDrainingTx(tx *gorm.DB, hop *model.ChainHop, outer []model.ChainHop, m
 	if err := tx.Save(hop).Error; err != nil {
 		return 0, 0, nil, err
 	}
+	// A draining hop is no longer probed (§6.1).
+	if err := pruneMonTargetsTx(tx); err != nil {
+		return 0, 0, nil, err
+	}
 	// The neighbours are re-chained onto what the departing hop dialled, in
 	// the same transaction as the revision: by the time they are told to move,
 	// their new upstream already holds their secret hashes.
@@ -294,6 +298,9 @@ func (s *ChainService) finishDraining(id int) error {
 			nextHopIsHop = err == nil
 		}
 		if err := tx.Delete(&model.ChainHop{}, hop.Id).Error; err != nil {
+			return err
+		}
+		if err := deleteMonitoringByHopTx(tx, hop); err != nil {
 			return err
 		}
 		if err := reconcileTopology(tx); err != nil {

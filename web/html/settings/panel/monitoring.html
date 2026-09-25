@@ -2,7 +2,7 @@
 <!--
   Monitoring settings (docs/spec/monitoring-panel.md §7.3).
 
-  Five of the seven monitoring preferences are AllSetting fields, so they ride
+  Six of the eight monitoring preferences are AllSetting fields, so they ride
   the page's common Save like every other setting here. monProbeTtlHours and
   monRollupStepMinutes are deliberately left out of the tab: §7.3 does not list
   them, and the CLI still reaches them.
@@ -55,6 +55,14 @@
             <template #description>{{ i18n "pages.settings.monRollupRetentionDaysDesc" }}</template>
             <template #control>
                 <a-input-number :min="1" v-model="allSetting.monRollupRetentionDays"
+                    :style="{ width: '100%' }"></a-input-number>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>{{ i18n "pages.settings.monProbePeerLimit" }}</template>
+            <template #description>{{ i18n "pages.settings.monProbePeerLimitDesc" }}</template>
+            <template #control>
+                <a-input-number data-testid="mon-probe-peer-limit" :min="0" v-model="allSetting.monProbePeerLimit"
                     :style="{ width: '100%' }"></a-input-number>
             </template>
         </a-setting-list-item>

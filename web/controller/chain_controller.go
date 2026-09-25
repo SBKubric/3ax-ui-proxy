@@ -28,44 +28,15 @@ import (
 // service owns the invariants and the revision (§2.7, §3.4); the controller
 // owns nothing but the envelope and the wording of a refusal.
 type ChainController struct {
-	chainService   service.ChainService
-	settingService service.SettingService
-	portsService   service.ChainPortsService
-	health         ChainHealthProvider
-}
-
-// ChainHopHealth is one hop's health badge (§7.4): the name the editor keys its
-// row by, and one of the mon-state values the Monitoring page already styles.
-type ChainHopHealth struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
-}
-
-// chainHealthUnknown is the grey badge: no monitoring data for this hop.
-const chainHealthUnknown = "UNKNOWN"
-
-// ChainHealthProvider folds the monitoring data into one state per hop. It is
-// an interface with a stub behind it because the monitoring half is ticket #87
-// (§6.3): the route, the shape and the badge ship now, and the day the probes
-// report per hop only the implementation changes.
-type ChainHealthProvider interface {
-	HopHealth(hops []model.ChainHop) ([]ChainHopHealth, error)
-}
-
-// chainHealthStub answers UNKNOWN for every hop in the registry.
-type chainHealthStub struct{}
-
-func (chainHealthStub) HopHealth(hops []model.ChainHop) ([]ChainHopHealth, error) {
-	health := make([]ChainHopHealth, 0, len(hops))
-	for _, hop := range hops {
-		health = append(health, ChainHopHealth{Name: hop.Name, State: chainHealthUnknown})
-	}
-	return health, nil
+	chainService      service.ChainService
+	settingService    service.SettingService
+	portsService      service.ChainPortsService
+	monitoringService service.MonitoringService
 }
 
 // NewChainController registers the registry routes of §2.4 on g.
 func NewChainController(g *gin.RouterGroup) *ChainController {
-	a := &ChainController{health: chainHealthStub{}}
+	a := &ChainController{}
 	a.initRouter(g)
 	return a
 }
@@ -368,7 +339,7 @@ func (a *ChainController) hopsHealth(c *gin.Context) {
 		a.fail(c, err)
 		return
 	}
-	health, err := a.health.HopHealth(state.Hops)
+	health, err := a.monitoringService.HopsHealth(state.Hops)
 	jsonObj(c, health, err)
 }
 

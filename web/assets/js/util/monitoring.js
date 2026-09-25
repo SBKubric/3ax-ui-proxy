@@ -104,9 +104,12 @@ const MonUtil = {
  * seconds and must stay quiet, so each caller decides what to say.
  */
 const MonApi = {
-    async _call(method, path, data) {
+    _call(method, path, data) {
+        return MonApi._request(method, '/panel/api/monitoring/' + path, data);
+    },
+    async _request(method, url, data) {
         try {
-            const resp = await axios({ method: method, url: '/panel/api/monitoring/' + path, data: data });
+            const resp = await axios({ method: method, url: url, data: data });
             return resp.data || { success: false, msg: '' };
         } catch (e) {
             const body = e.response && e.response.data;
@@ -132,6 +135,10 @@ const MonApi = {
     },
     resetToken() {
         return MonApi._call('post', 'token/reset');
+    },
+    /** One badge per chain hop, {name, role, state, active} (proxy-chain.md §6.4). */
+    hopsHealth() {
+        return MonApi._request('get', '/panel/api/chain/hops/health');
     },
 };
 

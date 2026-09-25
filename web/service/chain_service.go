@@ -298,6 +298,9 @@ func (s *ChainService) Update(id int, in UpdateHopInput) error {
 		if err := tx.Save(hop).Error; err != nil {
 			return err
 		}
+		if err := pruneMonTargetsTx(tx); err != nil {
+			return err
+		}
 		return bumpRevisionTx(tx)
 	})
 }
@@ -390,6 +393,12 @@ func (s *ChainService) Delete(id int, force, skipDrain bool) (*DeleteResult, err
 		}
 
 		if err := tx.Delete(&model.ChainHop{}, hop.Id).Error; err != nil {
+			return err
+		}
+		if err := deleteMonitoringByHopTx(tx, hop); err != nil {
+			return err
+		}
+		if err := pruneMonTargetsTx(tx); err != nil {
 			return err
 		}
 		if err := tx.Model(&model.ChainHop{}).Where("next_hop_id = ?", hop.Id).
@@ -498,7 +507,11 @@ func (s *ChainService) ReissueToken(id int) (string, int64, error) {
 		hop.JoinTokenHash = chain.HashSecret(token)
 		hop.JoinTokenExpires = expires
 		hop.State = chain.StatePending
-		return tx.Save(hop).Error
+		if err := tx.Save(hop).Error; err != nil {
+			return err
+		}
+		// Back in pending the hop is no longer probed (§6.1).
+		return pruneMonTargetsTx(tx)
 	})
 	if err != nil {
 		return "", 0, err
@@ -541,6 +554,10 @@ func markJoinedTx(tx *gorm.DB, hop *model.ChainHop, secretHash, observedAddr str
 		return err
 	}
 	if err := reconcileTopology(tx); err != nil {
+		return err
+	}
+	// A joined hop is probed: the first one takes path proxy away (§6.1).
+	if err := pruneMonTargetsTx(tx); err != nil {
 		return err
 	}
 	return bumpRevisionTx(tx)
@@ -640,6 +657,9 @@ func (s *ChainService) MigrateLegacyOverride() error {
 			return err
 		}
 		logger.Infof("chain: imported the legacy host override %s as hop %q", host, hop.Name)
+		if err := pruneMonTargetsTx(tx); err != nil {
+			return err
+		}
 		return bumpRevisionTx(tx)
 	})
 }

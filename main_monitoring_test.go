@@ -163,8 +163,8 @@ func TestMonCLIOpensAndClosesTheContract(t *testing.T) {
 
 	if w := state(first); w.Code != http.StatusOK {
 		t.Fatalf("state with the issued token: %d, want 200", w.Code)
-	} else if w.Header().Get("X-Mon-Contract") != "2" {
-		t.Errorf("X-Mon-Contract %q, want 2", w.Header().Get("X-Mon-Contract"))
+	} else if w.Header().Get("X-Mon-Contract") != "3" {
+		t.Errorf("X-Mon-Contract %q, want 3", w.Header().Get("X-Mon-Contract"))
 	}
 
 	second := resetAndParseToken(t)

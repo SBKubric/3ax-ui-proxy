@@ -107,7 +107,7 @@ var defaultValueMap = map[string]string{
 	"chainJoinTokenHours": "24",
 	"chainDrainMinutes":   "10",
 
-	// Monitoring (docs/spec/monitoring-panel.md §2.2). The first seven are
+	// Monitoring (docs/spec/monitoring-panel.md §2.2). The first eight are
 	// preferences the settings form edits; the last five are state that
 	// mon-server and the panel write between saves, so they are deliberately
 	// absent from entity.AllSetting — a form save must not roll them back.
@@ -118,6 +118,7 @@ var defaultValueMap = map[string]string{
 	"monRetentionDays":       "7",
 	"monRollupRetentionDays": "30",
 	"monRollupStepMinutes":   "60",
+	"monProbePeerLimit":      "32",
 	"monProbeSubId":          "",
 	"monProbeLastEnsured":    "0",
 	"monLastContact":         "0",

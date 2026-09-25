@@ -122,3 +122,61 @@ test.describe('monitoring events contract', () => {
     }
   });
 });
+
+// Per-hop monitoring, contract 3 (docs/spec/proxy-chain.md §6.1): a hop enters
+// GET /state's chain and /probe/configs?hop= only once its box has joined. A
+// hop the owner has just added is pending — in the registry, not probed —
+// so ?hop= answers 409 hop_not_joined, a name the registry does not have 409
+// unknown_hop, and the editor's badge for it is NONE (no data).
+test.describe('monitoring per hop', () => {
+  test('a pending hop is not probed: not in chain.hops, 409 hop_not_joined, badge NONE', async ({
+    authedRequest,
+    request,
+  }) => {
+    const name = `e2e-mon-${randomUUID().slice(0, 8)}`;
+    const token = await openContract(authedRequest);
+    const headers = { Authorization: `Bearer ${token}` };
+    try {
+      const added = await (
+        await authedRequest.post('/panel/api/chain/add', { data: { name, host: 'hop.e2e.example', role: 'edge' } })
+      ).json();
+      expect(added.success).toBe(true);
+
+      const state = await request.get('/mon/v1/state', { headers });
+      expect(state.status()).toBe(200);
+      expect(state.headers()['x-mon-contract']).toBe('3');
+      const body = await state.json();
+      expect(body.contract).toBe(3);
+      expect(body.chain.hops.some((h: { name: string }) => h.name === name)).toBe(false);
+
+      const ensured = await request.post('/mon/v1/probe/ensure', {
+        headers,
+        data: { monClients: [{ id: 'e2e-hop', state: 'NEVER', paths: ['direct', 'hops'] }] },
+      });
+      expect(ensured.status()).toBe(200);
+
+      for (const [query, code] of [
+        [`?hop=${name}`, 'hop_not_joined'],
+        [`?edge=${name}`, 'hop_not_joined'],
+        ['?hop=e2e-nope', 'unknown_hop'],
+        [`?hop=${name}&edge=e2e-nope`, 'unknown_hop'],
+      ]) {
+        const res = await request.get(`/mon/v1/probe/configs${query}`, { headers });
+        expect(res.status(), query).toBe(409);
+        expect((await res.json()).error, query).toBe(code);
+      }
+
+      const health = await (await authedRequest.get('/panel/api/chain/hops/health')).json();
+      expect(health.success).toBe(true);
+      expect(health.obj).toContainEqual({ name, role: 'edge', state: 'NONE', active: false });
+    } finally {
+      const list = await (await authedRequest.get('/panel/api/chain/list')).json();
+      const hop = (list.obj?.hops || []).find((h: { name: string }) => h.name === name);
+      if (hop) {
+        await authedRequest.post(`/panel/api/chain/del/${hop.id}`, { data: { force: true, skipDrain: true } });
+      }
+      await request.delete('/mon/v1/probe', { headers });
+      await closeContract(authedRequest);
+    }
+  });
+});

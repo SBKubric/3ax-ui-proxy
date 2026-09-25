@@ -89,6 +89,7 @@ class AllSetting {
         this.monRetentionDays = 7;
         this.monRollupRetentionDays = 30;
         this.monRollupStepMinutes = 60;
+        this.monProbePeerLimit = 32;
 
         // Chain registry preferences (docs/spec/proxy-chain.md §2.2).
         // chainRevision is registry state and never travels through this form.

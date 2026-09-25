@@ -11,7 +11,7 @@ import (
 //
 // Two groups. Preferences — monEnable, monToken, monStaleMinutes,
 // monProbeTtlHours, monRetentionDays, monRollupRetentionDays,
-// monRollupStepMinutes — are also fields of entity.AllSetting and travel
+// monRollupStepMinutes, monProbePeerLimit — are also fields of entity.AllSetting and travel
 // through the settings form. State — monProbeSubId, monProbeLastEnsured,
 // monLastContact, monStaleSince, monClientsSnapshot — is written by the
 // monitoring service and job as mon-server talks to the panel, and is
@@ -164,4 +164,15 @@ func (s *SettingService) GetMonRollupStepMinutes() (int, error) {
 
 func (s *SettingService) SetMonRollupStepMinutes(value int) error {
 	return s.setInt("monRollupStepMinutes", value)
+}
+
+// GetMonProbePeerLimit caps the AmneziaWG probe peers ensure hands out
+// (contract 3 §4.3): the pairs of mon-client × path beyond it get none.
+// 0 — or anything below it — means no cap.
+func (s *SettingService) GetMonProbePeerLimit() (int, error) {
+	return s.getInt("monProbePeerLimit")
+}
+
+func (s *SettingService) SetMonProbePeerLimit(value int) error {
+	return s.setInt("monProbePeerLimit", value)
 }
