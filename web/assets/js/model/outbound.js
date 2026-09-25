@@ -1931,7 +1931,9 @@ Outbound.WireguardSettings = class extends CommonClass {
         domainStrategy = '',
         reserved = '',
         peers = [new Outbound.WireguardSettings.Peer()],
-        noKernelTun = false,
+        // gVisor TUN: xray runs as root under the panel, and a kernel TUN
+        // drops UDP ("use of WriteTo with pre-connected connection", #131).
+        noKernelTun = true,
     ) {
         super();
         this.mtu = mtu;
@@ -1962,7 +1964,8 @@ Outbound.WireguardSettings = class extends CommonClass {
             json.domainStrategy,
             json.reserved,
             json.peers.map(peer => Outbound.WireguardSettings.Peer.fromJson(peer)),
-            json.noKernelTun,
+            // A saved outbound without the key keeps xray's default (kernel TUN).
+            json.noKernelTun === true,
         );
     }
 

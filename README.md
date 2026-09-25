@@ -179,6 +179,7 @@ Running the chain and monitoring end-to-end on a real stand turned up bugs the u
 - **Chain ports from the inbounds table.** The ports a hop relays come from the panel's inbounds, not from `bin/config.json`, so a newly added inbound reaches every hop.
 - **Installer fixes.** ACME runs over IPv4 by default. A version tag passed without a TTY is no longer dropped. `--beta` no longer leaves a box without the service. An existing install is handed to this fork's `update.sh`, not upstream's.
 - **Subscriptions.** VLESS users get `"encryption":"none"` in the JSON subscription. The profile page URL carries the proxy's own address and port.
+- **UDP through WireGuard outbounds (WARP, NordVPN).** New WireGuard outbounds start with `noKernelTun: true`. xray runs as root under the panel and then picks a kernel TUN, and through a kernel TUN UDP fails (`use of WriteTo with pre-connected connection`) while TCP works. Outbounds created earlier are left as they are: switch **No Kernel Tun** on in the outbound's settings if UDP through it does not work.
 
 ---
 

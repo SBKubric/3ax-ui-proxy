@@ -959,6 +959,7 @@
 "endpoint" = "نقطه پایانی"
 "psk" = "کلید مشترک"
 "domainStrategy" = "استراتژی حل دامنه"
+"noKernelTunHint" = "On: userspace (gVisor) TUN. Off: kernel TUN, which xray picks when it runs as root, as under the panel; with it UDP through the outbound fails (use of WriteTo with pre-connected connection) while TCP works. Keep it on unless you know you need a kernel TUN."
 
 [pages.xray.tun]
 "nameDesc" = "نام رابط TUN. مقدار پیش‌فرض 'xray0' است"
