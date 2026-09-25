@@ -29,11 +29,11 @@ func TestProbeLinkChoosesTheAddress(t *testing.T) {
 	}
 
 	svc := NewSubService(false, "-ieo", "")
-	direct := svc.ProbeLink(ib, "probe-12", "203.0.113.10", false)
+	direct := svc.ProbeLink(ib, "probe-12", "203.0.113.10", "")
 	if !strings.HasPrefix(direct, "vless://aaaaaaaa-0000-0000-0000-000000000001@203.0.113.10:443") {
 		t.Errorf("direct link = %q", direct)
 	}
-	proxy := svc.ProbeLink(ib, "probe-12", "203.0.113.10", true)
+	proxy := svc.ProbeLink(ib, "probe-12", "203.0.113.10", "front.example.net")
 	if !strings.HasPrefix(proxy, "vless://aaaaaaaa-0000-0000-0000-000000000001@front.example.net:443") {
 		t.Errorf("proxy link = %q", proxy)
 	}
@@ -77,8 +77,8 @@ func TestProbeLinkIgnoresExternalProxy(t *testing.T) {
 			t.Fatal(err)
 		}
 		email := "probe-" + ib.Tag[len("in-"):]
-		direct := svc.ProbeLink(ib, email, "203.0.113.10", false)
-		proxy := svc.ProbeLink(ib, email, "203.0.113.10", true)
+		direct := svc.ProbeLink(ib, email, "203.0.113.10", "")
+		proxy := svc.ProbeLink(ib, email, "203.0.113.10", "front.example.net")
 		for name, link := range map[string]string{"direct": direct, "proxy": proxy} {
 			if link == "" || strings.Contains(link, "\n") {
 				t.Errorf("%s %s link is not one line: %q", ib.Protocol, name, link)
@@ -122,10 +122,15 @@ func TestProbeLinkDirectUsesPublicListen(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewSubService(false, "-ieo", "")
-	if direct := svc.ProbeLink(ib, "probe-31", "203.0.113.10", false); !strings.HasPrefix(direct, "vless://aaaaaaaa-0000-0000-0000-000000000031@198.51.100.7:443") {
+	if direct := svc.ProbeLink(ib, "probe-31", "203.0.113.10", ""); !strings.HasPrefix(direct, "vless://aaaaaaaa-0000-0000-0000-000000000031@198.51.100.7:443") {
 		t.Errorf("direct link = %q, want the public Listen", direct)
 	}
-	if proxy := svc.ProbeLink(ib, "probe-31", "203.0.113.10", true); !strings.HasPrefix(proxy, "vless://aaaaaaaa-0000-0000-0000-000000000031@front.example.net:443") {
+	if proxy := svc.ProbeLink(ib, "probe-31", "203.0.113.10", "front.example.net"); !strings.HasPrefix(proxy, "vless://aaaaaaaa-0000-0000-0000-000000000031@front.example.net:443") {
 		t.Errorf("proxy link = %q, want the override host", proxy)
+	}
+	// A hop's path dials the hop, not the public Listen: the chain relays the
+	// same port one-to-one (proxy-chain.md §6.1).
+	if hop := svc.ProbeLink(ib, "probe-31", "203.0.113.10", "10.0.0.7"); !strings.HasPrefix(hop, "vless://aaaaaaaa-0000-0000-0000-000000000031@10.0.0.7:443") {
+		t.Errorf("hop link = %q, want the hop host", hop)
 	}
 }

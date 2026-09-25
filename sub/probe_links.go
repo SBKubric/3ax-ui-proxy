@@ -13,12 +13,12 @@ import (
 // the sub server is running.
 type probeLinks struct{}
 
-func (probeLinks) ProbeLink(inbound *model.Inbound, email, address string, useOverride bool) string {
+func (probeLinks) ProbeLink(inbound *model.Inbound, email, address, via string) string {
 	settings := &service.SettingService{}
 	showInfo, _ := settings.GetSubShowInfo()
 	remarkModel, _ := settings.GetRemarkModel()
 	theme, _ := settings.GetSubTheme()
-	return NewSubService(showInfo, remarkModel, theme).ProbeLink(inbound, email, address, useOverride)
+	return NewSubService(showInfo, remarkModel, theme).ProbeLink(inbound, email, address, via)
 }
 
 // The panel binary links this package for the sub server, which is enough
@@ -29,23 +29,21 @@ func init() {
 
 // ProbeLink renders one client's link for the monitoring probe set
 // (docs/spec/monitoring-panel.md §4.3) exactly as /sub would, except that the
-// caller decides the connection address: with useOverride the proxy-front host
-// override applies as it does for users (path "proxy"); without it the
-// inbound's public Listen, if it has one, else address (path "direct"). The
+// caller decides the connection address: a non-empty via replaces it the way
+// the proxy-front host override does for users — the override host for path
+// "proxy", a hop's host for path edge:<name> or inner:<name>; with an empty
+// via it is the inbound's public Listen, if it has one, else address (path
+// "direct"). The
 // stream's externalProxy is dropped: it would replace both addresses with its
 // own ep.dest and fan the link out into one line per endpoint, and a probe
 // wants exactly one link that goes where its path says. Runs on a copy, like
 // GetSubs, so the shared service is never written to. Satisfies
 // service.ProbeLinkRenderer.
-func (s *SubService) ProbeLink(inbound *model.Inbound, email, address string, useOverride bool) string {
+func (s *SubService) ProbeLink(inbound *model.Inbound, email, address, via string) string {
 	local := *s
 	local.address = address
 	local.hiddifyCompat, _ = local.settingService.GetXrayHiddifyCompat()
-	if useOverride {
-		local.overrideHost, local.overrideOn = local.settingService.GetProxyOverride()
-	} else {
-		local.overrideHost, local.overrideOn = "", false
-	}
+	local.overrideHost, local.overrideOn = via, via != ""
 	if local.datepicker == "" {
 		local.datepicker = "gregorian"
 	}

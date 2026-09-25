@@ -9,10 +9,11 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 )
 
-// TestMonProbeConfigsHopIsUnknown: ?hop= and its synonym ?edge= are read,
-// and until per-hop probing every name is 409 unknown_hop (unknown_edge for
-// ?edge= alone), never the proxy path (proxy-chain.md §6.1).
-func TestMonProbeConfigsHopIsUnknown(t *testing.T) {
+// TestMonProbeConfigsThroughAHop (contract 3 §4.4): ?hop= and its synonym
+// ?edge= answer with the hop's path; a name the registry does not have, or two
+// different names, is 409 unknown_hop, a pending hop 409 hop_not_joined —
+// never the proxy path.
+func TestMonProbeConfigsThroughAHop(t *testing.T) {
 	r := newMonRouter(t)
 	enableMonitoring(t)
 	db := database.GetDB()
@@ -21,30 +22,38 @@ func TestMonProbeConfigsHopIsUnknown(t *testing.T) {
 		StreamSettings: `{"network":"tcp","security":"none"}`, Sniffing: "{}"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	for key, value := range map[string]string{"proxyOverrideEnable": "true", "proxyOverrideHost": "front.example.net"} {
-		if err := db.Create(&model.Setting{Key: key, Value: value}).Error; err != nil {
+	for _, hop := range []model.ChainHop{
+		{Name: "core-1", Role: "inner", State: "joined", Host: "10.0.0.7"},
+		{Name: "edge-a", Role: "edge", State: "joined", Host: "a.example.net", IsActive: true},
+		{Name: "edge-b", Role: "edge", State: "pending", Host: "b.example.net"},
+	} {
+		if err := db.Create(&hop).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
-	if w := monRequest(r, "POST", "/mon/v1/probe/ensure", monTestToken, `{"monClients":[{"id":"ams-1"}]}`); w.Code != http.StatusOK {
+	if w := monRequest(r, "POST", "/mon/v1/probe/ensure", monTestToken, `{"monClients":[{"id":"ams-1","paths":["direct","hops"]}]}`); w.Code != http.StatusOK {
 		t.Fatalf("ensure: %d %s", w.Code, w.Body.String())
 	}
-	if w := monRequest(r, "GET", "/mon/v1/probe/configs", monTestToken, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"path":"proxy"`) {
-		t.Fatalf("proxy configs: %d %s", w.Code, w.Body.String())
+	for query, want := range map[string]string{
+		"?hop=core-1":                   `"path":"inner:core-1"`,
+		"?edge=edge-a":                  `"path":"edge:edge-a"`,
+		"?hop=edge-a&edge=edge-a":       `"path":"edge:edge-a"`,
+		"?host=203.0.113.10&hop=core-1": `"path":"inner:core-1"`,
+	} {
+		w := monRequest(r, "GET", "/mon/v1/probe/configs"+query, monTestToken, "")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
+			t.Errorf("%s: %d %s, want 200 %s", query, w.Code, w.Body.String(), want)
+		}
 	}
 	for query, code := range map[string]string{
-		"?hop=ams-1":                   `"error":"unknown_hop"`,
-		"?edge=ams-1":                  `"error":"unknown_edge"`,
-		"?hop=ams-1&edge=ams-1":        `"error":"unknown_hop"`,
-		"?hop=ams-1&edge=core":         `"error":"unknown_hop"`,
-		"?host=203.0.113.10&hop=ams-1": `"error":"unknown_hop"`,
+		"?hop=ams-1":              `"error":"unknown_hop"`,
+		"?edge=ams-1":             `"error":"unknown_hop"`,
+		"?hop=edge-a&edge=core-1": `"error":"unknown_hop"`,
+		"?hop=edge-b":             `"error":"hop_not_joined"`,
 	} {
 		w := monRequest(r, "GET", "/mon/v1/probe/configs"+query, monTestToken, "")
 		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), code) {
 			t.Errorf("%s: %d %s, want 409 %s", query, w.Code, w.Body.String(), code)
 		}
-	}
-	if w := monRequest(r, "GET", "/mon/v1/probe/configs?hop=", monTestToken, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"path":"proxy"`) {
-		t.Errorf("empty hop: %d %s", w.Code, w.Body.String())
 	}
 }
