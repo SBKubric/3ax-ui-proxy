@@ -8,7 +8,7 @@ plain='\033[0m'
 
 # GitHub repo (owner/name) for self-update and re-install URLs.
 # Override with XUI_REPO=owner/name to track a fork.
-XUI_REPO="${XUI_REPO:-SBKubric/3ax-ui-proxy}"
+XUI_REPO="${XUI_REPO:-SBKubric/sane-3x-ui}"
 
 #Add some basic function here
 function LOGD() {

@@ -42,7 +42,7 @@ REPO_BRANCH="${XUI_REPO_BRANCH:-main}"
 
 # GitHub repo (owner/name) to fetch the release binary, wrapper and service
 # files from. Override with XUI_REPO=owner/name to update from a fork.
-XUI_REPO="${XUI_REPO:-SBKubric/3ax-ui-proxy}"
+XUI_REPO="${XUI_REPO:-SBKubric/sane-3x-ui}"
 
 # Don't edit this config
 b_source="${BASH_SOURCE[0]}"
