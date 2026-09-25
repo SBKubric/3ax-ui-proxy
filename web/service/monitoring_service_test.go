@@ -109,7 +109,7 @@ func TestStateIsSanitisedAndSorted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("State: %v", err)
 	}
-	if st.Contract != 2 || st.Probe.SubId != nil || st.Stale.ThresholdMinutes != 15 || st.Override.Enabled || len(st.Revision) != 16 {
+	if st.Contract != 3 || st.Probe.SubId != nil || st.Stale.ThresholdMinutes != 15 || st.Override.Enabled || len(st.Revision) != 16 {
 		t.Errorf("state header: %+v", st)
 	}
 	want := []MonInbound{

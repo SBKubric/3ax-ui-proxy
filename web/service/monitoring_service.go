@@ -52,8 +52,10 @@ type ProbeLinkRenderer interface {
 
 // MonContractVersion is the X-Mon-Contract the panel speaks. Version 2 gave
 // every mon-client its own AmneziaWG probe peers (SBKubric/3ax-ui-monitoring
-// #80): mon-server requires at least 2.
-const MonContractVersion = 2
+// #80); version 3 probes through every hop of the chain
+// (SBKubric/sane-3x-ui-monitoring#61). mon-server requires exactly this
+// version: the two are upgraded together.
+const MonContractVersion = 3
 
 // monProbePaths are the paths the panel serves and the AmneziaWG probe peers
 // are made for, one per mon-client each. Per-hop probing extends the list.
@@ -137,6 +139,7 @@ type MonState struct {
 	ServerTime   int64        `json:"serverTime"`
 	Revision     string       `json:"revision"`
 	Override     MonOverride  `json:"override"`
+	Chain        *MonChain    `json:"chain,omitempty"`
 	Probe        MonProbe     `json:"probe"`
 	Inbounds     []MonInbound `json:"inbounds"`
 	Stale        struct {
@@ -296,8 +299,9 @@ const revisionEndpointHost = "probe.invalid"
 
 // Revision is the first 16 hex characters of SHA-256 over the canonical JSON
 // of everything that goes into the probe material (monitoring-contract.md
-// §4.2): the override, the probe subId, the link setting that shapes xray
-// links, and per inbound, sorted by (kind, inboundId), its target fields plus
+// §4.2): the override, the chain's active edge and probed hops (absent with an
+// empty registry), the probe subId, the link setting that shapes xray links,
+// and per inbound, sorted by (kind, inboundId), its target fields plus
 // its probe material — for an xray inbound listen, streamSettings and settings
 // with clients cut down to its probe client; for the AmneziaWG server the
 // probe peers, each as its rendered .conf. Tag and remark stay out so a
@@ -341,15 +345,23 @@ func (s *MonitoringService) Revision() (string, error) {
 	subId, _ := s.settingService.GetMonProbeSubId()
 	hiddify, _ := s.settingService.GetXrayHiddifyCompat()
 	override := s.override()
-	// encoding/json writes map keys sorted and no whitespace: the canonical
-	// form. Parsed settings and streams are maps too, so their key order in
-	// the database does not matter either.
-	canonical, err := json.Marshal(map[string]any{
+	material := map[string]any{
 		"hiddifyCompat": hiddify,
 		"inbounds":      entries,
 		"override":      map[string]any{"enabled": override.Enabled, "host": override.Host},
 		"probeSubId":    subId,
-	})
+	}
+	chain, err := monChainTx(nil)
+	if err != nil {
+		return "", err
+	}
+	if chain.probed() {
+		material["chain"] = chain.revisionMaterial()
+	}
+	// encoding/json writes map keys sorted and no whitespace: the canonical
+	// form. Parsed settings and streams are maps too, so their key order in
+	// the database does not matter either.
+	canonical, err := json.Marshal(material)
 	if err != nil {
 		return "", err
 	}
@@ -426,8 +438,8 @@ func (s *MonitoringService) tunnelProbeMaterial() ([]map[string]any, error) {
 	return peers, nil
 }
 
-// State is GET /state: the sanitised inbounds, the override, the probe set
-// and the revision. No side effects.
+// State is GET /state: the sanitised inbounds, the override, the chain, the
+// probe set and the revision. No side effects.
 func (s *MonitoringService) State() (*MonState, error) {
 	inbounds, err := s.Inbounds()
 	if err != nil {
@@ -443,8 +455,13 @@ func (s *MonitoringService) State() (*MonState, error) {
 	if err != nil {
 		stale = 15
 	}
+	chain, err := monChainTx(nil)
+	if err != nil {
+		return nil, err
+	}
 	st := &MonState{
 		Contract:     MonContractVersion,
+		Chain:        chain,
 		PanelVersion: config.GetVersion(),
 		ServerTime:   time.Now().UnixMilli(),
 		Revision:     rev,
