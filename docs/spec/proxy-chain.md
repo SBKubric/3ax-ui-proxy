@@ -26,7 +26,7 @@
 | 6 | Волна: `GET /chain/v1/document` по bearer hop secret, `If-None-Match` = ревизия, 404 при неверном секрете, poll каждые `chainPollSeconds` | §3 |
 | 7 | Документ v1: `revision`, `self`, `nextHop` (с sub-путями), `activeEdge`, `hops` (только наружу), `ports` с `network` | §3 |
 | 8 | `proxy.json` v2: `nextHop`, `hopSecret`, sub-порт/TLS, `stateDir`; старые ключи читаются с предупреждением и ведут в режим входа | §5 |
-| 9 | Мониторинг: совместимое расширение контракта v1 — `chain` с полным списком звеньев в `/state`, `?hop=` в `/probe/configs` (`?edge=` — синоним), path `edge:<name>` и `inner:<name>` | §6 |
+| 9 | Мониторинг: контракт 3 — `chain` (звенья `joined`/`legacy`) в `/state` и в ревизии, `?hop=` в `/probe/configs` (`?edge=` — синоним), path `edge:<name>` и `inner:<name>` вместо `proxy`, потолок AWG probe-пиров `monProbePeerLimit` | §6 |
 | 10 | Бот: `/proxy` — список звеньев, `/proxy <имя>` — переключение active edge, `/proxy off` остаётся | §2, §7 |
 
 
@@ -172,13 +172,13 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
 
 `POST /add` — тело `{"name":"edge-b","role":"edge","host":"b.example.net","subPort":2096,"position":null}`; ответ `obj`: `{"hop":{…},"joinToken":"…32 символа…","joinTokenExpires":1758386400000}`. Для `role="edge"` `next_hop_id` вычисляет панель (последний inner или `NULL`); для `role="inner"` — по `position` (см. 2.5.3). Ошибки валидации — `success:false` с текстом (конверт панели не различает коды; HTTP всегда `200`, кроме `404` неавторизованному).
 
-**Шов для mon-server и оркестратора.** Наружу реестр открывается только на чтение и только по контракту мониторинга v1 (совместимое расширение, `docs/spec/monitoring-contract.md` §4.1): `GET /mon/v1/state` получает поле `chain`:
+**Шов для mon-server и оркестратора.** Наружу реестр открывается только на чтение и только по контракту мониторинга 3 (`docs/spec/monitoring-contract.md` §4.1): `GET /mon/v1/state` получает поле `chain` (звенья `joined`/`legacy`, §6.1):
 
 ```json
 "chain": {"revision": 42, "activeEdge": "edge-a",
           "hops": [{"name":"inner-1","role":"inner","host":"10.0.0.7","state":"joined"},
                    {"name":"edge-a","role":"edge","host":"a.example.net","state":"joined"},
-                   {"name":"edge-b","role":"edge","host":"b.example.net","state":"pending"}]}
+                   {"name":"edge-b","role":"edge","host":"b.example.net","state":"joined"}]}
 ```
 
 Плюс `GET /mon/v1/probe/configs?hop=<name>` (`?edge=` — сохранённый синоним) и ключ `path` вида `edge:<name>` / `inner:<name>`. Запись в реестр снаружи в v1 не открывается: весь ввод — через `ChainService` (единственный путь записи, он же держит инварианты и `chainRevision`). Будущий оркестратор получит `POST /mon/v1/chain/*` поверх того же сервиса — это и есть шов, отдельного слоя под него не строим.
@@ -558,7 +558,7 @@ edge-b (bootstrap)      inner-2              inner-1           панель (sub
 
 **Решено: кнопки «проверить хост» в UI не будет.** Панель не звонит на боксы вообще — ни по расписанию, ни по нажатию человека (принцип карты #20, [ADR 0004](../adr/0004-mon-server-single-source-panel-passive.md)). Разовый TCP-коннект из панели на `subPort` звена выглядит безобидно, но это исходящее соединение от real server к внешнему боксу, то есть ровно та связь, которой в этой конструкции быть не должно — и которая появилась бы в firewall-логах бокса как «сюда ходит вот этот адрес». Владелец проверяет хост теми же средствами, что и раньше: `observed_addr` после join, `last_seen_at`/`lastRevision` в реестре и мониторинг (§6).
 
-**Повторный вход переустановленного бокса.** Запись в реестре та же: владелец жмёт «перевыпустить токен» у существующего звена. Звено переходит `joined` → `pending`, `secret_hash` **не** стирается сразу — он замещается при новом join. Такое `pending` — **перевход**, и оно отличается от только что заведённого звена ровно непустым `secret_hash`: перевходящее звено остаётся в живом пути, остаётся `nextHop` своих внешних соседей и остаётся в `hops[]` со `state:"pending"`. Иначе панель перецепила бы соседей мимо живого бокса, а доставить им это было бы некому — зеркало стенда #86, разбор в §4.5.7. Так старый бокс, если он ещё жив, продолжает получать документ до момента, когда новый действительно вошёл; в момент join старый секрет умирает, и старый бокс со следующего опроса получает `404`. Имя, хост, порядок, `next_hop_id`, роль и признак активности сохраняются — для соседей и для мониторинга ничего не меняется, ревизия бампается один раз, на самом join.
+**Повторный вход переустановленного бокса.** Запись в реестре та же: владелец жмёт «перевыпустить токен» у существующего звена. Звено переходит `joined` → `pending`, `secret_hash` **не** стирается сразу — он замещается при новом join. Такое `pending` — **перевход**, и оно отличается от только что заведённого звена ровно непустым `secret_hash`: перевходящее звено остаётся в живом пути, остаётся `nextHop` своих внешних соседей и остаётся в `hops[]` со `state:"pending"`. Иначе панель перецепила бы соседей мимо живого бокса, а доставить им это было бы некому — зеркало стенда #86, разбор в §4.5.7. Так старый бокс, если он ещё жив, продолжает получать документ до момента, когда новый действительно вошёл; в момент join старый секрет умирает, и старый бокс со следующего опроса получает `404`. Имя, хост, порядок, `next_hop_id`, роль и признак активности сохраняются — для соседей ничего не меняется, ревизия бампается один раз, на самом join. Мониторинг `pending`-звено не пробирует (§6.1): до нового join его нет в `chain.hops`.
 
 **Смена хоста.** Владелец правит `host` через `POST /panel/api/chain/update/:id` → `chainRevision++`. Внешний сосед на ближайшем опросе видит новый `nextHop.host`, переписывает outbound'ы и перезапускает relay (§3.5). Join не нужен: секрет и имя не менялись. Порядок для владельца: сначала поднять бокс на новом адресе (старый ещё жив), потом сменить хост в реестре, потом гасить старый — когда `last_revision` внешнего соседа в UI догнало текущую ревизию.
 
@@ -689,7 +689,7 @@ Draining — терминальное состояние. Оно не отмен
 - `update`, `setActive`, `reissueToken` по draining-звену → отказ `hop_is_draining`. Реактивации нет: если владелец передумал, он заводит звено заново (`add` + новый токен + переустановка бокса) — это дешевле, чем инвариант «draining умеет возвращаться», и честнее по отношению к соседям, которые уже перецепились.
 - `add` нового звена с тем же именем отказывает, пока строка жива (уникальный индекс `idx_chain_hops_name`). Владельцу, которому нужно то же имя немедленно, остаётся `del … {"skipDrain":true}`.
 - `POST /chain/v1/join` с токеном, выписанным этому звену, невозможен: токен был израсходован при первом входе, а `reissueToken` отказывает.
-- Мониторинг (§6) продолжает зондировать его как `inner:<name>` до завершения, но бейдж в редакторе — `draining`, а не UP/DOWN: звена в цепочке уже нет, и его DOWN не значит поломки.
+- Мониторинг (§6) его не зондирует: draining-звено выпадает из `chain.hops` с началом `del` (снятие звена — действие оператора, алерты в процессе — шум, §6.1). Бейдж в редакторе — `draining`, а не UP/DOWN: звена в цепочке уже нет.
 
 #### 4.5.6 Ревизии: одна на начало, одна на завершение — и почему
 
@@ -1038,36 +1038,34 @@ PROXY_UPSTREAM_HOST is gone: a proxy front is now a chain hop. Pass PROXY_NEXT_H
 
 ## 6. Мониторинг через каждое звено
 
-Итог тикета [«Мониторинг через каждое звено»](https://github.com/SBKubric/3ax-ui-proxy/issues/73) карты [Proxy chain](https://github.com/SBKubric/3ax-ui-proxy/issues/68). Термины — по `CONTEXT.md` (chain, hop, edge front, inner front, active edge, standby edge, chain registry, chain document) и по [CONTEXT.md `3ax-ui-monitoring`](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/CONTEXT.md) (mon-server, mon-client, target, path, probe account, tunnel probe, heartbeat). Расширяет [Контракт API панели для mon-server (v1)](monitoring-contract.md) и [Мониторинг: панельная часть](monitoring-panel.md) без разрыва совместимости; протокол mon-server↔mon-client — [mon-protocol.md](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-protocol.md), репо `SBKubric/3ax-ui-monitoring`.
+Итог тикета [«Мониторинг через каждое звено»](https://github.com/SBKubric/3ax-ui-proxy/issues/73) карты [Proxy chain](https://github.com/SBKubric/3ax-ui-proxy/issues/68). Термины — по `CONTEXT.md` (chain, hop, edge front, inner front, active edge, standby edge, chain registry, chain document) и по [CONTEXT.md `3ax-ui-monitoring`](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/CONTEXT.md) (mon-server, mon-client, target, path, probe account, tunnel probe, heartbeat). Вводит контракт 3 [Контракт API панели для mon-server](monitoring-contract.md) (решение [sane-3x-ui-monitoring#61](https://github.com/SBKubric/sane-3x-ui-monitoring/issues/61)) и расширяет [Мониторинг: панельная часть](monitoring-panel.md); протокол mon-server↔mon-client — [mon-protocol.md](https://github.com/SBKubric/3ax-ui-monitoring/blob/main/docs/spec/mon-protocol.md), репо `SBKubric/3ax-ui-monitoring`.
 
 Реализация — после мержа эпика мониторинга [#43](https://github.com/SBKubric/3ax-ui-proxy/issues/43) и тикетов реестра/волны этой карты; решения принимаются сейчас, чтобы контракт не потребовал `/mon/v2/`.
 
-### 6.1 Расширение контракта (без версии)
+### 6.1 Контракт 3
 
-По контракту §1: «совместимые изменения (новые необязательные поля, новые `reason`, новые `kind` событий) не меняют версию; mon-server обязан игнорировать неизвестные поля». Всё ниже — новые опциональные поля и новые допустимые значения существующих строковых enum'ов (`path`), а не новая семантика существующих полей: старый mon-server, который не знает про `chain`, продолжает работать как раньше — `override.host` в `GET /state` по-прежнему указывает на active edge (он и так вычисляется из реестра по решению архитектора §2 рамки), `path=proxy` по-прежнему значит «через host override». Версию контракта не бампаем.
+Решение [sane-3x-ui-monitoring#61](https://github.com/SBKubric/sane-3x-ui-monitoring/issues/61): при цепочке path `proxy` уходит (его заменяет проба `edge:<active>`), AWG probe-пиры заводятся на каждое звено — это новая семантика, а не совместимое расширение, поэтому контракт бампается до 3 (`X-Mon-Contract: 3`, `contract: 3`). Панель и mon-server — строгое совпадение версии, как при v2: обновляются вместе (пины ansible), между обновлениями mon-server показывает ошибку `contract` в Settings → Check. `override.host` в `GET /state` по-прежнему указывает на active edge (он вычисляется из реестра, §2.3). Wire-форма — в [контракте](monitoring-contract.md) §4; ниже — решения и их обоснование.
 
 #### `GET /state` — поле `chain`
 
 ```json
 {
-  "...": "…как в контракте v1…",
+  "...": "…как в контракте…",
   "chain": {
     "revision": 42,
     "activeEdge": "ams-1",
     "hops": [
       {"name": "core-1", "role": "inner", "host": "10.0.0.7",     "state": "joined"},
       {"name": "ams-1",  "role": "edge",  "host": "203.0.113.10", "state": "joined"},
-      {"name": "ams-2",  "role": "edge",  "host": "203.0.113.20", "state": "joined"},
-      {"name": "fra-1",  "role": "edge",  "host": "203.0.113.30", "state": "pending"}
+      {"name": "ams-2",  "role": "edge",  "host": "203.0.113.20", "state": "joined"}
     ]
   }
 }
 ```
 
-- `chain.revision` — `chainRevision` реестра (монотонный `int64`, растёт на join/rename/delete/переключение active edge); отдельная величина от хэша `revision` контракта, но участвует в нём (см. ниже). Отсутствует (поле `chain` не приходит), если реестр цепочки пуст (панель без цепочки — старое поведение, `override` как раньше).
-- `hops` — **все** звенья реестра, и `inner`, и `edge` (inner'ы тоже пробируются, §6.3), в порядке `role`, затем `name` asc. `role` ∈ `inner`\|`edge`, `state` = состояние звена в реестре (`pending`/`joined`/`legacy`). `host` у `pending` — адрес, введённый владельцем при создании звена (join ещё не подтвердил его), поэтому такие звенья не пробируются.
-- Поле `edges` (только edge-звенья) — прежнее имя этого списка; `hops` его замещает. Старый mon-server, читающий `edges`, не сломается: панель отдаёт `edges` как усечённую до `role=edge` копию `hops`, пока в контракте живёт совместимость с ним; новый mon-server читает `hops` и игнорирует `edges`.
-- `activeEdge` — `name` active edge или `null`, если ни одно не активно (реестр пуст либо host override выключен легаси-путём).
+- `chain.revision` — `chainRevision` реестра (монотонный `int64`, растёт на join/rename/delete/переключение active edge); отдельная величина от хэша `revision` контракта и в него не входит — входят `activeEdge` и `hops` (см. ниже). Отсутствует (поле `chain` не приходит), если реестр цепочки пуст (панель без цепочки — старое поведение, `override` как раньше).
+- `hops` — все **пробируемые** звенья реестра: состояние `joined` или `legacy`, и `inner`, и `edge` (inner'ы тоже пробируются, §6.3), в порядке `role`, затем `name` asc. `role` ∈ `inner`\|`edge`, `state` ∈ `joined`\|`legacy`. `pending` и `draining` не пробируются и в `hops` не входят: `host` у `pending` — адрес, введённый владельцем при создании звена (join ещё не подтвердил его), а снятие звена (`draining`) — действие оператора, и алерты в процессе — шум.
+- `activeEdge` — `name` active edge или `null`, если ни одно не активно (реестр пуст либо host override выключен легаси-путём). Активное edge в `pending` после `reissueToken` (§2.3) в `hops` не входит и до нового join не пробируется.
 
 **Ревизия (§4.2 контракта) — канонический объект дополняется:**
 
@@ -1080,56 +1078,56 @@ PROXY_UPSTREAM_HOST is gone: a proxy front is now a chain hop. Pass PROXY_NEXT_H
                     {"name":"ams-1","role":"edge","host":"203.0.113.10","state":"joined"}, "…"]}}
 ```
 
-- `chain.hops` отсортированы по `role`, затем `name`, входят **все** звенья в состоянии `joined`/`legacy` — и edge, и inner (звенья, которые реально можно опрашивать; `pending` не влияет на targets, поэтому не входит в хэш — вход в реестр без подтверждения join не должен пересобирать targets).
-- `activeEdge` — **в хэше**, а не только в `hops`: `proxy`-алиас указывает на активное edge, и когда host override переключается между уже известными edge (без изменения списка `hops`), targets `path=proxy` (для старого mon-server) и `path=edge:<active>` (де-факто тот же адрес) должны пересобраться — адрес поменялся, а `hops` как список нет.
-- Переименование звена не входит в хэш само по себе, только если меняется набор/состав/host/state/activeEdge — рифмуется с тем, что `remark`/`tag` inbound'а не входят в хэш (переименование не двигает targets), но у звена переименование **меняет** `path` (`edge:<name>` / `inner:<name>`), поэтому по факту потянет пересборку, т.к. `name` — часть ключа объекта `hops[]`.
+- `chain.hops` — те же, что в `/state`: отсортированы по `role`, затем `name`, входят все звенья в состоянии `joined`/`legacy` — и edge, и inner (звенья, которые реально можно опрашивать; `pending` и `draining` не влияют на targets, поэтому не входят в хэш — вход в реестр без подтверждения join не должен пересобирать targets).
+- `activeEdge` — **в хэше**, а не только в `hops`: переключение host override между уже известными edge не меняет `hops`, но меняет приоритет выдачи AWG probe-пиров (контракт §4.3). Переходов targets оно не даёт — пробируются все edge.
+- Переименование звена меняет `name` в `hops[]`, а значит и хэш: у звена имя — часть `path` (`edge:<name>` / `inner:<name>`), в отличие от `remark`/`tag` inbound'а.
 
 #### `GET /probe/configs?hop=<name>`
 
-Третий режим ручки — наравне с «без параметров» (path `proxy`, через host override) и `?host=` (path `direct`):
+Третий режим ручки — наравне с «без параметров» (path `proxy`, через host override; только без цепочки) и `?host=` (path `direct`):
 
 - `GET /probe/configs?hop=<name>` — рендерит конфиги probe-набора с адресом **этого звена** (любого: и edge, и inner) вместо host override, независимо от роли и от того, активно ли оно. `host`, порт, SNI, ключи — как для `direct`/`proxy`, меняется только адрес.
-- `?edge=<name>` — **сохранённый синоним** `?hop=`: параметр принимается и работает ровно так же (имя ищется среди всех звеньев), чтобы mon-server, написанный под первую редакцию контракта, продолжал работать. Оба параметра сразу — `409 unknown_hop`, если имена разные.
-- `409 unknown_hop` — имени нет в реестре (прежний код `unknown_edge` остаётся синонимом для старых клиентов).
-- `409 hop_not_joined` — имя есть, но звено в состоянии `pending` (join не завершён, relay на нём ещё не поднят; для `legacy` ручка работает — это донный edge миграции, эквивалент старого `proxyOverrideHost`). Прежний код — `edge_not_joined`.
-- `?host=` и поведение без параметров — не меняются (см. §6.3 про то, что даёт `proxy` при наличии цепочки).
+- `?edge=<name>` — синоним `?hop=`: параметр принимается и работает ровно так же (имя ищется среди всех звеньев). Оба параметра сразу — `409 unknown_hop`, если имена разные.
+- `409 unknown_hop` — имени нет в реестре.
+- `409 hop_not_joined` — имя есть, но звено не `joined`/`legacy`: `pending` (join не завершён, relay на нём ещё не поднят) или `draining`. Для `legacy` ручка работает — это донный edge миграции, эквивалент старого `proxyOverrideHost`.
+- `?host=` не меняется; режим без параметров (path `proxy`) mon-server зовёт только без `chain` в `/state`.
 
 Почему проба inner'а осмысленна: звено relay'ит **те же** relayed ports один-в-один (§3.8), поэтому probe-конфиг с адресом inner'а проверяет отрезок `real ← …inner…`, то есть путь до real server без внешней части цепочки. Разница `inner:<name>` UP + `edge:<name>` DOWN сразу называет виновный сегмент — это то, ради чего пробинг inner'ов и включён.
 
 #### `path`
 
-Четыре значения вместо двух: `direct`, `proxy` (алиас = active edge, оставлен для старых mon-server), `edge:<name>` и `inner:<name>` (`<name>` — `[a-z0-9-]{1,32}`, как имя звена в реестре). Ключ результата `(monClientId, kind, inboundId, path)` не меняется по форме — просто у `path` больше допустимых значений. `/events` и `/stats` принимают `edge:<name>`/`inner:<name>` как обычную строку `path`, без валидации по реестру (панель не хранит topology мониторинга — она пассивный приёмник, [ADR 0004](../adr/0004-mon-server-single-source-panel-passive.md)): неизвестное имя звена в `path` события — не ошибка, просто ещё одна строка в ленте. Словарь `reason` не меняется — деградация звена выглядит так же, как деградация proxy front сегодня (`tcp_refused`, `tls_timeout`, …).
+С цепочкой path target'а — `direct`, `edge:<name>` и `inner:<name>` (`<name>` — `[a-z0-9-]{1,32}`, как имя звена в реестре). `proxy` как path не держится — его заменяет проба `edge:<active>`: смена active edge переходов не даёт, пробируются все edge. Старые `proxy`-строки уходят по ретеншну. Без звеньев в реестре (только legacy override) — `direct` + `proxy`, как в v2. Ключ результата `(monClientId, kind, inboundId, path)` не меняется по форме — просто у `path` больше допустимых значений. `/events` и `/stats` принимают `edge:<name>`/`inner:<name>` как обычную строку `path`, без валидации по реестру (панель не хранит topology мониторинга — она пассивный приёмник, [ADR 0004](../adr/0004-mon-server-single-source-panel-passive.md)): неизвестное имя звена в `path` события — не ошибка, просто ещё одна строка в ленте. Словарь `reason` не меняется — деградация звена выглядит так же, как деградация proxy front сегодня (`tcp_refused`, `tls_timeout`, …).
 
 #### Удаление и переименование звена
 
-- **Удаление** звена из реестра — каскадное удаление хранимого состояния по префиксу path: все строки `mon_targets`/`mon_events`/`mon_stats_current`/`mon_stats_rollup` с `path = 'edge:<name>'` (для inner — `path = 'inner:<name>'`) или (для активного на момент удаления edge) `path = 'proxy'`, если это имя было active edge, удаляются в той же транзакции, что и удаление hop (по образцу каскада для удалённого inbound, §3.6 monitoring-panel.md). Telegram молчит — как и при удалении inbound.
-- **Переименование** — новое имя звена = новый `path` (`edge:<new-name>` / `inner:<new-name>`); отдельного переезда строк нет. **Решено: строки под старым именем живут обычный ретеншн** (`monRetentionDays`/`monRollupRetentionDays`) и стареют сами — отдельного, более короткого параметра для «заведомо мёртвого» path не заводим: ещё одна настройка ради недели лишних строк не окупается, а данные под старым именем — это настоящая история этого же звена, которую полезно видеть на графике рядом с переименованием. Мгновенного каскада на переименование нет — оно того же рода событие, что появление нового звена.
+- **Удаление** звена из реестра — каскадное удаление хранимого состояния по префиксу path: все строки `mon_targets`/`mon_events`/`mon_stats_current`/`mon_stats_rollup` с `path = 'edge:<name>'` (для inner — `path = 'inner:<name>'`) или (для активного на момент удаления edge) `path = 'proxy'`, если это имя было active edge, удаляются в той же транзакции, что и удаление hop (по образцу каскада для удалённого inbound, §3.6 monitoring-panel.md). Telegram молчит — как и при удалении inbound. mon-server снимает targets звена молча, без событий.
+- **Переименование** — новое имя звена = новый `path` (`edge:<new-name>` / `inner:<new-name>`); отдельного переезда строк нет. **Решено: строки под старым именем живут обычный ретеншн** (`monRetentionDays`/`monRollupRetentionDays`) и стареют сами — отдельного, более короткого параметра для «заведомо мёртвого» path не заводим: ещё одна настройка ради недели лишних строк не окупается, а данные под старым именем — это настоящая история этого же звена, которую полезно видеть на графике рядом с переименованием. Мгновенного каскада на переименование нет — оно того же рода событие, что появление нового звена. Для mon-server переименование = удаление + добавление: targets старого path снимаются молча, как при удалении.
 
-### 6.2 Что меняется у mon-server (протокол v1, репо `3ax-ui-monitoring`)
+### 6.2 Что меняется у mon-server (репо `3ax-ui-monitoring`)
 
 > Ниже — дельта для стороны mon-server; сама она специфицируется в `3ax-ui-monitoring`, здесь фиксируется контракт с панелью, на который эта дельта опирается.
 
-- На каждый `GET /state` с изменившейся ревизией (или изменившимся `chain.revision`) mon-server читает `chain.hops`; для каждого звена в состоянии `joined` или `legacy` — **и edge, и inner** — зовёт `GET /probe/configs?hop=<name>` (host = хост этого звена) — как сегодня зовёт `?host=<real>` для `direct`. `pending`-звенья пропускаются (не отвечают — `409 hop_not_joined`, join ещё не завершён).
-- **Набор targets** = inbound'ы × (`{direct}` ∪ `{joined/legacy hops}`), т.е. на inbound теперь `2 + N` target'ов вместо двух (`direct`, `proxy`), где `N` — число звеньев цепочки (inner'ы плюс активный edge и запасные).
-- **Распределение по mon-client**: без изменений — все mon-client пробуют все звенья и `direct`, как сегодня пробуют оба path; фильтра «этот mon-client только на это звено» в v1 нет (тот же принцип, что «все inbound'ы всем mon-client» в mon-protocol.md §4.2). `paths` каждого mon-client в admin UI mon-server по-прежнему список строк, просто теперь длиннее (`direct`, `inner:core-1`, `edge:ams-1`, `edge:ams-2`, …) — коробки во враждебных регионах владелец по-прежнему ограничивает нужным подмножеством. Inner'ы часто доступны не отовсюду, и это нормальный способ их не пробовать с чужих коробок.
-- **`proxy` как отдельный target**: mon-server, знающий про цепочку (v2 протокола mon-server↔mon-client-конфига, не путать с контрактом панели — версия контракта не растёт), **не** держит `path=proxy` отдельным target'ом — он разворачивает его в `edge:<active>` и меняет target при каждом переключении active edge. Старый mon-server (не читающий `chain`) продолжает получать `proxy` через ручку без параметров и не узнает про остальные звенья — деградация до текущего поведения, не поломка.
-- **mon-client**: изменений нет — mon-protocol.md §4.2 подтверждает, что `link`/`conf` в `targets` несут адрес готовым («mon-server прозрачен, знание протоколов живёт только в mon-client»), значит очередной элемент `targets` с `path="edge:ams-2"` для mon-client ничем не отличается от сегодняшнего `path="proxy"` — он просто probe-target с URL/conf. Смена набора targets проходит штатным путём смены config revision (mon-protocol.md §4.1).
+- На каждый `GET /state` с изменившейся ревизией (или изменившимся `chain.revision`) mon-server читает `chain.hops`; для каждого звена (все они `joined` или `legacy`) — **и edge, и inner** — зовёт `GET /probe/configs?hop=<name>` (host = хост этого звена) — как сегодня зовёт `?host=<real>` для `direct`. `pending` и `draining` в `hops` не приходят (прямой запрос — `409 hop_not_joined`).
+- **Набор targets** = inbound'ы × (`{direct}` ∪ `{joined/legacy hops}`), т.е. на inbound теперь `1 + N` target'ов вместо двух (`direct`, `proxy`), где `N` — число звеньев цепочки (inner'ы плюс активный edge и запасные).
+- **Распределение по mon-client**: какие path пробует каждый mon-client, задают его `paths`; словарь и дефолты `paths` живут в mon-server ([спека mon-server](https://github.com/SBKubric/sane-3x-ui-monitoring/blob/main/docs/spec/mon-server.md), решение [sane-3x-ui-monitoring#61](https://github.com/SBKubric/sane-3x-ui-monitoring/issues/61)). Коробки во враждебных регионах владелец ограничивает частью звеньев — inner'ы часто доступны не отовсюду. Панель `paths` не знает: AWG probe-пиры она заводит на все пары mon-client × path пробируемых звеньев в пределах `monProbePeerLimit` (контракт §4.3).
+- **`proxy` как отдельный target**: при цепочке его нет (§6.1 `path`); без звеньев в реестре — `direct` + `proxy`, как в v2. Старого mon-server, не читающего `chain`, нет: контракт 3 требует обновлять панель и mon-server вместе.
+- **mon-client**: дизайн не меняется (правки реализации — разбор ключа target'а по грамматике `path` вместо белого списка `direct`/`proxy` у mon-client и mon-server — в репо `3ax-ui-monitoring`) — mon-protocol.md §4.2 подтверждает, что `link`/`conf` в `targets` несут адрес готовым («mon-server прозрачен, знание протоколов живёт только в mon-client»), значит очередной элемент `targets` с `path="edge:ams-2"` для mon-client ничем не отличается от сегодняшнего `path="proxy"` — он просто probe-target с URL/conf. Смена набора targets проходит штатным путём смены config revision (mon-protocol.md §4.1).
 
 ### 6.3 Пробинг inner-звеньев: да
 
-**Решение: inner'ы пробируются наравне с edge, уже в v1.** Путь — `inner:<name>`, конфиги — той же ручкой `GET /probe/configs?hop=<name>` (§6.1), targets строит тот же цикл mon-server (§6.2).
+**Решение: inner'ы пробируются наравне с edge (контракт 3).** Путь — `inner:<name>`, конфиги — той же ручкой `GET /probe/configs?hop=<name>` (§6.1), targets строит тот же цикл mon-server (§6.2).
 
 Почему это работает без отдельного механизма: у inner front действительно нет своих inbound'ов и своего probe account — но их ему и не нужно. Звено relay'ит **весь список relayed ports один-в-один** (§3.8), поэтому probe-конфиг обычного probe-аккаунта, отрендеренный с адресом inner'а, ходит по той же цепочке внутрь и проверяет отрезок `real ← …inner…`. Для mon-client это неотличимо от пробы edge: очередной target с URL/conf (mon-protocol.md §4.2).
 
 Что это даёт: разница `inner:<name>` vs `edge:<name>` называет виновный сегмент прямо, без вычитания графиков и гадания. `direct` UP, `inner:core-1` UP, `edge:ams-1` DOWN — сломан внешний отрезок или сам edge; `inner:core-1` DOWN при `direct` UP — сломан inner, и чинить надо §4.6, а не edge. Wave и `last_seen_at` реестра остаются как были, но они отвечают на другой вопрос («доехал ли документ»), а не «ходит ли трафик».
 
-Цена — плюс `M` targets на inbound, где `M` — число inner'ов (обычно один-два), и необходимость помнить, что inner доступен не из каждого региона: mon-client'ы во враждебных сетях ограничиваются подмножеством `paths` в admin UI mon-server (§6.2), как и раньше.
+Цена — плюс `M` targets на inbound, где `M` — число inner'ов (обычно один-два), плюс их AWG probe-пиры (в пределах `monProbePeerLimit`, контракт §4.3), и необходимость помнить, что inner доступен не из каждого региона: mon-client'ы во враждебных сетях ограничиваются подмножеством `paths` в admin UI mon-server (§6.2), как и раньше.
 
 ### 6.4 Панель: UI
 
 #### Бейдж на звено в редакторе цепочки
 
-`web/html/settings/panel/subscription/chain.html`: у **каждого** звена — и edge, и inner — бейдж состояния, худший `target` по всем inbound'ам с `path = edge:<name>` (для inner — `path = inner:<name>`; для active edge — c учётом алиаса `proxy`, т.е. свёртка по обоим `path`), та же свёртка и приоритет, что у колонки Health (`DOWN > FLAPPING > UNKNOWN > UP > PAUSED`; `STALE` панели перекрывает всё). Для `pending`-звена бейдж не про здоровье, а «нет данных» (серый, отдельная метка, не путать с `UNKNOWN` target'а) — mon-server туда ещё не ходил.
+`web/html/settings/panel/subscription/chain.html`: у **каждого** звена — и edge, и inner — бейдж состояния, худший `target` по всем inbound'ам с `path = edge:<name>` (для inner — `path = inner:<name>`), та же свёртка и приоритет, что у колонки Health (`DOWN > FLAPPING > UNKNOWN > UP > PAUSED`; `STALE` панели перекрывает всё). Для `pending`-звена бейдж не про здоровье, а «нет данных» (серый, отдельная метка, не путать с `UNKNOWN` target'а) — mon-server туда ещё не ходил.
 
 - Метод `MonitoringService.WorstLiveTargetState` обобщается до `WorstLiveTargetState(inboundKind, inboundId, pathPrefix string)` (пустой `pathPrefix` = как сегодня, все path); новый метод-обёртка `MonitoringService.WorstLiveHopState(hopName, role string) string` — сворачивает по всем inbound'ам сразу для одного звена (для бейджа в редакторе не нужна раскладка по inbound), выбирая префикс `edge:`/`inner:` по роли.
 - Новая ручка `GET /panel/api/chain/hops/health` (сессия, конверт `{success,msg,obj}`) в контроллере реестра цепочки (`web/controller/chain_controller.go`, файл из рамки §11) — отдаёт `[{name, role, state}]` для всех звеньев реестра одним запросом на страницу редактора; переиспользует `WorstLiveHopState`, дополнительных таблиц не заводит.
@@ -1144,7 +1142,7 @@ PROXY_UPSTREAM_HOST is gone: a proxy front is now a chain hop. Pass PROXY_NEXT_H
 
 ### 6.5 Telegram
 
-Расширение алерта `target DOWN` (§6 monitoring-panel.md), когда `path` упавшего target'а — active edge (`path = edge:<activeEdge>` либо легаси `path = proxy`, если старый mon-server):
+Расширение алерта `target DOWN` (§6 monitoring-panel.md), когда `path` упавшего target'а — active edge (`path = edge:<activeEdge>`):
 
 - К стандартному сообщению `⛔ DOWN · …` добавляется вторая строка: «Запасные: edge-b UP, edge-c UNKNOWN. Переключить: /proxy edge-b».
 - **Список запасных** — все joined/legacy edge, кроме active, с их сегодняшним состоянием (`WorstLiveHopState`, свёртка по всем inbound'ам, тем же способом, что бейдж в редакторе).
@@ -1161,16 +1159,17 @@ Standby edge не простаивает — он уже принят в цеп�
 
 Реализация — **после мержа эпика мониторинга #43** и тикетов реестра и волны этой карты (без реестра `chain.hops` неоткуда взять). Тикеты, которые встанут в очередь на этот раздел (заводятся отдельно, здесь только перечислены как зависящие):
 
-1. Контракт: поле `chain` с полным списком звеньев в `GET /state`, режим `?hop=` (и синоним `?edge=`) у `GET /probe/configs`, каскад удаления/старение переименования — правки `monitoring_service.go`, `monitoring.go` (контроллер), `monitoring_ingest.go` не нужен (path не валидируется).
-2. mon-server (репо `3ax-ui-monitoring`): чтение `chain.hops`, построение targets `edge:<name>` и `inner:<name>`, разворачивание `proxy` в `edge:<active>` для v2-конфигов mon-client.
+1. Контракт 3: поле `chain` (звенья `joined`/`legacy`) в `GET /state` и в ревизии, режим `?hop=` (и синоним `?edge=`) у `GET /probe/configs`, AWG probe-пиры на звенья с потолком `monProbePeerLimit`, каскад удаления/старение переименования — правки `monitoring_service.go`, `monitoring.go` (контроллер), `monitoring_ingest.go` не нужен (path не валидируется).
+2. mon-server (репо `3ax-ui-monitoring`): чтение `chain.hops`, построение targets `edge:<name>` и `inner:<name>` вместо `proxy`, словарь `paths` mon-client'а.
 3. Панель UI: бейджи в `chain.html` (все звенья), ручка `/panel/api/chain/hops/health`, группировка/сводка на `monitoring.html`.
 4. Telegram: подсказка о запасных в алерте DOWN активного edge, кнопка «Сделать активным».
 
 ### Тронутые файлы
 
 **Репо `SBKubric/3ax-ui-proxy` (панель):**
-- `web/service/monitoring_service.go` — `State()` отдаёт `chain`, ревизия учитывает `chain.hops`/`activeEdge`; `ProbeConfigs(hop)`; обобщение `WorstLiveTargetState` + новый `WorstLiveHopState`; каскад удаления hop по `path`-префиксу.
-- `web/controller/monitoring.go` — `GET /probe/configs` разбирает `?hop=` (и синоним `?edge=`), коды `409 unknown_hop`/`409 hop_not_joined`.
+- `web/service/monitoring_service.go` — `State()` отдаёт `chain`, ревизия учитывает `chain.hops`/`activeEdge`; `ProbeConfigs(hop)`; AWG probe-пиры на звенья, потолок и приоритет `monProbePeerLimit`; обобщение `WorstLiveTargetState` + новый `WorstLiveHopState`; каскад удаления hop по `path`-префиксу.
+- `web/controller/monitoring.go` — `GET /probe/configs` разбирает `?hop=` (и синоним `?edge=`), коды `409 unknown_hop`/`409 hop_not_joined`; `X-Mon-Contract: 3`.
+- `web/service/setting.go`, `web/service/setting_monitoring.go`, `web/entity/entity.go`, `web/assets/js/model/setting.js`, `web/html/settings/panel/monitoring.html` — настройка `monProbePeerLimit`.
 - `web/controller/chain_controller.go` — новая ручка `GET /panel/api/chain/hops/health` (файл и группа `/panel/api/chain/...` — §2.4, здесь только добавляется один хендлер).
 - `web/service/chain_service.go` (или как назван сервис реестра эпика #43) — вызов каскадного удаления состояния мониторинга из обработчика удаления hop.
 - `web/html/settings/panel/subscription/chain.html` — бейдж состояния на edge-звено.
@@ -1179,9 +1178,9 @@ Standby edge не простаивает — он уже принят в цеп�
 - `web/translation/translate.en_US.toml`, `translate.ru_RU.toml` (и остальные 11) — ключи для строки-сводки, подсказки Telegram, метки «нет данных» у pending-edge.
 
 **Репо `SBKubric/3ax-ui-monitoring`:**
-- `docs/spec/mon-protocol.md`, `docs/spec/mon-server.md` — построение targets по `chain.hops`, разворачивание `proxy` → `edge:<active>`.
+- `docs/spec/mon-protocol.md`, `docs/spec/mon-server.md` — построение targets по `chain.hops` вместо `proxy`, контракт 3.
 - Код mon-server: цикл `GET /state` → чтение `chain` → пересборка targets (модуль, аналогичный сегодняшнему построению `direct`/`proxy`).
-- admin UI mon-server: `paths` per-mon-client теперь список из `direct` + динамических `inner:<name>`/`edge:<name>` вместо статичной пары.
+- admin UI mon-server: `paths` per-mon-client — словарь по решению [sane-3x-ui-monitoring#61](https://github.com/SBKubric/sane-3x-ui-monitoring/issues/61) (спека mon-server).
 
 ### Открытые вопросы владельцу
 
