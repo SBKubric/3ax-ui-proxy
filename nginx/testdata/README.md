@@ -1,6 +1,6 @@
 # Эталоны конфигов nginx
 
-Снято с `Config.StreamConf` и `Config.HTTPConf` на входных данных из
+Снято с `Config.StreamConf`, `Config.HTTPConf` и `acmeFrontConf` на входных данных из
 `nginx/config_test.go` (`goldenConfig`, `goldenSite`) — сервер с VLESS Reality
 на двух доменах прикрытия и MTProto на своём.
 
@@ -9,6 +9,7 @@
 | `stream_passthrough.conf` | 443 без своего домена: только развод по SNI |
 | `stream_shared.conf`, `http_shared.conf` | режим «Общий»: плюс заглушка на своём домене |
 | `stream_only443.conf`, `http_only443.conf` | режим «Только 443»: плюс панель и подписки |
+| `acme_front.conf` | порт 80 (`acmeFrontConf`): webroot для `/.well-known/acme-challenge/` и 301 на https; не зависит от режима |
 
 Эти эталоны, в отличие от `tunnel/testdata`, **не заморожены** — они фиксируют
 текущий вывод, а не состояние «до». Осознанное изменение вывода

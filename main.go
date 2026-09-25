@@ -19,6 +19,7 @@ import (
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/logger"
+	"github.com/coinman-dev/3ax-ui/v2/nginx"
 	"github.com/coinman-dev/3ax-ui/v2/proxy"
 	"github.com/coinman-dev/3ax-ui/v2/sub"
 	"github.com/coinman-dev/3ax-ui/v2/tunnel"
@@ -603,6 +604,38 @@ func chainCommand(args []string, out io.Writer) int {
 	}
 }
 
+// nginxCommand runs `x-ui nginx <subcommand>` and returns the process exit
+// code. The same binary runs on the panel and on every hop, and both need port
+// 80 answered by nginx before acme.sh can issue or renew a certificate there.
+func nginxCommand(args []string, out io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(out, "nginx: subcommands are `acme-front` (serve the ACME webroot on port 80)")
+		return 1
+	}
+	switch args[0] {
+	case "acme-front":
+		cmd := flag.NewFlagSet("nginx acme-front", flag.ContinueOnError)
+		cmd.SetOutput(out)
+		if err := cmd.Parse(args[1:]); err != nil {
+			return 1
+		}
+		changed, err := nginx.EnsureACMEFront()
+		if err != nil {
+			fmt.Fprintf(out, "nginx acme-front: %v\n", err)
+			return 1
+		}
+		if changed {
+			fmt.Fprintf(out, "nginx now answers ACME challenges on port 80 from %s\n", nginx.ACMEWebroot)
+		} else {
+			fmt.Fprintf(out, "nginx already answers ACME challenges on port 80 from %s\n", nginx.ACMEWebroot)
+		}
+		return 0
+	default:
+		fmt.Fprintf(out, "nginx: unknown subcommand %q; try `acme-front`\n", args[0])
+		return 1
+	}
+}
+
 // generateAwg2 fills the AmneziaWG server row with freshly generated 2.0
 // obfuscation parameters (DB only, no interface changes). Used by install.sh on
 // a FRESH install so new setups default to AmneziaWG 2.0; on update the caller
@@ -698,6 +731,7 @@ func main() {
 		fmt.Println("    chain join-url show the pending join-page link of a box (box)")
 		fmt.Println("    chain status   show this box's place in the chain (box)")
 		fmt.Println("    chain rejoin   point this box at a next hop and join it with a fresh token (box)")
+		fmt.Println("    nginx acme-front  let nginx answer ACME challenges on port 80 (panel and box)")
 	}
 
 	flag.Parse()
@@ -769,6 +803,8 @@ func main() {
 		}
 	case "chain":
 		os.Exit(chainCommand(os.Args[2:], os.Stdout))
+	case "nginx":
+		os.Exit(nginxCommand(os.Args[2:], os.Stdout))
 	case "proxy":
 		proxyCmd := flag.NewFlagSet("proxy", flag.ExitOnError)
 		var proxyConfigPath string

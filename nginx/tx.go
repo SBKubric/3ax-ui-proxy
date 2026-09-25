@@ -22,6 +22,10 @@ type snapshot struct {
 	existed bool
 	data    []byte
 	mode    os.FileMode
+	// link is the target when the path was a symlink. Disabling a Debian site
+	// means removing its symlink in sites-enabled, and putting it back as a
+	// plain copy of the file it pointed at would quietly fork the site.
+	link string
 }
 
 func newTx() *fileTx {
@@ -34,12 +38,18 @@ func (t *fileTx) keep(path string) error {
 	if _, ok := t.saved[path]; ok {
 		return nil
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	switch {
 	case os.IsNotExist(err):
 		t.saved[path] = snapshot{}
 	case err != nil:
 		return fmt.Errorf("stat %s: %w", path, err)
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(path)
+		if err != nil {
+			return fmt.Errorf("read link %s: %w", path, err)
+		}
+		t.saved[path] = snapshot{existed: true, link: target}
 	default:
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -84,7 +94,14 @@ func (t *fileTx) rollback() {
 		path := t.order[i]
 		s := t.saved[path]
 		var err error
-		if s.existed {
+		if s.link != "" {
+			if err = os.Remove(path); os.IsNotExist(err) {
+				err = nil
+			}
+			if err == nil {
+				err = os.Symlink(s.link, path)
+			}
+		} else if s.existed {
 			err = os.WriteFile(path, s.data, s.mode)
 		} else if err = os.Remove(path); os.IsNotExist(err) {
 			err = nil

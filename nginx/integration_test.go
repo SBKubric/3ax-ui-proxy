@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -97,6 +98,68 @@ http {
 	}
 	if hasForeignStreamBlock(string(patched)) {
 		t.Error("the include block we added is not recognised as ours; a second apply would duplicate it")
+	}
+}
+
+// TestNginxAcceptsACMEFront hands the port-80 server to nginx, together with
+// a stand-in for Debian's default site, which EnsureACMEFront has to take out
+// of the way first: two default servers on one port is a config nginx refuses.
+func TestNginxAcceptsACMEFront(t *testing.T) {
+	if _, err := exec.LookPath("nginx"); err != nil {
+		t.Skip("nginx is not installed on this machine")
+	}
+	root := t.TempDir()
+	prevRoot, prevWebroot := ConfRoot, ACMEWebroot
+	ConfRoot, ACMEWebroot = root, filepath.Join(root, "acme-webroot")
+	t.Cleanup(func() { ConfRoot, ACMEWebroot = prevRoot, prevWebroot })
+
+	for _, dir := range []string{"conf.d", "logs", "sites-available", "sites-enabled"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A high port: nginx -t binds, and a non-root test cannot bind 80.
+	const port = 18080
+	site := fmt.Sprintf("server {\n    listen %d default_server;\n    root /var/www/html;\n}\n", port)
+	if err := os.WriteFile(filepath.Join(root, "sites-available", "default"), []byte(site), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../sites-available/default", filepath.Join(root, "sites-enabled", "default")); err != nil {
+		t.Fatal(err)
+	}
+	mainConf := fmt.Sprintf(`worker_processes 1;
+error_log %s/logs/error.log;
+pid %s/logs/nginx.pid;
+events { worker_connections 64; }
+http {
+    access_log off;
+    include %s/conf.d/*.conf;
+    include %s/sites-enabled/*;
+}
+`, root, root, root, root)
+	if err := os.WriteFile(MainConfPath(), []byte(mainConf), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tx := newTx()
+	if _, err := stageACMEFront(tx); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	// The renderer at the test port, in the file stageACMEFront chose.
+	if err := os.WriteFile(ACMEConfPath(), []byte(acmeFrontConf(port, ACMEWebroot)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Test(); err != nil {
+		t.Fatalf("nginx refused the port-80 server: %v", err)
+	}
+
+	// And the reason the default site has to go: with it back, nginx refuses.
+	tx.rollback()
+	if err := os.WriteFile(ACMEConfPath(), []byte(acmeFrontConf(port, ACMEWebroot)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Test(); err == nil || !strings.Contains(err.Error(), "duplicate default server") {
+		t.Errorf("with the default site enabled nginx -t said: %v", err)
 	}
 }
 
