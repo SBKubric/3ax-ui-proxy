@@ -9,7 +9,6 @@ const REALITY_TARGETS = [
     { target: 'www.tesla.com:443', sni: 'www.tesla.com' },
     { target: 'www.sony.com:443', sni: 'www.sony.com' },
     { target: 'www.cloudflare.com:443', sni: 'www.cloudflare.com' },
-    { target: 'www.microsoft.com:443', sni: 'www.microsoft.com' },
     { target: 'www.samsung.com:443', sni: 'www.samsung.com' },
     { target: 'dl.google.com:443', sni: 'dl.google.com' }
 ];
