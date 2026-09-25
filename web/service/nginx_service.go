@@ -90,8 +90,12 @@ type NginxStatus struct {
 	CertFile   string `json:"certFile"`
 	CertOk     bool   `json:"certOk"`
 	CertExpiry int64  `json:"certExpiry"` // unix ms, 0 when unknown
-	PublicPort int    `json:"publicPort"`
-	PanelPort  int    `json:"panelPort"`
+	// IPCertFile is the Let's Encrypt IP certificate the HTTP side answers
+	// requests by address with; empty when the box has none it can serve.
+	IPCertFile   string `json:"ipCertFile"`
+	IPCertExpiry int64  `json:"ipCertExpiry"` // unix ms, 0 when unknown
+	PublicPort   int    `json:"publicPort"`
+	PanelPort    int    `json:"panelPort"`
 	// FirewallOn reports whether our chain is in the INPUT path right now —
 	// what the machine is actually doing, not what the settings ask for.
 	FirewallOn bool `json:"firewallOn"`
@@ -292,7 +296,7 @@ func (s *NginxService) GetStatus() NginxStatus {
 	}
 
 	if set.Domain != "" {
-		if cert, _, expiry, err := findCertificate(set.Domain); err == nil {
+		if cert, _, expiry, err := s.domainCertificate(set.Domain); err == nil {
 			st.CertFile, st.CertOk = cert, true
 			st.CertExpiry = expiry.UnixMilli()
 			if time.Until(expiry) < 14*24*time.Hour {
@@ -301,6 +305,20 @@ func (s *NginxService) GetStatus() NginxStatus {
 		} else {
 			st.Warnings = append(st.Warnings, certWarning(set.Domain, err))
 		}
+	}
+
+	// The IP certificate is optional — a box without one simply has no
+	// answer for requests by address — so only one that is there and cannot
+	// be served is worth a word.
+	if cert, _, expiry, err := ipCertificate(); err == nil {
+		st.IPCertFile, st.IPCertExpiry = cert, expiry.UnixMilli()
+		// Short-lived by design (~6 days), renewed every ~3: two days left
+		// means the renewals have stopped.
+		if time.Until(expiry) < 2*24*time.Hour {
+			st.Warnings = append(st.Warnings, warn("certExpiring", ipCertLabel, expiry.Format("2006-01-02")))
+		}
+	} else if !errors.Is(err, errNoCertificate) {
+		st.Warnings = append(st.Warnings, certWarning(ipCertLabel, err))
 	}
 
 	routes, warnings := s.collectRoutes(set)
@@ -459,37 +477,49 @@ func (s *NginxService) buildConfig(set NginxSettings) (nginx.Config, error) {
 		cfg.Routes = append(cfg.Routes, route)
 	}
 
+	// The HTTP side answers our own domain, with the certificate the panel
+	// settings give it, and requests by address, with the box's IP
+	// certificate. Either is enough to have one; with neither, 443 stays
+	// pure SNI passthrough.
+	site := &nginx.Site{Root: nginx.WebRoot}
 	if set.Domain != "" {
-		cert, key, _, err := findCertificate(set.Domain)
+		cert, key, _, err := s.domainCertificate(set.Domain)
 		if err != nil {
 			return cfg, err
 		}
-		port, err := s.httpBackendPort(set)
-		if err != nil {
-			return cfg, err
-		}
-		cfg.Site = &nginx.Site{
-			Domain:   set.Domain,
-			CertFile: cert,
-			KeyFile:  key,
-			Listen:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
-			Root:     nginx.WebRoot,
-		}
-		if set.PanelBehind443 && cfg.Mode == nginx.ModeOnly443 {
-			panel, err := s.panelProxy()
-			if err != nil {
-				return cfg, err
-			}
-			cfg.Site.Panel = panel
-		}
-		if set.SubsBehind443 {
-			sub, err := s.subProxy()
-			if err != nil {
-				return cfg, err
-			}
-			cfg.Site.Sub = sub
-		}
+		site.Domain, site.CertFile, site.KeyFile = set.Domain, cert, key
 	}
+	if cert, key, _, err := ipCertificate(); err == nil {
+		site.IPCertFile, site.IPKeyFile = cert, key
+	} else if !errors.Is(err, errNoCertificate) {
+		// Broken, not absent: leave it out rather than hand nginx a
+		// certificate every client would refuse. The status says why.
+		logger.Warning("nginx: not serving requests by address:", err)
+	}
+	if site.Domain == "" && site.IPCertFile == "" {
+		return cfg, nil
+	}
+
+	port, err := s.httpBackendPort(set)
+	if err != nil {
+		return cfg, err
+	}
+	site.Listen = net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	if set.PanelBehind443 && cfg.Mode == nginx.ModeOnly443 {
+		panel, err := s.panelProxy()
+		if err != nil {
+			return cfg, err
+		}
+		site.Panel = panel
+	}
+	if set.SubsBehind443 {
+		sub, err := s.subProxy()
+		if err != nil {
+			return cfg, err
+		}
+		site.Sub = sub
+	}
+	cfg.Site = site
 	return cfg, nil
 }
 
@@ -562,7 +592,7 @@ func (s *NginxService) CheckCertificate(domain string) NginxStatus {
 	if st.Domain == "" {
 		return st
 	}
-	cert, _, expiry, err := findCertificate(st.Domain)
+	cert, _, expiry, err := s.domainCertificate(st.Domain)
 	if err != nil {
 		st.Warnings = append(st.Warnings, certWarning(st.Domain, err))
 		return st
@@ -753,6 +783,87 @@ func realitySNIs(streamSettings string) []string {
 		return nil
 	}
 	return out
+}
+
+// ipCertDir is where install.sh, update.sh and x-ui.sh install the box's
+// Let's Encrypt IP certificate, as fullchain.pem and privkey.pem.
+var ipCertDir = "/root/cert/ip"
+
+// ipCertLabel names the IP certificate in the warnings, where a domain would
+// otherwise go.
+const ipCertLabel = "IP"
+
+// ipCertificate returns the IP certificate the HTTP side answers requests by
+// address with. errNoCertificate when the box has none; another error when it
+// has one that cannot be served — expired, or not for an address at all.
+func ipCertificate() (certFile, keyFile string, expiry time.Time, err error) {
+	certFile = filepath.Join(ipCertDir, "fullchain.pem")
+	keyFile = filepath.Join(ipCertDir, "privkey.pem")
+	if _, err := os.Stat(certFile); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("IP: %w", errNoCertificate)
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("IP: %w", errNoCertificate)
+	}
+	raw, err := os.ReadFile(certFile)
+	if err != nil {
+		return "", "", time.Time{}, fmt.Errorf("read %s: %w", certFile, err)
+	}
+	var block *pem.Block
+	for {
+		block, raw = pem.Decode(raw)
+		if block == nil || block.Type == "CERTIFICATE" {
+			break
+		}
+	}
+	if block == nil {
+		return "", "", time.Time{}, fmt.Errorf("%s holds no certificate", certFile)
+	}
+	// The leaf comes first in fullchain.pem.
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", "", time.Time{}, fmt.Errorf("parse %s: %w", certFile, err)
+	}
+	if len(leaf.IPAddresses) == 0 {
+		return "", "", time.Time{}, fmt.Errorf("%s is not a certificate for an IP address", certFile)
+	}
+	// The address it names has to verify as a host: the check a client makes.
+	if err := leaf.VerifyHostname(leaf.IPAddresses[0].String()); err != nil {
+		return "", "", time.Time{}, fmt.Errorf("%s: %w", certFile, err)
+	}
+	if time.Now().After(leaf.NotAfter) {
+		return "", "", leaf.NotAfter, fmt.Errorf("the IP certificate expired on %s", leaf.NotAfter.Format("2006-01-02"))
+	}
+	return certFile, keyFile, leaf.NotAfter, nil
+}
+
+// domainCertificate finds the certificate the HTTP side serves our own domain
+// with.
+//
+// The one from the panel settings comes first — the panel's own, then the
+// subscription server's — when it covers the domain: that is the certificate
+// the operator chose for this name, and it needs no ACME of ours. Only when
+// neither does is the certificate looked for in the usual directories.
+func (s *NginxService) domainCertificate(domain string) (certFile, keyFile string, expiry time.Time, err error) {
+	pairs := [][2]func() (string, error){
+		{s.settingService.GetCertFile, s.settingService.GetKeyFile},
+		{s.settingService.GetSubCertFile, s.settingService.GetSubKeyFile},
+	}
+	for _, pair := range pairs {
+		cert, _ := pair[0]()
+		key, _ := pair[1]()
+		cert, key = strings.TrimSpace(cert), strings.TrimSpace(key)
+		if cert == "" || key == "" {
+			continue
+		}
+		if _, err := os.Stat(key); err != nil {
+			continue
+		}
+		if exp, err := certificateExpiry(cert, domain); err == nil {
+			return cert, key, exp, nil
+		}
+	}
+	return findCertificate(domain)
 }
 
 // certDirs are the layouts the panel knows how to find a certificate in:
