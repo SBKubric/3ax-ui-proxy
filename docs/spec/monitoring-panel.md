@@ -4,6 +4,8 @@
 
 Правки 2026-09-24 по карте [Мониторинг: исполнение](https://github.com/SBKubric/3ax-ui-monitoring/issues/49): поэлементный приём `/events` и `/stats`, грамматика `path`, `monStaleSince`, coverage дайджеста по `ONLINE`, без `503 xray_unavailable` — [#50](https://github.com/SBKubric/3ax-ui-monitoring/issues/50); `PAUSED` ниже `UP` в свёртке — [#51](https://github.com/SBKubric/3ax-ui-monitoring/issues/51); адрес probe-ссылок, `?hop=` до per-hop, guards `probe-*` в `AddInbound`/`UpdateInbound` — [#54](https://github.com/SBKubric/3ax-ui-monitoring/issues/54); ревизия по всему probe-материалу — [3ax-ui-proxy#117](https://github.com/SBKubric/3ax-ui-proxy/issues/117); AWG probe-пир на mon-client × path, контракт v2 — [3ax-ui-monitoring#80](https://github.com/SBKubric/3ax-ui-monitoring/issues/80), [3ax-ui-proxy#120](https://github.com/SBKubric/3ax-ui-proxy/issues/120). Wire-сторона тех же решений — в контракте.
 
+Правки 2026-09-25, контракт 3 — решение [sane-3x-ui-monitoring#61](https://github.com/SBKubric/sane-3x-ui-monitoring/issues/61): `chain` (звенья `joined`/`legacy`) в `GET /state` и в ревизии, `?hop=` с адресом звена, AWG probe-пиры на mon-client × path каждого звена, потолок `monProbePeerLimit`; `proxy` — только пока пробируемых звеньев нет ([proxy-chain](proxy-chain.md) §6). Уточнения того же дня: снимок ensure несёт `paths` mon-clients и пиры заводятся только на реально пробируемые пары, `unallocated` — с `reason` (`pool_exhausted`/`limit`), при смене пробируемого набора path строки `mon_targets` выпавших path удаляются, `chain.hops` — inner'ы по `position`, затем edge по имени.
+
 ## 1. Цель и границы
 
 Панель (real server) **принимает** мониторинг: открывает mon-server ручки контракта, заводит по его запросу probe accounts, хранит состояние targets, ленту событий и агрегаты, показывает страницу Monitoring и бейдж Health у inbound'ов, шлёт Telegram по переходам, ведёт единственное своё состояние — STALE. Панель **не** ходит наружу, не ведёт реестр mon-clients (только кэш снимка) и не считает UP/DOWN.
@@ -27,7 +29,7 @@
 
 - Имена **current / rollup**, а не 5m / 1h: размер окна живёт в строке (`bucket_ms`, `step_ms`) и в настройке, не в имени таблицы.
 - `lat_*` — целые миллисекунды, `NULL` при `n_ok = 0`. Все времена — ms UTC.
-- Строка `mon_targets` появляется из первого события или агрегата по ключу; удаляется, когда её mon-client пропал из снимка реестра (§4.4) или удалён inbound (§3.6).
+- Строка `mon_targets` появляется из первого события или агрегата по ключу; удаляется, когда её mon-client пропал из снимка реестра (§4.4), удалён inbound (§3.6) или её path выпал из пробируемого набора ([proxy-chain](proxy-chain.md) §6.1).
 
 ### 2.2 Настройки (`defaultValueMap` в `web/service/setting.go`, `entity.AllSetting`, getter/setter — внутри форкового блока `proxyOverride*`; JS-дефолты в `web/assets/js/model/setting.js`)
 
@@ -39,6 +41,7 @@
 | `monProbeSubId` | string | `""` | subId probe-набора |
 | `monProbeLastEnsured` | int64 ms | `0` | последний `POST /probe/ensure` |
 | `monProbeTtlHours` | int | `24` | TTL очистки probe-набора без ensure |
+| `monProbePeerLimit` | int | `32` | потолок AWG probe-пиров, `0` — без лимита (контракт §4.3) |
 | `monLastContact` | int64 ms | `0` | последний авторизованный запрос mon-server |
 | `monStaleSince` | int64 ms | `0` | начало текущего STALE, `0` — не STALE (§5) |
 | `monClientsSnapshot` | JSON string | `"[]"` | кэш реестра mon-clients для UI |
@@ -101,7 +104,7 @@
 | `POST /events` | `ApplyEvents(batch)` |
 | `POST /stats` | `UpsertStats(batch)` |
 
-Каждый успешный ответ несёт `X-Mon-Contract: 2` (`MonContractVersion`; путь `/mon/v1` исторический, контракт §1). Тела — JSON, лимит 1 МиБ (`http.MaxBytesReader`), неизвестные поля игнорируются (без `DisallowUnknownFields`), батчи валидируются поэлементно — невалидные элементы уходят в `rejected` ответа `200`, `400 invalid_body` только для нечитаемого тела (контракт §3); статусы и тело ошибки `{error, message}` — по контракту §3. Конверт `{success,msg,obj}` панельного API здесь **не** используется: mon-server — не браузер.
+Каждый успешный ответ несёт `X-Mon-Contract: 3` (`MonContractVersion`; путь `/mon/v1` исторический, контракт §1). Тела — JSON, лимит 1 МиБ (`http.MaxBytesReader`), неизвестные поля игнорируются (без `DisallowUnknownFields`), батчи валидируются поэлементно — невалидные элементы уходят в `rejected` ответа `200`, `400 invalid_body` только для нечитаемого тела (контракт §3); статусы и тело ошибки `{error, message}` — по контракту §3. Конверт `{success,msg,obj}` панельного API здесь **не** используется: mon-server — не браузер.
 
 ### 4.2 Аутентификация
 
@@ -109,18 +112,19 @@
 
 ### 4.3 `MonitoringService` (`web/service/monitoring_service.go`)
 
-- **`State()`** — санированный список inbound'ов (`kind, inboundId, tag, remark, protocol, port, enable`; `port` = `publicPort` при nginx-фронте, иначе `port`), `override` из `proxyOverrideEnable/Host`, `probe.subId/lastEnsured`, `revision`, `stale.thresholdMinutes`, `panelVersion`, `serverTime`. **Ревизия** — первые 16 hex SHA-256 канонического JSON всего probe-материала: `{hiddifyCompat, override, probeSubId, inbounds[…] sorted by (kind, inboundId)}`, где у xray-inbound'а к полям target'а добавлены `listen`, `stream` (`streamSettings` без `externalProxy`) и `settings` с `clients`, сокращённым до probe-клиента, а у AWG — `peers[{name, conf}]` (`.conf` probe-пира с хостом `Endpoint` = `probe.invalid`) (контракт §4.2, [#117](https://github.com/SBKubric/3ax-ui-proxy/issues/117)). Тег и remark не входят; считается на каждый запрос, счётчика нет, от времени и порядка ключей не зависит.
-- **`EnsureProbeSet(snapshot)`** — идемпотентно: `monClientId` вне `[A-Za-z0-9_-]{1,32}` → `400 invalid_body` до любых изменений; сгенерировать `monProbeSubId`, если пуст; дозавести недостающих xray probe-клиентов (§3.3); сверить AWG probe-пиры со снимком (`ensureTunnelProbes`): пир на каждый mon-client снимка (любое `state`) × `monProbePaths` (`direct`, `proxy`), остальные probe-пиры — включая v1-шный `probe-awg` — удалить, сначала удаление, потом создание по сортировке `(monClientId, path)`; исчерпанный пул (`ipam.ErrPoolExhausted`) — warning в лог, mon-client в `unallocated` ответа, остальное идёт дальше; `monProbeLastEnsured = now`; заменить кэш снимка реестра (в памяти + `monClientsSnapshot`); удалить строки `mon_targets`, чей `mon_client_id` отсутствует в снимке (события и агрегаты остаются до ретеншна). Недоступный xray API — не ошибка: клиент записан в inbound, рестарт xray запланирован, `200`; `5xx` — только ошибка БД.
-- **`ProbeConfigs(host, hop)`** — те же сервисы, что `/sub` и `/tun`: ссылки xray-клиентов probe-набора (без `monClientId`) и по `conf` на каждый mon-client снимка, у которого есть AWG-пир этого path, с `monClientId` и `filename` = имя пира. Ссылка рендерится на копии stream **без `externalProxy`** и всегда однострочная (`ProbeConfigs` страхуется первой строкой). Без `host` — с host override (path `proxy`; `409 override_disabled`, если он выключен); с `host` (path `direct`) — публичный `Listen` inbound'а, если задан, иначе адрес из параметра. `?hop=`/`?edge=` до per-hop — `409 unknown_hop` на любое непустое имя и на два разных имени ([proxy-chain](proxy-chain.md) §6.1). Выключенные inbound'ы не попадают. `409 probe_not_ensured`, пока набор не создан.
+- **`State()`** — санированный список inbound'ов (`kind, inboundId, tag, remark, protocol, port, enable`; `port` = `publicPort` при nginx-фронте, иначе `port`), `override` из `proxyOverrideEnable/Host`, `chain` из реестра цепочки (звенья `joined`/`legacy`: inner'ы по `position`, затем edge по имени, [proxy-chain](proxy-chain.md) §6.1; нет поля при пустом реестре), `probe.subId/lastEnsured`, `revision`, `stale.thresholdMinutes`, `panelVersion`, `serverTime`. **Ревизия** — первые 16 hex SHA-256 канонического JSON всего probe-материала: `{hiddifyCompat, override, chain{activeEdge, hops}, probeSubId, inbounds[…] sorted by (kind, inboundId)}`, где у xray-inbound'а к полям target'а добавлены `listen`, `stream` (`streamSettings` без `externalProxy`) и `settings` с `clients`, сокращённым до probe-клиента, а у AWG — `peers[{name, conf}]` (`.conf` probe-пира с хостом `Endpoint` = `probe.invalid`) (контракт §4.2, [#117](https://github.com/SBKubric/3ax-ui-proxy/issues/117)). Тег и remark не входят; считается на каждый запрос, счётчика нет, от времени и порядка ключей не зависит.
+- **`EnsureProbeSet(snapshot)`** — идемпотентно: `monClientId` вне `[A-Za-z0-9_-]{1,32}` → `400 invalid_body` до любых изменений; сгенерировать `monProbeSubId`, если пуст; дозавести недостающих xray probe-клиентов (§3.3); сверить AWG probe-пиры со снимком (`ensureTunnelProbes`): пир на каждый mon-client снимка (любое `state`) × пробируемые path из его `paths` (`direct`; `hops` — `edge:<name>`/`inner:<name>` каждого звена `joined`/`legacy`, без таких звеньев — `proxy`; явные `edge:`/`inner:` — если звено пробируется) в пределах `monProbePeerLimit` — по приоритету `direct` → active edge → standby edge по имени → inner по порядку цепочки, внутри уровня по `monClientId` (контракт §4.3); паре сверх лимита пир не заводится (`unallocated`, `reason: limit`); остальные probe-пиры — включая v1-шный `probe-awg` — удалить, сначала удаление, потом создание в порядке приоритета; исчерпанный пул (`ipam.ErrPoolExhausted`) — warning в лог, пара в `unallocated` ответа с `reason: pool_exhausted`, остальное идёт дальше; `monProbeLastEnsured = now`; заменить кэш снимка реестра (в памяти + `monClientsSnapshot`); удалить строки `mon_targets`, чей `mon_client_id` отсутствует в снимке (события и агрегаты остаются до ретеншна). Недоступный xray API — не ошибка: клиент записан в inbound, рестарт xray запланирован, `200`; `5xx` — только ошибка БД.
+- **`ProbeConfigs(host, hop)`** — те же сервисы, что `/sub` и `/tun`: ссылки xray-клиентов probe-набора (без `monClientId`) и по `conf` на каждый mon-client снимка, у которого есть AWG-пир этого path, с `monClientId` и `filename` = имя пира. Ссылка рендерится на копии stream **без `externalProxy`** и всегда однострочная (`ProbeConfigs` страхуется первой строкой). Без `host` — с host override (path `proxy`; `409 override_disabled`, если он выключен); с `host` (path `direct`) — публичный `Listen` inbound'а, если задан, иначе адрес из параметра. С `?hop=`/`?edge=` — адрес звена из реестра (path `edge:<name>`/`inner:<name>`); `409 unknown_hop` — имени нет в реестре или два разных имени, `409 hop_not_joined` — звено не `joined`/`legacy` ([proxy-chain](proxy-chain.md) §6.1). Выключенные inbound'ы не попадают. `409 probe_not_ensured`, пока набор не создан.
 - **`DeleteProbeSet()`** — удалить все probe account'ы по префиксу (xray + все AWG-пиры, вместе с `client_traffics`), очистить `monProbeSubId`, `monProbeLastEnsured`, снимок; `204`.
 - **`ApplyEvents(batch)`** — поэлементная валидация (невалидные → `rejected: [{index, id, error}]`, остальные применяются; `path` по грамматике `direct|proxy|edge:<name>|inner:<name>`, пустой `from` допустим), затем в одной транзакции по порядку `ts`: вставка в `mon_events` (дубликат `id` → `duplicates`, неизвестный inbound → `ignored`), применение к `mon_targets` (событие старше текущего `since` пишется в ленту, но состояние не откатывает; `kind=mon_client` и `kind=panel` состояния target'ов не меняют), затем Telegram по §6 для событий с `notified=false`. Окно дедупликации — `monRetentionDays`.
 - **`UpsertStats(batch)`** — поэлементная валидация как у `ApplyEvents` (`rejected: [{index, error}]`); upsert в `mon_stats_current` по ключу; в той же транзакции пересчёт затронутых rollup-бакетов (`GROUP BY` по строкам current в `[bucket_start − bucket_start % step_ms, +step_ms)`) и upsert в `mon_stats_rollup` с текущим `step_ms` (`n_buckets` показывает частичность незакрытого часа). Бакеты старше `monRetentionDays` → `ignored`.
 - **`WorstLiveTargetState(inboundKind, inboundId)`** — свёртка для бейджа: худший target среди строк `mon_targets` с mon-client из текущего снимка по приоритету `DOWN > FLAPPING > UNKNOWN > UP > PAUSED`; `STALE` панели перекрывает всё. `PAUSED` ниже `UP` намеренно: это административное состояние (`config_disabled`, `override_disabled`, `path_removed`, `no_probe_link`, `config_error`, контракт §4.6), а не инцидент. Используется колонкой Health и фильтром `down` (§7.2).
 - **`CascadeDeleteInbound(kind, id)`** — §3.6, вызывается из `InboundService.DelInbound` и удаления AWG-сервера.
+- **Смена пробируемого набора path** ([proxy-chain](proxy-chain.md) §6.1) — в транзакции записи реестра цепочки удаляются строки `mon_targets`, чьего path в наборе больше нет; события и агрегаты стареют по ретеншну, Telegram молчит.
 
 ### 4.4 Снимок реестра
 
-Тело `POST /probe/ensure` — полная замена, не патч. Панель хранит его как кэш для UI (`monClientsSnapshot`), поле `state` в нём — то, что сказал mon-server, панель его не пересчитывает. mon-client вне снимка на странице Monitoring не показывается; его события в ленте помечены «выведен».
+Тело `POST /probe/ensure` — полная замена, не патч; у каждого mon-client — его `paths` (контракт §4.3). Панель хранит его как кэш для UI (`monClientsSnapshot`), поле `state` в нём — то, что сказал mon-server, панель его не пересчитывает. mon-client вне снимка на странице Monitoring не показывается; его события в ленте помечены «выведен».
 
 ## 5. Фоновая job
 
@@ -159,7 +163,7 @@
 
 ### 7.3 Настройки
 
-Пятая вкладка **Monitoring** в `web/html/settings.html` (`settings/panel/monitoring.html`, иконка `line-chart`) из `a-setting-list-item`: включатель `monEnable`; `monToken` в input read-only с кнопками Copy и Regenerate (Regenerate — подтверждение; новый токен сразу инвалидирует старый); `monStaleMinutes`; `monRetentionDays`; `monRollupRetentionDays`; информационная строка probe-набора (subId, last ensured, число клиентов) с кнопкой «Remove probe set» (`DeleteProbeSet` тем же сервисом). Общая кнопка Save. Дубль токена в CLI `x-ui` (показать / сбросить), по образцу `secret`.
+Пятая вкладка **Monitoring** в `web/html/settings.html` (`settings/panel/monitoring.html`, иконка `line-chart`) из `a-setting-list-item`: включатель `monEnable`; `monToken` в input read-only с кнопками Copy и Regenerate (Regenerate — подтверждение; новый токен сразу инвалидирует старый); `monStaleMinutes`; `monRetentionDays`; `monRollupRetentionDays`; `monProbePeerLimit` (`0` — без лимита); информационная строка probe-набора (subId, last ensured, число клиентов) с кнопкой «Remove probe set» (`DeleteProbeSet` тем же сервисом). Общая кнопка Save. Дубль токена в CLI `x-ui` (показать / сбросить), по образцу `secret`.
 
 ### 7.4 Ручки для UI (`/panel/api/monitoring/`, сессия, конверт `{success,msg,obj}`; новый файл `web/controller/monitoring_ui.go`, регистрация одной строкой в `APIController.initRouter`)
 
@@ -170,7 +174,7 @@
 
 ### 7.5 Локализация
 
-13 локалей, ключи в конец секций (начать с `en_US`/`ru_RU`): `menu.monitoring`; `pages.monitoring.title/live/stale/lastContact/monClients/targets/events/path/state/for/uptime24/latency/reason/noData/coverage/retired`; `pages.inbounds.health/filterDown/healthTooltip/probeBadge`; `pages.settings.monitoringSettings/monEnable/monEnableDesc/monToken/monTokenDesc/monTokenCopy/monTokenRegenerate/monTokenRegenerateConfirm/monStaleMinutes/monStaleMinutesDesc/monRetentionDays/monRetentionDaysDesc/monRollupRetentionDays/monRollupRetentionDaysDesc/monProbeSet/monProbeSetDesc/monProbeSetRemove`; `tgbot.messages.monitoring.down/up/flappingOn/flappingOff/clientOffline/clientOnline/stale/staleBack/digestTitle/digestLine`.
+13 локалей, ключи в конец секций (начать с `en_US`/`ru_RU`): `menu.monitoring`; `pages.monitoring.title/live/stale/lastContact/monClients/targets/events/path/state/for/uptime24/latency/reason/noData/coverage/retired`; `pages.inbounds.health/filterDown/healthTooltip/probeBadge`; `pages.settings.monitoringSettings/monEnable/monEnableDesc/monToken/monTokenDesc/monTokenCopy/monTokenRegenerate/monTokenRegenerateConfirm/monStaleMinutes/monStaleMinutesDesc/monRetentionDays/monRetentionDaysDesc/monRollupRetentionDays/monRollupRetentionDaysDesc/monProbePeerLimit/monProbePeerLimitDesc/monProbeSet/monProbeSetDesc/monProbeSetRemove`; `tgbot.messages.monitoring.down/up/flappingOn/flappingOff/clientOffline/clientOnline/stale/staleBack/digestTitle/digestLine`.
 
 ## 8. Известные ограничения v1
 
@@ -190,7 +194,7 @@
 - `database/model/monitoring.go` — четыре модели §2.1.
 - `web/service/monitoring_probe.go` — `ProbePrefix`, `IsProbeAccount`, атрибуты probe-клиента.
 - `web/service/monitoring_service.go` (+ `_test.go`) — §4.3.
-- `web/service/setting_monitoring.go` — геттеры/сеттеры 12 ключей §2.2.
+- `web/service/setting_monitoring.go` — геттеры/сеттеры 13 ключей §2.2.
 - `web/controller/monitoring.go` (+ `_test.go`) — контракт §4.1–4.2.
 - `web/controller/monitoring_ui.go` — ручки §7.4.
 - `web/job/monitoring_job.go` — §5.
@@ -203,8 +207,8 @@
 |---|---|
 | `database/db.go` : `initModels` | четыре `&model.Mon*{},` в конец среза |
 | `database/db.go` : `namedIndexes` | индексы `idx_mon_*` |
-| `web/service/setting.go` : `defaultValueMap`, форковый блок `proxyOverride*` | 12 ключей §2.2 |
-| `web/entity/entity.go` : `AllSetting`, форковый блок | 12 полей |
+| `web/service/setting.go` : `defaultValueMap`, форковый блок `proxyOverride*` | 13 ключей §2.2 |
+| `web/entity/entity.go` : `AllSetting`, форковый блок | 13 полей |
 | `web/web.go` : регистрация контроллеров; `startTask` | `NewMonitoringController(...)`; `addJob("@every 1m", …)`, `addJob("@hourly", …)` |
 | `web/controller/api.go` : `initRouter` | одна строка — группа `monitoring` UI-ручек |
 | `web/controller/xui.go` : `initRouter` | `g.GET("/monitoring", a.monitoring)` |
@@ -216,7 +220,7 @@
 | `web/html/inbounds.html` | колонка Health, фильтр down, бейдж `probe`, скрытая правка probe |
 | `web/html/settings.html` | пятая вкладка |
 | `web/html/component/aSidebar.html` | пункт Monitoring |
-| `web/assets/js/model/setting.js` | 12 дефолтов |
+| `web/assets/js/model/setting.js` | 13 дефолтов |
 | `web/translation/translate.*.toml` | ключи §7.5 в конец секций |
 | `main.go` / CLI `x-ui` | показать / сбросить `monToken` по образцу `secret` |
 
@@ -231,7 +235,7 @@
 1. Модели §2.1 + `initModels` + `namedIndexes`; тест: AutoMigrate создаёт таблицы и индексы, каскад по `(inbound_kind, inbound_id)` чистит все четыре.
 2. Настройки §2.2: ключи, поля, геттеры, `setting.js`; тест `AllSetting` round-trip, генерация `monToken` 32 символа.
 3. `monitoring_probe.go` + guard в add/update-путях xray и AWG, tgbot, LDAP; фильтр в `GetOnlineClients`; тесты: `probe-*` отказывается на всех путях (включая новый `probe-*` в `AddInbound`/`UpdateInbound`; существующий проходит), LDAP-синк не удаляет probe, online-множество без probe.
-4. `MonitoringService.State/EnsureProbeSet/ProbeConfigs/DeleteProbeSet`; тесты: ревизия детерминирована и меняется от `enable`/override/subId и от probe-материала (Reality `serverNames`/`target`/ключи/`shortIds`, порт и ключи AWG), но не от remark, ensure идемпотентен и дозаводит удалённого клиента, `409` без override и без набора, `direct` подставляет `host` (или публичный `Listen`), inbound с `externalProxy` даёт разные однострочные ссылки для `direct` и `proxy`, `?hop=` → `409 unknown_hop`, выключенный inbound отсутствует в `items`; AWG-пиры сверяются со снимком (добавление/удаление mon-client, `probe-awg` v1 удаляется, плохой `monClientId` → `400`, исчерпанный пул → `unallocated` и нет AWG-элемента), AWG-элементы по одному на mon-client с `monClientId`, ревизия двигается от набора пиров.
+4. `MonitoringService.State/EnsureProbeSet/ProbeConfigs/DeleteProbeSet`; тесты: ревизия детерминирована и меняется от `enable`/override/subId и от probe-материала (Reality `serverNames`/`target`/ключи/`shortIds`, порт и ключи AWG), но не от remark, ensure идемпотентен и дозаводит удалённого клиента, `409` без override и без набора, `direct` подставляет `host` (или публичный `Listen`), inbound с `externalProxy` даёт разные однострочные ссылки для `direct` и `proxy`, `?hop=` рендерит с адресом звена, `409 unknown_hop`/`hop_not_joined`, выключенный inbound отсутствует в `items`; AWG-пиры сверяются со снимком (добавление/удаление mon-client, `probe-awg` v1 удаляется, плохой `monClientId` → `400`, исчерпанный пул → `unallocated` и нет AWG-элемента, пиры на каждое звено только по `paths` mon-client'а, потолок `monProbePeerLimit` режет по приоритету, пара сверх лимита без AWG-элемента, `unallocated` с `reason`), AWG-элементы по одному на mon-client с `monClientId`, ревизия двигается от набора пиров.
 5. `ApplyEvents` + `UpsertStats` с rollup в транзакции; тесты: смешанный батч (валидные приняты, невалидный в `rejected`), неизвестное поле игнорируется, `path` `edge:x` принят, дубликат `id`, событие старше `since`, `ignored` по неизвестному inbound, upsert по ключу, rollup пересчитывается, `lat_avg` взвешен по `n_ok`, бакет старше ретеншна → `ignored`.
 6. Контроллер контракта + `checkMonAuth`; тесты: голый `404` во всех неавторизованных случаях, `X-Mon-Contract`, `413` на батч сверх лимита, `monLastContact` обновляется.
 7. `MonitoringJob`: STALE, TTL probe-набора, ретеншн, пересборка rollup; тесты на каждом.

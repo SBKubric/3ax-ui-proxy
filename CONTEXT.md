@@ -107,7 +107,7 @@ _Avoid_: agent, probe node, sensor
 _Avoid_: check, monitor, endpoint
 
 **Path**:
-Через какой адрес target достигает real server: `direct` (настоящий адрес real server), `proxy` (адрес active edge из host override), `edge:<name>` или `inner:<name>` (конкретное звено цепочки по имени). Других значений нет.
+Через какой адрес target достигает real server: `direct` (настоящий адрес real server), `edge:<name>` или `inner:<name>` (конкретное звено цепочки по имени), а пока у цепочки нет пробируемых звеньев — `proxy` (адрес из host override). Других значений нет.
 _Avoid_: mode, route
 
 **Probe account**:
