@@ -231,11 +231,13 @@ const (
 )
 
 // MonHopHealth is one hop's badge in the chain editor and on the Monitoring
-// page (proxy-chain.md §6.4).
+// page (proxy-chain.md §6.4). Active marks the active edge, which the
+// Monitoring page's filter chips and summary line single out.
 type MonHopHealth struct {
-	Name  string `json:"name"`
-	Role  string `json:"role"`
-	State string `json:"state"`
+	Name   string `json:"name"`
+	Role   string `json:"role"`
+	State  string `json:"state"`
+	Active bool   `json:"active"`
 }
 
 // WorstLiveHopState folds every target of one hop's path — all inbounds at
@@ -266,7 +268,98 @@ func (s *MonitoringService) HopsHealth(hops []model.ChainHop) ([]MonHopHealth, e
 				state = MonHopHealthStale
 			}
 		}
-		out = append(out, MonHopHealth{Name: hop.Name, Role: hop.Role, State: state})
+		out = append(out, MonHopHealth{Name: hop.Name, Role: hop.Role, State: state, Active: hop.IsActive})
 	}
 	return out, nil
+}
+
+// MonStandbyEdge is one standby edge as the Telegram hint lists it: its
+// badge state over all inbounds (WorstLiveHopState, NONE without data).
+type MonStandbyEdge struct {
+	Name  string
+	State string
+}
+
+// Candidate tiers for a switch-over (proxy-chain.md §6.5), best first.
+const (
+	monStandbyAllUp      = iota // every inbound with data UP
+	monStandbyMajorityUp        // strictly more than half of them UP
+	monStandbyUnproven          // UNKNOWN, no data, or UP no better than half
+	monStandbyDown              // no inbound UP and some DOWN: not a candidate
+)
+
+// StandbyHint is what the DOWN alert of the active edge adds (§6.5): every
+// probed edge but the active one with its state, and the one to switch to —
+// all inbounds UP beats a strict majority UP beats UNKNOWN or no data, ties
+// by name; an edge with nothing UP and something DOWN is never proposed, and
+// candidate is empty when no edge qualifies. ok is false when path is not
+// the active edge's, and then there is no hint at all.
+func (s *MonitoringService) StandbyHint(path string) (standby []MonStandbyEdge, candidate string, ok bool, err error) {
+	c, err := monChainTx(nil)
+	if err != nil || c == nil || c.ActiveEdge == nil || path != monHopPath(chain.RoleEdge, *c.ActiveEdge) {
+		return nil, "", false, err
+	}
+	best := monStandbyDown
+	for _, h := range c.Hops {
+		if h.Role != chain.RoleEdge || h.Name == *c.ActiveEdge {
+			continue
+		}
+		state, err := s.WorstLiveHopState(h.Name, h.Role)
+		if err != nil {
+			return nil, "", false, err
+		}
+		if state == "" {
+			state = MonHopHealthNone
+		}
+		standby = append(standby, MonStandbyEdge{Name: h.Name, State: state})
+		tier, err := s.standbyTier(monHopPath(h.Role, h.Name))
+		if err != nil {
+			return nil, "", false, err
+		}
+		// Hops come with the edges sorted by name, so the first of a tier
+		// wins the tie.
+		if tier < best {
+			best, candidate = tier, h.Name
+		}
+	}
+	return standby, candidate, true, nil
+}
+
+// standbyTier grades one edge's path by how many inbounds it carries: each
+// inbound's targets on the path are folded over live mon-clients, then
+// counted. The majority is strictly more than half; a tie is not one.
+func (s *MonitoringService) standbyTier(path string) (int, error) {
+	live := map[string]bool{}
+	for _, c := range s.RegistrySnapshot() {
+		live[c.Id] = true
+	}
+	var rows []model.MonTarget
+	if err := database.GetDB().Where("path = ?", path).Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	byInbound := map[MonInboundRef][]string{}
+	for _, r := range rows {
+		if live[r.MonClientId] {
+			ref := MonInboundRef{r.InboundKind, r.InboundId}
+			byInbound[ref] = append(byInbound[ref], r.State)
+		}
+	}
+	n, up, down := len(byInbound), 0, false
+	for _, states := range byInbound {
+		switch worstOfStates(states) {
+		case model.MonStateUp:
+			up++
+		case model.MonStateDown:
+			down = true
+		}
+	}
+	switch {
+	case n > 0 && up == n:
+		return monStandbyAllUp, nil
+	case 2*up > n:
+		return monStandbyMajorityUp, nil
+	case up == 0 && down:
+		return monStandbyDown, nil
+	}
+	return monStandbyUnproven, nil
 }

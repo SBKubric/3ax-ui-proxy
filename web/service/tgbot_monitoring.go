@@ -63,7 +63,7 @@ func (t *Tgbot) monitoringEventMessage(ev *model.MonEvent) string {
 		// recovery is an UP message.
 		switch {
 		case ev.To == model.MonStateDown:
-			return t.I18nBot("tgbot.messages.monitoring.down", inbound, path, client, reason, since)
+			return t.I18nBot("tgbot.messages.monitoring.down", inbound, path, client, reason, since) + t.monStandbyHint(ev.Path)
 		case ev.To == model.MonStateFlapping:
 			return t.I18nBot("tgbot.messages.monitoring.flappingOn", inbound, path, client, reason, since)
 		case ev.From == model.MonStateFlapping:
@@ -91,6 +91,37 @@ func (t *Tgbot) monitoringEventMessage(ev *model.MonEvent) string {
 	// kind=panel never reaches here: ApplyEvents stores it notified, because
 	// mon-server has already told the operator itself.
 	return ""
+}
+
+// monStandbyHint is the second line of the DOWN alert of the active edge
+// (proxy-chain.md §6.5): the standby edges with their state, and the
+// /proxy <name> to switch to the best of them — or that none is healthy.
+// Empty for any other path: a standby's DOWN is an ordinary alert.
+func (t *Tgbot) monStandbyHint(path string) string {
+	standby, candidate, ok, err := t.monitoringService.StandbyHint(path)
+	if err != nil {
+		logger.Warning("monitoring: could not work out the standby edges:", err)
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	if len(standby) == 0 {
+		return t.I18nBot("tgbot.messages.monitoring.standbyNone")
+	}
+	parts := make([]string, 0, len(standby))
+	for _, e := range standby {
+		state := e.State
+		if state == MonHopHealthNone {
+			state = model.MonStateUnknown
+		}
+		parts = append(parts, e.Name+" "+state)
+	}
+	list := "Standby==" + strings.Join(parts, ", ")
+	if candidate == "" {
+		return t.I18nBot("tgbot.messages.monitoring.standbyNoHealthy", list)
+	}
+	return t.I18nBot("tgbot.messages.monitoring.standbySwitch", list, "Name=="+candidate)
 }
 
 // NotifyMonitoringStale announces that mon-server has gone quiet.

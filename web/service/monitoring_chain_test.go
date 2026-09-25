@@ -328,7 +328,7 @@ func TestHopsHealth(t *testing.T) {
 	}
 	hops := []model.ChainHop{
 		{Name: "core-1", Role: "inner", State: "joined"},
-		{Name: "edge-a", Role: "edge", State: "legacy"},
+		{Name: "edge-a", Role: "edge", State: "legacy", IsActive: true},
 		{Name: "edge-b", Role: "edge", State: "joined"},
 		{Name: "edge-p", Role: "edge", State: "pending"},
 		{Name: "edge-d", Role: "edge", State: "draining"},
@@ -344,6 +344,9 @@ func TestHopsHealth(t *testing.T) {
 	want := "core-1/inner/PAUSED,edge-a/edge/FLAPPING,edge-b/edge/NONE,edge-p/edge/NONE,edge-d/edge/NONE"
 	if strings.Join(got, ",") != want {
 		t.Errorf("health = %s, want %s", strings.Join(got, ","), want)
+	}
+	if !health[1].Active || health[0].Active {
+		t.Errorf("active marker: %+v", health)
 	}
 
 	resetMonStaleForTest()
