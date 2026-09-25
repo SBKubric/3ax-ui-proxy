@@ -359,7 +359,7 @@ func TestWorstLiveTargetState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got, _ := m.WorstLiveTargetState("xray", 1); got != "" {
+	if got, _ := m.WorstLiveTargetState("xray", 1, ""); got != "" {
 		t.Errorf("with an empty registry = %q, want none", got)
 	}
 	if err := m.setRegistrySnapshot([]MonClient{{Id: "ams-1"}, {Id: "msk-1"}}); err != nil {
@@ -369,14 +369,21 @@ func TestWorstLiveTargetState(t *testing.T) {
 		id   int
 		want string
 	}{{1, "FLAPPING"}, {2, "UP"}, {3, ""}} {
-		if got, err := m.WorstLiveTargetState("xray", tc.id); err != nil || got != tc.want {
+		if got, err := m.WorstLiveTargetState("xray", tc.id, ""); err != nil || got != tc.want {
 			t.Errorf("inbound %d: %q, %v; want %q", tc.id, got, err, tc.want)
 		}
+	}
+	// One path only (proxy-chain.md §6.4).
+	if got, _ := m.WorstLiveTargetState("xray", 1, "direct"); got != "PAUSED" {
+		t.Errorf("inbound 1 via direct = %q, want PAUSED", got)
+	}
+	if got, _ := m.WorstLiveTargetState("xray", 1, "edge:edge-a"); got != "" {
+		t.Errorf("inbound 1 via a path it has no target on = %q, want none", got)
 	}
 	if err := m.setRegistrySnapshot([]MonClient{{Id: "ams-1"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := m.WorstLiveTargetState("xray", 1); got != "UP" {
+	if got, _ := m.WorstLiveTargetState("xray", 1, ""); got != "UP" {
 		t.Errorf("after msk-1 left = %q, want UP", got)
 	}
 }

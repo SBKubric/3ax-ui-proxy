@@ -611,10 +611,21 @@ func recomputeRollupBucket(tx *gorm.DB, k monStatKey, stepMs int64) error {
 
 // WorstLiveTargetState folds the targets of one inbound into the state its
 // Health badge shows: the worst state among mon-clients of the current
-// registry snapshot, DOWN > FLAPPING > UNKNOWN > UP > PAUSED. Empty when the
-// inbound has no live target. The panel's own STALE is layered on top by the
-// caller (monitoring-panel.md §5).
-func (s *MonitoringService) WorstLiveTargetState(inboundKind string, inboundId int) (string, error) {
+// registry snapshot, DOWN > FLAPPING > UNKNOWN > UP > PAUSED. path narrows
+// the fold to the targets of one path (proxy-chain.md §6.4); empty means
+// every path. Empty when there is no live target. The panel's own STALE is
+// layered on top by the caller (monitoring-panel.md §5).
+func (s *MonitoringService) WorstLiveTargetState(inboundKind string, inboundId int, path string) (string, error) {
+	q := database.GetDB().Model(&model.MonTarget{}).Where("inbound_kind = ? AND inbound_id = ?", inboundKind, inboundId)
+	if path != "" {
+		q = q.Where("path = ?", path)
+	}
+	return s.worstLiveState(q)
+}
+
+// worstLiveState folds the states of the targets q selects, keeping only
+// mon-clients of the current registry snapshot.
+func (s *MonitoringService) worstLiveState(q *gorm.DB) (string, error) {
 	snapshot := s.RegistrySnapshot()
 	if len(snapshot) == 0 {
 		return "", nil
@@ -624,9 +635,7 @@ func (s *MonitoringService) WorstLiveTargetState(inboundKind string, inboundId i
 		ids = append(ids, c.Id)
 	}
 	var states []string
-	if err := database.GetDB().Model(&model.MonTarget{}).
-		Where("inbound_kind = ? AND inbound_id = ? AND mon_client_id IN ?", inboundKind, inboundId, ids).
-		Pluck("state", &states).Error; err != nil {
+	if err := q.Where("mon_client_id IN ?", ids).Pluck("state", &states).Error; err != nil {
 		return "", err
 	}
 	return worstOfStates(states), nil

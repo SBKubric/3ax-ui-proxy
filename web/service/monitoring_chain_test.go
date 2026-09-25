@@ -303,3 +303,56 @@ func TestMonClientPathsExpansion(t *testing.T) {
 		}
 	}
 }
+
+// TestHopsHealth: the badge of each hop folds all inbounds of its path over
+// live mon-clients; a pending or draining hop, or one without data, is NONE;
+// a probed hop is STALE while the panel is.
+func TestHopsHealth(t *testing.T) {
+	m := newMonitoringTestService(t)
+	resetMonStaleForTest()
+	if err := m.setRegistrySnapshot([]MonClient{{Id: "ams-1"}, {Id: "msk-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	db := database.GetDB()
+	for _, row := range []model.MonTarget{
+		{MonClientId: "ams-1", InboundKind: "xray", InboundId: 1, Path: "edge:edge-a", State: "UP"},
+		{MonClientId: "msk-1", InboundKind: "awg", InboundId: 0, Path: "edge:edge-a", State: "FLAPPING"},
+		{MonClientId: "gone-1", InboundKind: "xray", InboundId: 1, Path: "edge:edge-a", State: "DOWN"},
+		{MonClientId: "ams-1", InboundKind: "xray", InboundId: 1, Path: "inner:core-1", State: "PAUSED"},
+		{MonClientId: "ams-1", InboundKind: "xray", InboundId: 1, Path: "edge:edge-p", State: "DOWN"},
+		{MonClientId: "ams-1", InboundKind: "xray", InboundId: 1, Path: "edge:core-1", State: "DOWN"},
+	} {
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	hops := []model.ChainHop{
+		{Name: "core-1", Role: "inner", State: "joined"},
+		{Name: "edge-a", Role: "edge", State: "legacy"},
+		{Name: "edge-b", Role: "edge", State: "joined"},
+		{Name: "edge-p", Role: "edge", State: "pending"},
+		{Name: "edge-d", Role: "edge", State: "draining"},
+	}
+	health, err := m.HopsHealth(hops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, h := range health {
+		got = append(got, h.Name+"/"+h.Role+"/"+h.State)
+	}
+	want := "core-1/inner/PAUSED,edge-a/edge/FLAPPING,edge-b/edge/NONE,edge-p/edge/NONE,edge-d/edge/NONE"
+	if strings.Join(got, ",") != want {
+		t.Errorf("health = %s, want %s", strings.Join(got, ","), want)
+	}
+
+	resetMonStaleForTest()
+	t.Cleanup(resetMonStaleForTest)
+	monStale.Lock()
+	monStale.loaded, monStale.stale, monStale.since = true, true, 1
+	monStale.Unlock()
+	health, _ = m.HopsHealth(hops)
+	if health[1].State != "STALE" || health[3].State != "NONE" {
+		t.Errorf("stale panel: %+v", health)
+	}
+}

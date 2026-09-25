@@ -309,28 +309,51 @@ func TestChainUpdateChangesTheHop(t *testing.T) {
 	}
 }
 
-// TestChainHopsHealthIsAStub: #87 fills this in from monitoring; until then
-// every hop answers UNKNOWN, which is exactly what the badge shows.
-func TestChainHopsHealthIsAStub(t *testing.T) {
+// TestChainHopsHealth (proxy-chain.md §6.4): one badge per hop of the
+// registry with its role — the worst live target of the hop's path, NONE for
+// a hop that is not probed or has no data yet.
+func TestChainHopsHealth(t *testing.T) {
 	r := newChainRouter(t)
 	cookie := monUILogin(t, r)
 	chainAdd(t, r, cookie, `{"name":"edge-a","host":"a.example.net","role":"edge"}`)
 	chainAdd(t, r, cookie, `{"name":"inner-1","host":"i.example.net","role":"inner"}`)
+	chainAdd(t, r, cookie, `{"name":"edge-b","host":"b.example.net","role":"edge"}`)
+	db := database.GetDB()
+	if err := db.Model(&model.ChainHop{}).Where("name IN ?", []string{"inner-1", "edge-b"}).Update("state", "joined").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&service.MonitoringService{}).EnsureProbeSet([]service.MonClient{{Id: "ams-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []model.MonTarget{
+		{MonClientId: "ams-1", InboundKind: "xray", InboundId: 1, Path: "inner:inner-1", State: "UP"},
+		{MonClientId: "ams-1", InboundKind: "xray", InboundId: 2, Path: "inner:inner-1", State: "DOWN"},
+		{MonClientId: "gone-1", InboundKind: "xray", InboundId: 1, Path: "edge:edge-b", State: "DOWN"},
+	} {
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	env := monUIDecode(t, monUIGet(r, "/panel/api/chain/hops/health", cookie))
 	if !env.Success {
 		t.Fatalf("hops/health: %s", env.Msg)
 	}
-	var health []ChainHopHealth
+	var health []service.MonHopHealth
 	if err := json.Unmarshal(env.Obj, &health); err != nil {
 		t.Fatalf("health obj: %v (%s)", err, env.Obj)
 	}
-	if len(health) != 2 {
+	got := map[string]string{}
+	for _, h := range health {
+		got[h.Name] = h.Role + "/" + h.State
+	}
+	want := map[string]string{"inner-1": "inner/DOWN", "edge-a": "edge/NONE", "edge-b": "edge/NONE"}
+	if len(got) != len(want) {
 		t.Fatalf("health = %+v, want one entry per hop", health)
 	}
-	for _, hop := range health {
-		if hop.State != chainHealthUnknown || hop.Name == "" {
-			t.Errorf("health entry = %+v, want a named hop in state UNKNOWN", hop)
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("%s = %s, want %s", name, got[name], w)
 		}
 	}
 }

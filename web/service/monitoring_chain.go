@@ -221,3 +221,52 @@ func deleteMonitoringByHopTx(tx *gorm.DB, hop *model.ChainHop) error {
 	}
 	return nil
 }
+
+// Badge states of a hop beyond the target states: NONE for a hop nobody
+// probes or has data on yet (grey "no data", not a target's UNKNOWN), STALE
+// while the panel has not heard from mon-server (it overrides everything).
+const (
+	MonHopHealthNone  = "NONE"
+	MonHopHealthStale = "STALE"
+)
+
+// MonHopHealth is one hop's badge in the chain editor and on the Monitoring
+// page (proxy-chain.md §6.4).
+type MonHopHealth struct {
+	Name  string `json:"name"`
+	Role  string `json:"role"`
+	State string `json:"state"`
+}
+
+// WorstLiveHopState folds every target of one hop's path — all inbounds at
+// once, live mon-clients only — into one state, as WorstLiveTargetState does
+// for an inbound. Empty when the hop has no live target.
+func (s *MonitoringService) WorstLiveHopState(hopName, role string) (string, error) {
+	return s.worstLiveState(database.GetDB().Model(&model.MonTarget{}).Where("path = ?", monHopPath(role, hopName)))
+}
+
+// HopsHealth is GET /panel/api/chain/hops/health: one badge per hop of the
+// registry, in the order given. A hop that is not probed (pending, draining)
+// or has no live target yet is NONE; a probed hop is STALE while the panel
+// is; otherwise its WorstLiveHopState.
+func (s *MonitoringService) HopsHealth(hops []model.ChainHop) ([]MonHopHealth, error) {
+	stale, _ := s.IsMonStale()
+	out := make([]MonHopHealth, 0, len(hops))
+	for _, hop := range hops {
+		state := MonHopHealthNone
+		if monHopProbed(hop.State) {
+			worst, err := s.WorstLiveHopState(hop.Name, hop.Role)
+			if err != nil {
+				return nil, err
+			}
+			if worst != "" {
+				state = worst
+			}
+			if stale {
+				state = MonHopHealthStale
+			}
+		}
+		out = append(out, MonHopHealth{Name: hop.Name, Role: hop.Role, State: state})
+	}
+	return out, nil
+}
