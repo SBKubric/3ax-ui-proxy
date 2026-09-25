@@ -92,6 +92,22 @@ _Avoid_: enrollment key, pairing code, invite
 Долгоживущий секрет, который панель выдаёт звену при входе; next hop сверяет его по хэшу из документа цепочки и только по нему отдаёт волну. У каждого звена свой; изъятое edge раскрывает только свой.
 _Avoid_: chain secret, shared secret, API key, chain token
 
+**Front 443** (фронт 443):
+nginx на каждой коробке цепочки — единственный открытый TCP-порт: читает SNI и либо отдаёт поток сырым дальше, либо терминирует TLS на HTTP-стороне.
+_Avoid_: nginx mode, reverse proxy, gateway
+
+**HTTP side** (HTTP-сторона):
+Часть фронта 443, которая терминирует TLS — запросы по IP без SNI и по собственному домену панели — и раздаёт подписки, API панели, `/chain/v1` и `/mon/v1` по путям.
+_Avoid_: web front, public API, site
+
+**Neighbour target** (target-сосед):
+Чужой сайт в той же сети, что и адрес edge front; его TLS изображает Reality-inbound, и туда же уходит TLS с незнакомым SNI. Свой у каждого edge; панель ставит Reality-inbound'ам target-сосед active edge.
+_Avoid_: dest, camouflage site, SNI domain
+
+**Chain-following inbound** (inbound за цепочкой):
+Reality-inbound, у которого панель при смене active edge переписывает target и serverNames на target-сосед нового active edge.
+_Avoid_: managed inbound, auto inbound
+
 ## Monitoring
 
 **mon-server**:
