@@ -393,7 +393,7 @@ func (s *Staged) verify() error {
 				want = append(want, struct {
 					port int
 					what string
-				}{port, "the loopback port for " + s.cfg.Site.Domain})
+				}{port, "the loopback port of the HTTP side"})
 			}
 		}
 	}

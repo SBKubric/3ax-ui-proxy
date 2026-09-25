@@ -83,16 +83,23 @@ type Proxy struct {
 	TLS    bool     // the service speaks HTTPS on that port
 }
 
-// Site is the HTTPS server that terminates TLS for our own domain: the stub
-// page, and — depending on the mode — the panel and the subscriptions.
+// Site is the HTTP side: the HTTPS server that terminates TLS for our own
+// domain and for requests by address, serving the stub page and — depending
+// on the mode — the panel and the subscriptions.
 type Site struct {
-	Domain   string
+	Domain   string // may be empty when there is an IP certificate
 	CertFile string
 	KeyFile  string
-	Listen   string // where the stream block hands our domain over
-	Root     string // document root of the stub page
-	Panel    *Proxy
-	Sub      *Proxy
+	// IPCertFile and IPKeyFile are the box's Let's Encrypt IP certificate.
+	// A client that asks by address sends no SNI, so it cannot be routed to
+	// the domain; with these set it is answered by a default server of its
+	// own on the same Listen, serving the same locations.
+	IPCertFile string
+	IPKeyFile  string
+	Listen     string // where the stream block hands our domain over
+	Root       string // document root of the stub page
+	Panel      *Proxy
+	Sub        *Proxy
 }
 
 // Config is everything the generator needs. It is filled from the panel's
@@ -168,11 +175,14 @@ func (c Config) Validate() error {
 	}
 
 	if c.Site != nil {
-		if c.Site.Domain == "" {
+		if c.Site.Domain == "" && !c.Site.hasIPCert() {
 			return errors.New("the site has no domain")
 		}
-		if c.Site.CertFile == "" || c.Site.KeyFile == "" {
+		if c.Site.Domain != "" && (c.Site.CertFile == "" || c.Site.KeyFile == "") {
 			return fmt.Errorf("no certificate for %s", c.Site.Domain)
+		}
+		if c.Site.IPCertFile != "" && c.Site.IPKeyFile == "" {
+			return errors.New("no key for the IP certificate")
 		}
 		if c.Site.Listen == "" {
 			return errors.New("the site has no listen address")
@@ -184,8 +194,10 @@ func (c Config) Validate() error {
 		if owner, dup := relays[c.Site.Listen]; dup {
 			return fmt.Errorf("the site and route %q both listen on %s", owner, c.Site.Listen)
 		}
-		if err := claim(c.Site.Domain, "the site"); err != nil {
-			return err
+		if c.Site.Domain != "" {
+			if err := claim(c.Site.Domain, "the site"); err != nil {
+				return err
+			}
 		}
 		for _, p := range []*Proxy{c.Site.Panel, c.Site.Sub} {
 			if p == nil {
@@ -241,8 +253,14 @@ func (c Config) StreamConf() (string, error) {
 	// hostnames lets a route be written as ".example.com" and cover the
 	// subdomains too; without it the map would only match exactly.
 	b.WriteString("    hostnames;\n\n")
-	if c.Site != nil {
+	if c.Site != nil && c.Site.Domain != "" {
 		fmt.Fprintf(&b, "    # panel domain\n    %s %s;\n\n", c.Site.Domain, c.Site.Listen)
+	}
+	if c.Site != nil && c.Site.hasIPCert() {
+		// A client that asks by address sends no server name at all. An
+		// unknown name still falls through to the default below — Reality's
+		// real site answers a prober better than our certificate would.
+		fmt.Fprintf(&b, "    # requests by IP address, no SNI\n    \"\" %s;\n\n", c.Site.Listen)
 	}
 	for _, r := range c.Routes {
 		if len(r.SNIs) == 0 {
@@ -288,8 +306,10 @@ func (c Config) StreamConf() (string, error) {
 	return b.String(), nil
 }
 
-// HTTPConf renders the server block for our own domain. Empty when there is no
-// site to serve, which is a valid setup: 443 can be pure SNI passthrough.
+// HTTPConf renders the HTTP side: a server block for our own domain and, with
+// an IP certificate, a default server for requests by address. Empty when
+// there is no site to serve, which is a valid setup: 443 can be pure SNI
+// passthrough.
 func (c Config) HTTPConf() (string, error) {
 	if err := c.Validate(); err != nil {
 		return "", err
@@ -312,17 +332,34 @@ func (c Config) HTTPConf() (string, error) {
 		b.WriteString("}\n\n")
 	}
 
+	if s.Domain != "" {
+		writeServer(&b, s, "", s.Domain, s.CertFile, s.KeyFile)
+	}
+	if s.hasIPCert() {
+		if s.Domain != "" {
+			b.WriteString("\n")
+		}
+		// default_server: a request by address carries no name a server_name
+		// could match, and neither does one whose SNI nginx did not route.
+		writeServer(&b, s, " default_server", "_", s.IPCertFile, s.IPKeyFile)
+	}
+	return b.String(), nil
+}
+
+// writeServer emits one TLS server of the HTTP side. The domain and the
+// address differ only in name and certificate; what they serve is the same.
+func writeServer(b *strings.Builder, s *Site, listenExtra, name, cert, key string) {
 	b.WriteString("server {\n")
 	// proxy_protocol here is the other half of the stream block's
 	// proxy_protocol on — the two are set and cleared together.
-	fmt.Fprintf(&b, "    listen %s ssl proxy_protocol;\n", s.Listen)
-	fmt.Fprintf(&b, "    server_name %s;\n\n", s.Domain)
+	fmt.Fprintf(b, "    listen %s ssl proxy_protocol%s;\n", s.Listen, listenExtra)
+	fmt.Fprintf(b, "    server_name %s;\n\n", name)
 
 	b.WriteString("    set_real_ip_from 127.0.0.1;\n")
 	b.WriteString("    real_ip_header proxy_protocol;\n\n")
 
-	fmt.Fprintf(&b, "    ssl_certificate     %s;\n", s.CertFile)
-	fmt.Fprintf(&b, "    ssl_certificate_key %s;\n", s.KeyFile)
+	fmt.Fprintf(b, "    ssl_certificate     %s;\n", cert)
+	fmt.Fprintf(b, "    ssl_certificate_key %s;\n", key)
 	b.WriteString("    ssl_protocols TLSv1.2 TLSv1.3;\n")
 	b.WriteString("    ssl_session_cache shared:threeax:10m;\n")
 	b.WriteString("    ssl_session_timeout 1d;\n")
@@ -335,17 +372,19 @@ func (c Config) HTTPConf() (string, error) {
 		if p == nil {
 			continue
 		}
-		writeProxy(&b, p)
+		writeProxy(b, p)
 	}
 
-	fmt.Fprintf(&b, "    root %s;\n", s.Root)
+	fmt.Fprintf(b, "    root %s;\n", s.Root)
 	b.WriteString("    index index.html;\n\n")
 	b.WriteString("    location / {\n")
 	b.WriteString("        try_files $uri $uri/ /index.html;\n")
 	b.WriteString("    }\n")
 	b.WriteString("}\n")
-	return b.String(), nil
 }
+
+// hasIPCert reports whether the site answers requests by address.
+func (s *Site) hasIPCert() bool { return s.IPCertFile != "" }
 
 // writeProxy emits one location per path of a proxied service. The panel needs
 // the websocket upgrade for its live traffic view and a long read timeout to

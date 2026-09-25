@@ -63,6 +63,14 @@ http {
 	}
 
 	certFile, keyFile := writeSelfSignedCert(t, root, "panel.example.net")
+	// The IP certificate beside it: the empty-SNI map entry and a second
+	// server on the same loopback listen, the default one, are exactly what
+	// nginx has opinions about.
+	ipDir := filepath.Join(root, "ip")
+	if err := os.MkdirAll(ipDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	ipCertFile, ipKeyFile := writeSelfSignedCert(t, ipDir, "203.0.113.5")
 	cfg := goldenConfig()
 	cfg.Mode = ModeOnly443
 	// nginx -t refuses a privileged port when the tests are not run as root.
@@ -77,6 +85,9 @@ http {
 		Root:     filepath.Join(root, "www"),
 		Panel:    &Proxy{Name: "panel", Paths: []string{"/uS2J19TzcfZuEAPyNH/"}, Target: "127.0.0.1:33757", TLS: true},
 		Sub:      &Proxy{Name: "subscriptions", Paths: []string{"/sub-abc123/"}, Target: "127.0.0.1:2096"},
+
+		IPCertFile: ipCertFile,
+		IPKeyFile:  ipKeyFile,
 	}
 
 	staged, err := Stage(cfg)

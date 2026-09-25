@@ -9,6 +9,8 @@
 | `stream_passthrough.conf` | 443 без своего домена: только развод по SNI |
 | `stream_shared.conf`, `http_shared.conf` | режим «Общий»: плюс заглушка на своём домене |
 | `stream_only443.conf`, `http_only443.conf` | режим «Только 443»: плюс панель и подписки |
+| `stream_ip.conf`, `http_ip.conf` | HTTP-сторона только с IP-сертификатом (без своего домена): пустой SNI → HTTP-сторона, `default_server` с IP-сертификатом |
+| `stream_only443_ip.conf`, `http_only443_ip.conf` | «Только 443» с доменом и IP-сертификатом: блок домена как был, плюс `default_server` по IP с теми же locations |
 | `acme_front.conf` | порт 80 (`acmeFrontConf`): webroot для `/.well-known/acme-challenge/` и 301 на https; не зависит от режима |
 
 Эти эталоны, в отличие от `tunnel/testdata`, **не заморожены** — они фиксируют
@@ -30,5 +32,9 @@ go test ./nginx/ -run TestGeneratedConfigs -update
 - `proxy_protocol on` в stream и `proxy_protocol` в listen http-сервера
   ставятся и снимаются только вместе. Без второй половины nginx отдаст мусор
   вместо запроса; без первой Xray увидит всех клиентов как `127.0.0.1`;
+- пустой SNI (`""` в map) идёт на HTTP-сторону только при IP-сертификате;
+  незнакомый SNI по-прежнему уходит в `default`, то есть в Reality;
+- `default_server` в listen HTTP-стороны ровно один — у блока с
+  IP-сертификатом; блок домена его не получает;
 - имена серверов приводятся к нижнему регистру и сортируются, поэтому
   сохранение без изменений даёт те же байты и не дёргает reload.
