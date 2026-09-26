@@ -31,6 +31,7 @@ func (r *recordingRelay) Apply(ports []chain.Port, nextHopHost string) error {
 	r.nextHop = nextHopHost
 	return nil
 }
+func (r *recordingRelay) Stop() error        { return nil }
 func (r *recordingRelay) Running() bool      { return r.failWith == nil && r.applies > 0 }
 func (r *recordingRelay) Ports() []int       { return portNumbers(r.ports) }
 func (r *recordingRelay) RestartedAt() int64 { return 0 }
@@ -473,5 +474,32 @@ func TestApplyDrainingChangesNoRelay(t *testing.T) {
 	}
 	if status := state.Status(relay, poller.cfg); !status.Draining {
 		t.Error("the status must report draining so `x-ui chain status` can print it")
+	}
+}
+
+// TestPollReportsTheFront (#140): every poll says whether this box's front is
+// up and where its outer neighbours therefore reach it. The panel moves the
+// hop's sub port in the registry from it.
+func TestPollReportsTheFront(t *testing.T) {
+	doc := testDocument(42)
+	var seen http.Header
+	poller, _, _, _ := wavePoller(t, serveDocument(&doc, &seen))
+	poller.cfg.CertFile, poller.cfg.KeyFile = "c.pem", "k.pem"
+
+	if err := poller.PollOnce(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	report, ok := chain.ParseFrontReport(seen.Get(chain.FrontHeader))
+	if !ok || report != (chain.FrontReport{Mode: chain.FrontOff, SubPort: DefaultSubPort, SubScheme: "https"}) {
+		t.Errorf("front off: X-Chain-Front = %q", seen.Get(chain.FrontHeader))
+	}
+
+	poller.cfg.SetFrontActive(true)
+	if err := poller.PollOnce(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	report, ok = chain.ParseFrontReport(seen.Get(chain.FrontHeader))
+	if !ok || report != (chain.FrontReport{Mode: chain.FrontOnly443, SubPort: 443, SubScheme: "https"}) {
+		t.Errorf("front up: X-Chain-Front = %q", seen.Get(chain.FrontHeader))
 	}
 }

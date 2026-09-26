@@ -28,6 +28,11 @@ func FetchStatus(ctx context.Context, cfg *Config) (*chain.Status, error) {
 		return nil, fmt.Errorf("this box has not joined the chain yet — join it at the URL from `x-ui chain join-url`")
 	}
 	url := cfg.Scheme() + "://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.SubPort)) + ChainPathPrefix + "/status"
+	// Behind the front the process answers on the loopback address nginx
+	// passes to, and after the move on nothing else (#140).
+	if saved := loadFrontState(cfg.StateDir); saved.Mode == chain.FrontOnly443 && saved.SubListen != "" {
+		url = "http://" + saved.SubListen + ChainPathPrefix + "/status"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

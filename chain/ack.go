@@ -10,10 +10,16 @@ import "regexp"
 // That is how the registry learns how fresh every hop is without ever calling
 // a box: the panel hears only the first inner, and everything beyond it
 // arrives on that hop's own poll.
+//
+// Front is that neighbour's front report as it arrived in its own
+// X-Chain-Front (#140): the panel hears only the first tier directly, so a
+// hop further out gets its move to 443 into the registry this way. Absent for
+// a box that does not report one.
 type OuterAck struct {
-	Name         string `json:"name"`
-	LastRevision int64  `json:"lastRevision"`
-	LastSeen     int64  `json:"lastSeen"`
+	Name         string       `json:"name"`
+	LastRevision int64        `json:"lastRevision"`
+	LastSeen     int64        `json:"lastSeen"`
+	Front        *FrontReport `json:"front,omitempty"`
 }
 
 // SeenHeader, OuterHeader and ObservedHeader are the wave's request headers,

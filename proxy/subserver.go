@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coinman-dev/3ax-ui/v2/logger"
@@ -67,9 +68,17 @@ type SubServer struct {
 	chain *ChainHandler
 	join  *JoinPage
 
-	tmpl       *template.Template
-	client     *http.Client
-	httpServer *http.Server
+	tmpl   *template.Template
+	client *http.Client
+
+	// public is the sub port as proxy.json names it; loopback is the same
+	// handler behind the front (#140), plain HTTP on the address nginx
+	// passes the sub paths to. Both run while the outer neighbours move to
+	// 443, and public closes once they have.
+	mu           sync.Mutex
+	public       *http.Server
+	loopback     *http.Server
+	loopbackAddr string
 }
 
 // NewSubServer builds the hop's sub server (does not start it). join may be
@@ -113,19 +122,27 @@ func (s *SubServer) Handler() http.Handler {
 
 // Start binds and serves the sub port in a background goroutine.
 func (s *SubServer) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startPublicLocked()
+}
+
+// startPublicLocked binds the public sub port, TLS as proxy.json says.
+func (s *SubServer) startPublicLocked() error {
 	addr := net.JoinHostPort(s.cfg.SubListen, strconv.Itoa(s.cfg.SubPort))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("proxy sub server listen %s: %w", addr, err)
 	}
-	s.httpServer = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	s.public = server
 
 	go func() {
 		var serr error
 		if s.cfg.TLS() {
-			serr = s.httpServer.ServeTLS(ln, s.cfg.CertFile, s.cfg.KeyFile)
+			serr = server.ServeTLS(ln, s.cfg.CertFile, s.cfg.KeyFile)
 		} else {
-			serr = s.httpServer.Serve(ln)
+			serr = server.Serve(ln)
 		}
 		if serr != nil && serr != http.ErrServerClosed {
 			logger.Error("proxy sub server:", serr)
@@ -136,12 +153,94 @@ func (s *SubServer) Start() error {
 	return nil
 }
 
+// ServeLoopback serves the sub server on addr for the front's HTTP side:
+// plain HTTP, since nginx has terminated TLS, and with the client address nginx
+// saw. Serving the address already served is a no-op.
+func (s *SubServer) ServeLoopback(addr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loopback != nil && s.loopbackAddr == addr {
+		return nil
+	}
+	s.stopLoopbackLocked()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("proxy sub server listen %s behind the front: %w", addr, err)
+	}
+	server := &http.Server{Handler: trustFront(s.Handler()), ReadHeaderTimeout: 10 * time.Second}
+	s.loopback, s.loopbackAddr = server, addr
+	go func() {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			logger.Error("proxy sub server behind the front:", err)
+		}
+	}()
+	logger.Infof("proxy-front: sub server behind the front on %s", addr)
+	return nil
+}
+
+// StopLoopback takes the listener behind the front down.
+func (s *SubServer) StopLoopback() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopLoopbackLocked()
+}
+
+func (s *SubServer) stopLoopbackLocked() {
+	if s.loopback != nil {
+		_ = s.loopback.Close()
+	}
+	s.loopback, s.loopbackAddr = nil, ""
+}
+
+// ClosePublic closes the public sub port: the outer neighbours all reach this
+// box through the front now.
+func (s *SubServer) ClosePublic() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.public == nil {
+		return nil
+	}
+	err := s.public.Close()
+	s.public = nil
+	logger.Info("proxy-front: the old sub port is closed, everything comes through the front now")
+	return err
+}
+
+// OpenPublic brings the public sub port back, for a front that went away.
+func (s *SubServer) OpenPublic() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.public != nil {
+		return nil
+	}
+	return s.startPublicLocked()
+}
+
 // Stop shuts the sub server down.
 func (s *SubServer) Stop() error {
-	if s.httpServer != nil {
-		return s.httpServer.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopLoopbackLocked()
+	if s.public != nil {
+		err := s.public.Close()
+		s.public = nil
+		return err
 	}
 	return nil
+}
+
+// trustFront takes the client address from X-Real-IP, which the front's HTTP
+// side sets from the connection it accepted: behind nginx every request
+// comes from 127.0.0.1, and the address a join arrived from is evidence the
+// owner reads (§4.4). Only the loopback listener is wrapped — on the public
+// port the header is whatever the client chose to send.
+func trustFront(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
+			r.RemoteAddr = net.JoinHostPort(ip.String(), "0")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // nextHop is where subscriptions are fetched from and under which paths: the
@@ -264,10 +363,10 @@ func (s *SubServer) publicJsonPath() string {
 // by — an address deeper in the chain — so every hop must replace that header
 // with its own identity, or subscription apps would carry a link inward.
 func (s *SubServer) publicURL(c *gin.Context, path, subid string) string {
-	scheme := s.cfg.Scheme()
+	scheme := s.cfg.PublicScheme()
 	host := c.Request.Host
 	if s.cfg.Domain != "" {
-		host = PublicHostPort(scheme, s.cfg.Domain, s.cfg.SubPort)
+		host = PublicHostPort(scheme, s.cfg.Domain, s.cfg.PublicSubPort())
 	}
 	return scheme + "://" + host + path + subid
 }
