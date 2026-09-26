@@ -145,7 +145,7 @@ func TestChainProxyCommand(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			bot := chainBotFixture(t)
-			got := bot.chainProxyCommand(tc.args)
+			got, _ := bot.chainProxyCommand(tc.args)
 			if got != tc.want {
 				t.Fatalf("chainProxyCommand(%v):\n got %q\nwant %q", tc.args, got, tc.want)
 			}
@@ -166,7 +166,7 @@ func TestChainProxyCommand(t *testing.T) {
 // same way DisableProxyOverride always has.
 func TestChainProxyCommandOff(t *testing.T) {
 	bot := chainBotFixture(t)
-	got := bot.chainProxyCommand([]string{"off"})
+	got, _ := bot.chainProxyCommand([]string{"off"})
 	want := "✅ Proxy chain override disabled."
 	if got != want {
 		t.Fatalf("chainProxyCommand(off):\n got %q\nwant %q", got, want)
@@ -191,7 +191,7 @@ func TestChainProxyCommandEmptyRegistry(t *testing.T) {
 	initTestBotLocale(t, "en-US")
 	bot, _ := newTestBot(t)
 
-	got := bot.chainProxyCommand(nil)
+	got, _ := bot.chainProxyCommand(nil)
 	want := "🔗 <b>Proxy chain</b> (revision 0)\r\n\r\n" +
 		"No hops in the registry yet.\r\n\r\n" +
 		"Switch the active edge: <code>/proxy &lt;name&gt;</code>"
@@ -224,7 +224,7 @@ func TestChainProxyCommandStaleFreshness(t *testing.T) {
 	initTestBotLocale(t, "en-US")
 	bot, _ := newTestBot(t)
 
-	got := bot.chainProxyCommand(nil)
+	got, _ := bot.chainProxyCommand(nil)
 	want := "🔗 <b>Proxy chain</b> (revision 42)\r\n\r\n" +
 		"· <code>edge-a</code> · edge · joined · rev 39 · UNKNOWN\r\n\r\n" +
 		"Switch the active edge: <code>/proxy &lt;name&gt;</code>"

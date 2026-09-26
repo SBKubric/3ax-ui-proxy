@@ -733,7 +733,14 @@ func (t *Tgbot) answerCommand(message *telego.Message, chatId int64, isAdmin boo
 	case "proxy":
 		onlyMessage = true
 		if isAdmin {
-			msg += t.chainProxyCommand(commandArgs)
+			// A switch that needs confirming comes back with its button, which
+			// sendResponse has no way to carry.
+			reply, keyboard := t.chainProxyCommand(commandArgs)
+			if keyboard != nil {
+				t.SendMsgToTgbot(chatId, reply, keyboard)
+			} else {
+				msg += reply
+			}
 		} else {
 			handleUnknownCommand()
 		}
@@ -792,6 +799,12 @@ func (t *Tgbot) answerCallback(callbackQuery *telego.CallbackQuery, isAdmin bool
 		if len(dataArray) >= 2 && len(dataArray[1]) > 0 {
 			email := dataArray[1]
 			switch dataArray[0] {
+			case chainSwitchCallback:
+				// The "Switch" button of /proxy <name> (#139): the reply takes
+				// the place of the question, and the button goes with it.
+				t.sendCallbackAnswerTgBot(callbackQuery.ID, t.I18nBot("tgbot.answers.successfulOperation"))
+				t.editMessageTgBot(chatId, callbackQuery.Message.GetMessageID(), t.chainSwitchConfirmed(dataArray[1]))
+				return
 			case "get_clients_for_sub":
 				inboundId := dataArray[1]
 				inboundIdInt, err := strconv.Atoi(inboundId)

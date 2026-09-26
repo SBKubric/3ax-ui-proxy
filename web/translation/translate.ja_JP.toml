@@ -441,6 +441,8 @@
 "filterDown" = "down"
 "healthTooltip" = "Targets not UP"
 "probeBadge" = "probe"
+"followChain" = "Follow the proxy chain"
+"followChainDesc" = "On every switch of the active edge the panel sets Target and SNI to that edge's neighbour target. Clients then need to refresh their subscription."
 
 [pages.client]
 "add" = "クライアント追加"
@@ -831,6 +833,20 @@
 "chain.clearActiveTitle" = "Turn the override off?"
 "chain.clearActiveNote" = "No edge stays active until you choose one again; the panel publishes the real server's address in the meantime."
 "chain.healthNone" = "no data"
+"chain.neighbour" = "neighbour"
+"chain.neighbourNone" = "no neighbour target"
+"chain.neighbourEdit" = "Neighbour target"
+"chain.neighbourTitle" = "Neighbour target of this edge"
+"chain.neighbourDesc" = "A site in the same network as this edge's address. While the edge is active, the Reality inbounds that follow the chain imitate it. Leave the target empty to remove it."
+"chain.neighbourTarget" = "Target (host:port)"
+"chain.neighbourServerName" = "Server name (SNI)"
+"chain.neighbourServerNameDesc" = "Optional for a domain target, whose host is used. Required when the target is an IP address."
+"chain.followSwitchTitle" = "Switch the active edge? Clients must refresh their subscription"
+"chain.followSwitchNote" = "Inbounds follow the chain: clients need to refresh their subscription, the old links will stop working."
+"chain.errors.invalid_reality_target" = "A neighbour target is host:port, for example www.example.com:443."
+"chain.errors.invalid_reality_server_name" = "The server name is a domain name, and a target given as an IP address needs one."
+"chain.errors.reality_target_edge_only" = "Only an edge has a neighbour target."
+"chain.errors.no_neighbour_target" = "This edge has no neighbour target, and inbounds follow the chain. Set its target first."
 
 [pages.xray]
 "title" = "Xray 設定"
@@ -1230,6 +1246,10 @@
 "chainFresh" = "fresh"
 "chainRev" = "rev {{ .Rev }}"
 "chainEmpty" = "No hops in the registry yet."
+"chainConfirm" = "⚠️ Switch the active edge to <code>{{ .Name }}</code>?"
+"chainFollowNote" = "Clients need to refresh their subscription: the old links will stop working."
+"chainNoNeighbour" = "❗ <code>{{ .Name }}</code> has no neighbour target, and inbounds follow the chain. Set its target in the chain editor first."
+"chainOffFollowers" = "⚠️ Chain-following inbounds keep the last edge's neighbour target: their links keep working, only the host changes."
 
 [tgbot.messages]
 "cpuThreshold" = "🔴 CPU使用率は{{ .Percent }}%、しきい値{{ .Threshold }}%を超えました"
@@ -1363,6 +1383,7 @@
 "change_comment" = "⚙️💬 コメント"
 "ResetAllTraffics" = "すべてのトラフィックをリセット"
 "SortedTrafficUsageReport" = "ソートされたトラフィック使用レポート"
+"chainSwitch" = "Switch"
 
 [tgbot.answers]
 "successfulOperation" = "✅ 成功！"
