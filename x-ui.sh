@@ -264,6 +264,9 @@ cleanup_nginx() {
     fi
     changed=0
 
+    # acme.sh goes back to renewing standalone: the webroot goes with the panel.
+    acme_unmigrate_from_webroot
+
     # Port 80 goes back to the way the package left it: our server out, the
     # distro's default site back in (x-ui nginx acme-front took it out).
     if [[ -f "$acme_conf" ]]; then
@@ -1339,7 +1342,15 @@ acme_reload_cmd() {
 # running — the distro's default site included — so issuance and renewal
 # failed on exactly the boxes that run the front. Now acme.sh only writes the
 # challenge file and nginx answers the CA.
+#
+# Once acme_front_setup has failed in this run it stays failed: that function
+# may have stopped an nginx the run installed, and starting it again here
+# would put the distro's default site back in front of the standalone path.
 acme_front_ready() {
+    if [[ "${acme_front_failed:-0}" == "1" ]]; then
+        echo -e "${yellow}nginx could not take port 80 earlier in this run — not issuing through it.${plain}"
+        return 1
+    fi
     if ! command -v nginx >/dev/null 2>&1; then
         install_nginx
     fi
@@ -1353,51 +1364,82 @@ acme_front_ready() {
     fi
 }
 
-# acme_issue_webroot <cert-dir> <days> <reloadcmd> <name>... issues a Let's
-# Encrypt certificate for the names through nginx's webroot on port 80 and
-# installs it as <cert-dir>/fullchain.pem and <cert-dir>/privkey.pem.
+# acme_issue_webroot <cert-dir> <reloadcmd> <name>... issues a Let's Encrypt
+# certificate for the names through nginx's webroot on port 80 and installs it
+# as <cert-dir>/fullchain.pem and <cert-dir>/privkey.pem.
 #
 # The one issuing path of the panel and the hops, for addresses and domains
-# alike. An IP certificate exists only under the shortlived profile (~6 days);
-# <days> is when acme.sh renews, empty for its default. An empty <reloadcmd>
-# means acme_reload_cmd. Non-zero, with nothing installed, when the
-# certificate could not be had; the caller decides what that costs.
+# alike. An address gets the shortlived profile (~160 h) renewed every 3 days,
+# around its half-life, so a daily cron that misses a run still has days in
+# hand; a domain gets acme.sh's defaults. An empty <reloadcmd> means
+# acme_reload_cmd.
+#
+# Non-zero when the certificate could not be had, and then only what this
+# attempt created is removed: a failed re-issue must not take the working
+# certificate, or acme.sh's record that renews it, with it.
 acme_issue_webroot() {
-    local __dir="$1" __days="$2" __reload="$3"
-    shift 3
-    local __name __all_ip=1 __try __ok=0
-    local -a __args=()
+    local __dir="$1" __reload="$2"
+    shift 2
+    local __name __d __all_ip=1 __try __ok=0 __rc __log __dir_existed=0
+    local -a __args=() __created=()
     for __name in "$@"; do
         __args+=(-d "${__name}")
         is_ip "${__name}" || __all_ip=0
+        for __d in "${HOME}/.acme.sh/${__name}" "${HOME}/.acme.sh/${__name}_ecc"; do
+            [[ -e "${__d}" ]] || __created+=("${__d}")
+        done
     done
-    [[ ${__all_ip} -eq 1 ]] && __args+=(--certificate-profile shortlived)
-    [[ -n "${__days}" ]] && __args+=(--days "${__days}")
+    [[ ${__all_ip} -eq 1 ]] && __args+=(--certificate-profile shortlived --days 3)
     [[ -z "${__reload}" ]] && __reload="$(acme_reload_cmd)"
+    [[ -e "${__dir}" ]] && __dir_existed=1
 
     acme_front_ready || return 1
     mkdir -p "${__dir}"
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
-    # Two attempts, because acme.sh's own retry budget is not reachable from
-    # here and a single slow answer from the CA ends the run.
+    __log=$(mktemp)
     for __try in 1 2; do
         # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
-        if ~/.acme.sh/acme.sh --issue "${__args[@]}" --webroot "$(acme_webroot)" \
-            --server letsencrypt $(acme_ip_flags) --force; then
+        ~/.acme.sh/acme.sh --issue "${__args[@]}" --webroot "$(acme_webroot)" \
+            --server letsencrypt $(acme_ip_flags) --force 2>&1 | tee "${__log}"
+        __rc=${PIPESTATUS[0]}
+        if [[ ${__rc} -eq 0 ]]; then
             __ok=1
             break
         fi
-        [[ ${__try} -eq 1 ]] && echo -e "${yellow}The CA did not answer — retrying once...${plain}"
+        # The CA answered and said no: the challenge could not be fetched
+        # from port 80, or a limit was hit. Asking again would only spend
+        # another of its failed-validation allowances.
+        if grep -qE 'urn:ietf:params:acme:error|Invalid status|Verify error|Verification error|rateLimited' "${__log}"; then
+            echo -e "${red}Validation failed: the CA could not fetch the challenge through port 80, or refused the order (see above). Not retrying.${plain}"
+            break
+        fi
+        # The CA did not answer at all — a cold dual-stack connect eating
+        # curl's timeout, a CA slow to hand out a nonce. acme.sh's own retry
+        # budget is not reachable from here, hence one more attempt.
+        if [[ ${__try} -eq 1 ]] && grep -qE 'Cannot init API|Could not get nonce|libcurl-errors|curl error|: Timeout|timed out' "${__log}"; then
+            echo -e "${yellow}The CA did not answer — retrying once...${plain}"
+            continue
+        fi
+        break
     done
-    [[ ${__ok} -eq 1 ]] || return 1
+    rm -f "${__log}"
 
-    # acme.sh exits non-zero when reloadcmd fails, so check the files, not $?.
-    ~/.acme.sh/acme.sh --installcert -d "$1" \
-        --key-file "${__dir}/privkey.pem" \
-        --fullchain-file "${__dir}/fullchain.pem" \
-        --reloadcmd "${__reload}" >/dev/null 2>&1 || true
-    if [[ ! -s "${__dir}/fullchain.pem" || ! -s "${__dir}/privkey.pem" ]]; then
-        echo -e "${red}The certificate was issued but not installed into ${__dir}.${plain}"
+    if [[ ${__ok} -eq 1 ]]; then
+        # acme.sh exits non-zero when reloadcmd fails, so check the files, not $?.
+        ~/.acme.sh/acme.sh --installcert -d "$1" \
+            --key-file "${__dir}/privkey.pem" \
+            --fullchain-file "${__dir}/fullchain.pem" \
+            --reloadcmd "${__reload}" >/dev/null 2>&1 || true
+        if [[ ! -s "${__dir}/fullchain.pem" || ! -s "${__dir}/privkey.pem" ]]; then
+            echo -e "${red}The certificate was issued but not installed into ${__dir}.${plain}"
+            __ok=0
+        fi
+    fi
+    if [[ ${__ok} -ne 1 ]]; then
+        for __d in "${__created[@]}"; do
+            rm -rf "${__d}"
+        done
+        [[ ${__dir_existed} -eq 1 ]] || rm -rf "${__dir}"
         return 1
     fi
     chmod 600 "${__dir}/privkey.pem" 2>/dev/null
@@ -1405,6 +1447,39 @@ acme_issue_webroot() {
     # Keeps acme.sh current and its cron job in place: the renewals are the point.
     ~/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
     return 0
+}
+
+# acme_unmigrate_from_webroot undoes install.sh/update.sh's
+# acme_migrate_to_webroot at uninstall time. The webroot goes with the panel,
+# and a certificate still pointing acme.sh at it would fail its next renewal:
+# Le_Webroot goes back to "no" (standalone) and the nginx reload the migration
+# put in front of the reload command comes off again. Configs on any other
+# webroot, DNS or ALPN are left alone; a second run finds nothing to do.
+acme_unmigrate_from_webroot() {
+    local __home="${HOME:-/root}/.acme.sh" __dir __name __conf __cmd __b64 __prefix
+    [[ -d "${__home}" ]] || return 0
+    command -v openssl >/dev/null 2>&1 || return 0
+    __prefix="$(acme_nginx_reload_cmd)"
+    for __dir in "${__home}"/*/; do
+        __dir="${__dir%/}"
+        __name="$(basename "${__dir}")"
+        __name="${__name%_ecc}"
+        __conf="${__dir}/${__name}.conf"
+        { [[ -f "${__conf}" ]] && grep -qx "Le_Webroot='$(acme_webroot)'" "${__conf}"; } || continue
+
+        __cmd=$(sed -n "s/^Le_ReloadCmd='__ACME_BASE64__START_\(.*\)__ACME_BASE64__END_'$/\1/p" "${__conf}" | head -n 1)
+        [[ -n "${__cmd}" ]] && __cmd=$(printf '%s' "${__cmd}" | openssl base64 -d -A 2>/dev/null)
+        [[ "${__cmd}" == "${__prefix}" ]] && __cmd=""
+        __cmd="${__cmd#"${__prefix}; "}"
+
+        sed -i -e "s|^Le_Webroot=.*$|Le_Webroot='no'|" -e "/^Le_ReloadCmd=/d" "${__conf}"
+        if [[ -n "${__cmd}" ]]; then
+            __b64=$(printf '%s' "${__cmd}" | openssl base64 -e | tr -d '\r\n')
+            [[ -n "$(tail -c 1 "${__conf}")" ]] && echo >>"${__conf}"
+            echo "Le_ReloadCmd='__ACME_BASE64__START_${__b64}__ACME_BASE64__END_'" >>"${__conf}"
+        fi
+        echo -e "${yellow}acme.sh renews ${__name} standalone on port 80 again.${plain}"
+    done
 }
 
 # install_nginx: port 80 belongs to nginx (ADR 0005), so a certificate menu on
@@ -1631,16 +1706,12 @@ ssl_cert_issue_for_ip() {
         LOGI "Including IPv6 address: ${ipv6_addr}"
     fi
 
-    # nginx answers the challenge on port 80 from its webroot; --days 6 is when
-    # acme.sh renews, the value this menu has always used.
+    # nginx answers the challenge on port 80 from its webroot. After a failure
+    # acme_issue_webroot removes only what the attempt created.
     LOGI "Issuing the certificate for IP: ${server_ip} (port 80 must be reachable from the internet)"
-    if ! acme_issue_webroot "${certPath}" 6 "" "${names[@]}"; then
+    if ! acme_issue_webroot "${certPath}" "" "${names[@]}"; then
         LOGE "Failed to issue certificate for IP: ${server_ip}"
         LOGE "Make sure port 80 is open and the server is accessible from the internet"
-        # Cleanup acme.sh data for both IPv4 and IPv6 if specified
-        rm -rf ~/.acme.sh/${server_ip} 2>/dev/null
-        [[ -n "$ipv6_addr" ]] && rm -rf ~/.acme.sh/${ipv6_addr} 2>/dev/null
-        rm -rf ${certPath} 2>/dev/null
         return 1
     fi
 
@@ -1712,14 +1783,9 @@ ssl_cert_issue() {
         LOGI "Your domain is ready for issuing certificates now..."
     fi
 
-    # create a directory for the certificate
+    # The directory for the certificate. An existing one is kept: the new
+    # files replace the old ones only once they have been issued.
     certPath="/root/cert/${domain}"
-    if [ ! -d "$certPath" ]; then
-        mkdir -p "$certPath"
-    else
-        rm -rf "$certPath"
-        mkdir -p "$certPath"
-    fi
 
     # The reload command runs on every issue and renewal. The default reloads
     # nginx — it serves this certificate on 443 once the front is on — and
@@ -1737,9 +1803,8 @@ ssl_cert_issue() {
     # nginx answers the challenge on port 80 from its webroot, so the panel
     # keeps running and nothing has to give port 80 up.
     echo -e "${yellow}Port 80 must be reachable from the internet: nginx answers the CA there.${plain}"
-    if ! acme_issue_webroot "${certPath}" "" "${reloadCmd}" "${domain}"; then
+    if ! acme_issue_webroot "${certPath}" "${reloadCmd}" "${domain}"; then
         echo -e "${red}Issuing certificate failed, please check logs.${plain}"
-        rm -rf ~/.acme.sh/${domain}
         return 1
     fi
     echo -e "${green}Certificate issued and installed; acme.sh renews it from cron:${plain}"

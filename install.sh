@@ -348,7 +348,15 @@ acme_reload_cmd() {
 # running — the distro's default site included — so issuance and renewal
 # failed on exactly the boxes that run the front. Now acme.sh only writes the
 # challenge file and nginx answers the CA.
+#
+# Once acme_front_setup has failed in this run it stays failed: that function
+# may have stopped an nginx the run installed, and starting it again here
+# would put the distro's default site back in front of the standalone path.
 acme_front_ready() {
+    if [[ "${acme_front_failed:-0}" == "1" ]]; then
+        echo -e "${yellow}nginx could not take port 80 earlier in this run — not issuing through it.${plain}"
+        return 1
+    fi
     if ! command -v nginx >/dev/null 2>&1; then
         install_nginx
     fi
@@ -362,51 +370,82 @@ acme_front_ready() {
     fi
 }
 
-# acme_issue_webroot <cert-dir> <days> <reloadcmd> <name>... issues a Let's
-# Encrypt certificate for the names through nginx's webroot on port 80 and
-# installs it as <cert-dir>/fullchain.pem and <cert-dir>/privkey.pem.
+# acme_issue_webroot <cert-dir> <reloadcmd> <name>... issues a Let's Encrypt
+# certificate for the names through nginx's webroot on port 80 and installs it
+# as <cert-dir>/fullchain.pem and <cert-dir>/privkey.pem.
 #
 # The one issuing path of the panel and the hops, for addresses and domains
-# alike. An IP certificate exists only under the shortlived profile (~6 days);
-# <days> is when acme.sh renews, empty for its default. An empty <reloadcmd>
-# means acme_reload_cmd. Non-zero, with nothing installed, when the
-# certificate could not be had; the caller decides what that costs.
+# alike. An address gets the shortlived profile (~160 h) renewed every 3 days,
+# around its half-life, so a daily cron that misses a run still has days in
+# hand; a domain gets acme.sh's defaults. An empty <reloadcmd> means
+# acme_reload_cmd.
+#
+# Non-zero when the certificate could not be had, and then only what this
+# attempt created is removed: a failed re-issue must not take the working
+# certificate, or acme.sh's record that renews it, with it.
 acme_issue_webroot() {
-    local __dir="$1" __days="$2" __reload="$3"
-    shift 3
-    local __name __all_ip=1 __try __ok=0
-    local -a __args=()
+    local __dir="$1" __reload="$2"
+    shift 2
+    local __name __d __all_ip=1 __try __ok=0 __rc __log __dir_existed=0
+    local -a __args=() __created=()
     for __name in "$@"; do
         __args+=(-d "${__name}")
         is_ip "${__name}" || __all_ip=0
+        for __d in "${HOME}/.acme.sh/${__name}" "${HOME}/.acme.sh/${__name}_ecc"; do
+            [[ -e "${__d}" ]] || __created+=("${__d}")
+        done
     done
-    [[ ${__all_ip} -eq 1 ]] && __args+=(--certificate-profile shortlived)
-    [[ -n "${__days}" ]] && __args+=(--days "${__days}")
+    [[ ${__all_ip} -eq 1 ]] && __args+=(--certificate-profile shortlived --days 3)
     [[ -z "${__reload}" ]] && __reload="$(acme_reload_cmd)"
+    [[ -e "${__dir}" ]] && __dir_existed=1
 
     acme_front_ready || return 1
     mkdir -p "${__dir}"
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
-    # Two attempts, because acme.sh's own retry budget is not reachable from
-    # here and a single slow answer from the CA ends the run.
+    __log=$(mktemp)
     for __try in 1 2; do
         # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
-        if ~/.acme.sh/acme.sh --issue "${__args[@]}" --webroot "$(acme_webroot)" \
-            --server letsencrypt $(acme_ip_flags) --force; then
+        ~/.acme.sh/acme.sh --issue "${__args[@]}" --webroot "$(acme_webroot)" \
+            --server letsencrypt $(acme_ip_flags) --force 2>&1 | tee "${__log}"
+        __rc=${PIPESTATUS[0]}
+        if [[ ${__rc} -eq 0 ]]; then
             __ok=1
             break
         fi
-        [[ ${__try} -eq 1 ]] && echo -e "${yellow}The CA did not answer — retrying once...${plain}"
+        # The CA answered and said no: the challenge could not be fetched
+        # from port 80, or a limit was hit. Asking again would only spend
+        # another of its failed-validation allowances.
+        if grep -qE 'urn:ietf:params:acme:error|Invalid status|Verify error|Verification error|rateLimited' "${__log}"; then
+            echo -e "${red}Validation failed: the CA could not fetch the challenge through port 80, or refused the order (see above). Not retrying.${plain}"
+            break
+        fi
+        # The CA did not answer at all — a cold dual-stack connect eating
+        # curl's timeout, a CA slow to hand out a nonce. acme.sh's own retry
+        # budget is not reachable from here, hence one more attempt.
+        if [[ ${__try} -eq 1 ]] && grep -qE 'Cannot init API|Could not get nonce|libcurl-errors|curl error|: Timeout|timed out' "${__log}"; then
+            echo -e "${yellow}The CA did not answer — retrying once...${plain}"
+            continue
+        fi
+        break
     done
-    [[ ${__ok} -eq 1 ]] || return 1
+    rm -f "${__log}"
 
-    # acme.sh exits non-zero when reloadcmd fails, so check the files, not $?.
-    ~/.acme.sh/acme.sh --installcert -d "$1" \
-        --key-file "${__dir}/privkey.pem" \
-        --fullchain-file "${__dir}/fullchain.pem" \
-        --reloadcmd "${__reload}" >/dev/null 2>&1 || true
-    if [[ ! -s "${__dir}/fullchain.pem" || ! -s "${__dir}/privkey.pem" ]]; then
-        echo -e "${red}The certificate was issued but not installed into ${__dir}.${plain}"
+    if [[ ${__ok} -eq 1 ]]; then
+        # acme.sh exits non-zero when reloadcmd fails, so check the files, not $?.
+        ~/.acme.sh/acme.sh --installcert -d "$1" \
+            --key-file "${__dir}/privkey.pem" \
+            --fullchain-file "${__dir}/fullchain.pem" \
+            --reloadcmd "${__reload}" >/dev/null 2>&1 || true
+        if [[ ! -s "${__dir}/fullchain.pem" || ! -s "${__dir}/privkey.pem" ]]; then
+            echo -e "${red}The certificate was issued but not installed into ${__dir}.${plain}"
+            __ok=0
+        fi
+    fi
+    if [[ ${__ok} -ne 1 ]]; then
+        for __d in "${__created[@]}"; do
+            rm -rf "${__d}"
+        done
+        [[ ${__dir_existed} -eq 1 ]] || rm -rf "${__dir}"
         return 1
     fi
     chmod 600 "${__dir}/privkey.pem" 2>/dev/null
@@ -467,24 +506,82 @@ acme_migrate_to_webroot() {
 # acme_front_setup runs at install and update time, on the panel and on the
 # hops: nginx on port 80 in front of the ACME webroot, then acme.sh's
 # standalone certificates switched over to it. Never fatal — a box where nginx
-# cannot take port 80 keeps renewing the way it did, and says why.
+# cannot take port 80 keeps renewing the way it did, and says why; the rest of
+# the run knows (acme_front_failed) and does not try again.
 acme_front_setup() {
     if ! command -v nginx >/dev/null 2>&1; then
         echo -e "${yellow}nginx is not installed: certificates keep renewing the way they did.${plain}"
+        acme_front_failed=1
         return 0
     fi
     if ! "${xui_folder}/x-ui" nginx acme-front; then
         echo -e "${yellow}nginx could not take port 80 for the ACME challenge (see above); certificates keep renewing the way they did.${plain}"
+        acme_front_failed=1
         # A hop gets nginx with this release. One that came with this very run
-        # and cannot serve port 80 must not stay there with the distro's
-        # default site, in the way of the standalone renewals it was meant to
-        # replace.
+        # and cannot serve port 80 must not stay there — nor come back at the
+        # next boot — with the distro's default site, in the way of the
+        # standalone renewals it was meant to replace.
         if [[ "${nginx_installed_now:-0}" == "1" && "${XUI_PROXY_MODE:-}" == "1" ]]; then
-            systemctl disable --now nginx >/dev/null 2>&1 || rc-service nginx stop >/dev/null 2>&1 || true
+            systemctl disable --now nginx >/dev/null 2>&1 ||
+                { rc-service nginx stop >/dev/null 2>&1; rc-update del nginx default >/dev/null 2>&1; } || true
         fi
         return 0
     fi
     acme_migrate_to_webroot
+}
+
+# hop_install_nginx brings nginx to a hop, where until now acme.sh's standalone
+# listener had port 80 to itself. Two things are different from the panel's
+# install_nginx:
+#
+#   - something other than nginx on port 80 (a renewal in progress, a service
+#     of the operator's) keeps the port: nginx is not installed, and the hop
+#     stays on the standalone path it has;
+#   - the package must not start nginx. Debian's postinst would, with the
+#     distro's default site on :80, before acme-front has had its say; a
+#     policy-rc.d that answers 101 holds every service start back while the
+#     package installs, and is removed again whatever happens. acme-front is
+#     what first brings port 80 up, with the right config.
+hop_install_nginx() {
+    command -v nginx >/dev/null 2>&1 && return 0
+    if is_port_in_use 80; then
+        echo -e "${yellow}Something other than nginx holds port 80 — not installing nginx; certificates keep renewing the way they did.${plain}"
+        return 0
+    fi
+    local __policy="${XUI_POLICY_RC_D:-/usr/sbin/policy-rc.d}" __own_policy=0
+    if [[ ! -e "${__policy}" ]]; then
+        printf '#!/bin/sh\nexit 101\n' >"${__policy}" && chmod 755 "${__policy}" && __own_policy=1
+        # shellcheck disable=SC2064 # the path is fixed now, on purpose
+        trap "rm -f '${__policy}'" EXIT INT TERM
+    fi
+    echo -e "${green}Installing nginx (not started: acme-front brings port 80 up)...${plain}"
+    case "${release}" in
+    ubuntu | debian | armbian)
+        apt-get install -y -q nginx libnginx-mod-stream 2>/dev/null ||
+            apt-get install -y -q nginx 2>/dev/null || true
+        ;;
+    fedora | amzn | rhel | almalinux | rocky | ol | centos)
+        dnf install -y nginx nginx-mod-stream 2>/dev/null ||
+            dnf install -y nginx 2>/dev/null ||
+            yum install -y nginx 2>/dev/null || true
+        ;;
+    arch | manjaro | parch)
+        pacman -Syu --noconfirm nginx 2>/dev/null || true
+        ;;
+    alpine)
+        apk add nginx nginx-mod-stream 2>/dev/null || apk add nginx 2>/dev/null || true
+        ;;
+    *)
+        echo -e "${yellow}Unknown OS — install nginx by hand; until then certificates keep renewing the way they did.${plain}"
+        ;;
+    esac
+    if [[ ${__own_policy} -eq 1 ]]; then
+        rm -f "${__policy}"
+        trap - EXIT INT TERM
+    fi
+    # The package manager is a stub in the tests and prints nothing to rely
+    # on; whether it ran is what matters to acme_front_setup.
+    nginx_installed_now=1
 }
 
 # Issue Let's Encrypt IP certificate with shortlived profile (~6 days validity)
@@ -524,15 +621,12 @@ setup_ip_certificate() {
         echo -e "${green}Including IPv6 address: ${ipv6}${plain}"
     fi
 
-    # --days 6: when acme.sh renews it (the value this installer has always used).
+    # acme_issue_webroot cleans up after a failure itself, and only what the
+    # attempt created: a certificate that works stays.
     echo -e "${green}Issuing IP certificate for ${ipv4}...${plain}"
-    if ! acme_issue_webroot "${certDir}" 6 "" "${names[@]}"; then
+    if ! acme_issue_webroot "${certDir}" "" "${names[@]}"; then
         echo -e "${red}Failed to issue IP certificate${plain}"
         echo -e "${yellow}Please ensure port 80 is reachable from the internet${plain}"
-        # Cleanup acme.sh data for both IPv4 and IPv6 if specified
-        rm -rf ~/.acme.sh/${ipv4} 2>/dev/null
-        [[ -n "$ipv6" ]] && rm -rf ~/.acme.sh/${ipv6} 2>/dev/null
-        rm -rf ${certDir} 2>/dev/null
         return 1
     fi
     echo -e "${green}Certificate files installed successfully${plain}"
@@ -636,14 +730,9 @@ ssl_cert_issue() {
         echo -e "${green}Your domain is ready for issuing certificates now...${plain}"
     fi
 
-    # create a directory for the certificate
+    # The directory for the certificate. An existing one is kept: the new
+    # files replace the old ones only once they have been issued.
     certPath="/root/cert/${domain}"
-    if [ ! -d "$certPath" ]; then
-        mkdir -p "$certPath"
-    else
-        rm -rf "$certPath"
-        mkdir -p "$certPath"
-    fi
 
     # The reload command runs on every issue and renewal. The default reloads
     # nginx — it serves this certificate on 443 once the front is on — and
@@ -661,9 +750,8 @@ ssl_cert_issue() {
     # nginx answers the challenge on port 80 from its webroot, so the panel
     # keeps running and nothing has to give port 80 up.
     echo -e "${yellow}Port 80 must be reachable from the internet: nginx answers the CA there.${plain}"
-    if ! acme_issue_webroot "${certPath}" "" "${reloadCmd}" "${domain}"; then
+    if ! acme_issue_webroot "${certPath}" "${reloadCmd}" "${domain}"; then
         echo -e "${red}Issuing certificate failed, please check logs.${plain}"
-        rm -rf ~/.acme.sh/${domain}
         ISSUED_DOMAIN=""
         return 1
     fi
@@ -1754,16 +1842,14 @@ print(str(first) + '/' + str(net.prefixlen))
 # Nothing here fails the installation. A server without nginx keeps working
 # exactly as before — it simply cannot hide its protocols behind one port.
 #
-# Hops (proxy mode) get it too: port 80 belongs to nginx on every box, which
-# answers the ACME challenge there (acme_front_setup, acme_issue_webroot).
+# Port 80 belongs to nginx on every box, where it answers the ACME challenge
+# (acme_front_setup, acme_issue_webroot). Hops get nginx from hop_install_nginx
+# instead, which leaves it stopped for acme-front to bring up.
 install_nginx() {
     if command -v nginx &>/dev/null; then
         echo -e "${green}nginx already installed: $(nginx -v 2>&1 | sed 's|.*nginx/||')${plain}"
     else
         echo -e "${green}Installing nginx...${plain}"
-        # Remembered for acme_front_setup: an nginx this run brought to a hop
-        # is taken down again if it cannot serve port 80.
-        nginx_installed_now=1
         case "${release}" in
             ubuntu | debian | armbian)
                 # On Debian and its derivatives the stream module is a separate
@@ -2986,12 +3072,10 @@ proxy_setup_tls() {
     fi
 
     # The same issuing path as the panel's: nginx answers the challenge on
-    # port 80 from its webroot (ADR 0005), acme.sh only writes the file.
-    #
-    # --days 3 and not the acme.sh default of 60: a six-day certificate has to be
-    # replaced around its half-life, or the daily cron wakes up past its expiry.
+    # port 80 from its webroot (ADR 0005), acme.sh only writes the file, and
+    # renews every 3 days, around the certificate's half-life.
     echo -e "${green}Issuing a Let's Encrypt IP certificate for ${__ip} (shortlived profile, ~6 days, auto-renewed)...${plain}"
-    if ! acme_issue_webroot "${__certDir}" 3 "" "${__ip}"; then
+    if ! acme_issue_webroot "${__certDir}" "" "${__ip}"; then
         echo -e "${yellow}WARN: could not issue an IP certificate for ${__ip} — nginx could not take port 80, port 80 is unreachable from outside, the CA is unreachable or slow (no IPv6?), or the box is behind NAT.${plain}"
         echo -e "${yellow}      The box starts without TLS and the join page answers over plain HTTP. Retry the certificate alone, without reinstalling:${plain}"
         echo -e "${yellow}        x-ui nginx acme-front && ~/.acme.sh/acme.sh --issue -d ${__ip} --webroot $(acme_webroot) --server letsencrypt $(acme_ip_flags) --certificate-profile shortlived --days 3 --force${plain}"
@@ -3180,7 +3264,7 @@ check_existing_install "$@"
 prompt_proxy_mode
 if [[ "${XUI_PROXY_MODE:-}" == "1" ]]; then
     install_base
-    install_nginx
+    hop_install_nginx
     install_x-ui $1
 else
     prompt_debug_mode
