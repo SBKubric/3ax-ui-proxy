@@ -2858,6 +2858,10 @@ prompt_proxy_mode() {
     : "${PROXY_SUB_LISTEN:=}"
     : "${PROXY_RELAY_LISTEN:=::}"
     : "${PROXY_TLS:=letsencrypt-ip}"
+    # The box's front (ADR 0005, #140): nginx on 443 in front of everything,
+    # a firewall around it. Off unless asked for, as before.
+    PROXY_FRONT="${PROXY_FRONT:-off}"
+    PROXY_FRONT="${PROXY_FRONT,,}"
 
     if [[ -z "${PROXY_NEXT_HOP}" ]]; then
         echo -e "${red}Proxy mode requires PROXY_NEXT_HOP (env var or prompt): the address this hop relays to and polls the chain document from.${plain}"
@@ -2881,6 +2885,16 @@ prompt_proxy_mode() {
         exit 1
         ;;
     esac
+    case "${PROXY_FRONT}" in
+    off | only443) ;;
+    *)
+        echo -e "${red}PROXY_FRONT '${PROXY_FRONT}' is not one of off|only443. Nothing has been changed.${plain}"
+        exit 1
+        ;;
+    esac
+    if [[ "${PROXY_FRONT}" == "only443" && "${PROXY_TLS}" != "letsencrypt-ip" ]]; then
+        echo -e "${yellow}PROXY_FRONT=only443 answers requests by address with the Let's Encrypt IP certificate in /root/cert/ip; with PROXY_TLS=${PROXY_TLS} the front stays off until one is there.${plain}"
+    fi
     if [[ "${PROXY_TLS}" != "manual" && (-n "${PROXY_CERT:-}" || -n "${PROXY_KEY:-}") ]]; then
         echo -e "${yellow}PROXY_CERT/PROXY_KEY only mean something with PROXY_TLS=manual — ignoring them.${plain}"
         PROXY_CERT=""
@@ -2892,7 +2906,7 @@ prompt_proxy_mode() {
 
     export PROXY_NEXT_HOP PROXY_NEXT_HOP_SUB_PORT PROXY_NEXT_HOP_SCHEME PROXY_JOIN_TOKEN
     export PROXY_DOMAIN PROXY_SUB_PORT PROXY_SUB_LISTEN PROXY_RELAY_LISTEN PROXY_TLS
-    export PROXY_CERT PROXY_KEY
+    export PROXY_CERT PROXY_KEY PROXY_FRONT
 }
 
 # proxy_json_value_ok <name> <value> <alphabet-regex> — refuses a value that has
@@ -3092,6 +3106,22 @@ proxy_setup_tls() {
     return 0
 }
 
+# proxy_config_json prints proxy.json v2 (§5.1) from the PROXY_* values that
+# prompt_proxy_mode has already checked. update.sh never rewrites the file, so
+# the front chosen here stays until its owner edits "front" by hand.
+proxy_config_json() {
+    # printf rather than a heredoc: the values go in as arguments, never as
+    # part of the format, and no line of the function is a lone brace.
+    printf '{\n  "version": 2,\n'
+    printf '  "nextHop": {\n    "host": "%s",\n    "subPort": %s,\n    "subScheme": "%s"\n  },\n' \
+        "${PROXY_NEXT_HOP}" "${PROXY_NEXT_HOP_SUB_PORT}" "${PROXY_NEXT_HOP_SCHEME}"
+    printf '  "subListen": "%s",\n  "subPort": %s,\n  "relayListen": "%s",\n' \
+        "${PROXY_SUB_LISTEN:-}" "${PROXY_SUB_PORT}" "${PROXY_RELAY_LISTEN:-::}"
+    printf '  "domain": "%s",\n  "cert": "%s",\n  "key": "%s",\n' \
+        "${PROXY_DOMAIN:-}" "${PROXY_CERT:-}" "${PROXY_KEY:-}"
+    printf '  "stateDir": "/etc/x-ui/chain",\n  "front": {\n    "mode": "%s"\n  }\n}\n' "${PROXY_FRONT:-off}"
+}
+
 # Writes /etc/x-ui/proxy.json v2 (§5.1, 0600) and the chain state directory from
 # the PROXY_* values gathered by prompt_proxy_mode.
 #
@@ -3107,23 +3137,7 @@ config_proxy_mode() {
     # ignored, a stale setup-page URL would send its owner to a dead link.
     rm -f /etc/x-ui/relay-manifest.json /etc/x-ui/proxy-setup.url
 
-    cat >/etc/x-ui/proxy.json <<EOF
-{
-  "version": 2,
-  "nextHop": {
-    "host": "${PROXY_NEXT_HOP}",
-    "subPort": ${PROXY_NEXT_HOP_SUB_PORT},
-    "subScheme": "${PROXY_NEXT_HOP_SCHEME}"
-  },
-  "subListen": "${PROXY_SUB_LISTEN:-}",
-  "subPort": ${PROXY_SUB_PORT},
-  "relayListen": "${PROXY_RELAY_LISTEN:-::}",
-  "domain": "${PROXY_DOMAIN:-}",
-  "cert": "${PROXY_CERT:-}",
-  "key": "${PROXY_KEY:-}",
-  "stateDir": "/etc/x-ui/chain"
-}
-EOF
+    proxy_config_json >/etc/x-ui/proxy.json
     chmod 600 /etc/x-ui/proxy.json
     mkdir -p /etc/x-ui/chain
     chmod 700 /etc/x-ui/chain

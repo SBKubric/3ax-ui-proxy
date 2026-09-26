@@ -390,3 +390,62 @@ func hopNamesOf(hops []chain.Hop) []string {
 	}
 	return names
 }
+
+// TestNeighbourFrontReportTravelsInward (#140): the panel hears only the first
+// tier, so a neighbour's front report is kept with its ack and passed on in
+// X-Chain-Outer, like its revision.
+func TestNeighbourFrontReportTravelsInward(t *testing.T) {
+	state := NewState()
+	state.SetDocument(innerDocument())
+	h := testChainHandler(t, &Config{}, state)
+
+	report := chain.FrontReport{Mode: chain.FrontOnly443, SubPort: 443, SubScheme: "https"}
+	w := getWithSecret(h, "/chain/v1/document", "inner-2-secret", map[string]string{
+		"X-Chain-Seen":    "42",
+		chain.FrontHeader: report.Header(),
+	})
+	if w.Code != http.StatusOK && w.Code != http.StatusNotModified {
+		t.Fatalf("status %d", w.Code)
+	}
+	acks := DecodeOuterAcks(EncodeOuterAcks(state.OuterAcks()))
+	if len(acks) != 1 || acks[0].Name != "inner-2" || acks[0].Front == nil || *acks[0].Front != report {
+		t.Errorf("acks passed inward = %+v, want inner-2 with its front report", acks)
+	}
+}
+
+// TestTruncateDocumentSendsNeighboursToTheFront (#140): once the front is up,
+// every document this hop hands out sends the neighbour to 443 over https —
+// the move the old sub port waits for.
+func TestTruncateDocumentSendsNeighboursToTheFront(t *testing.T) {
+	cfg := &Config{Domain: "10.0.0.7", SubPort: 2096}
+	doc := innerDocument()
+	if out := TruncateDocument(doc, doc.Hops[1], cfg); out.NextHop.SubPort != 2096 || out.NextHop.SubScheme != "http" {
+		t.Errorf("front off: next hop = %+v, want the sub port", out.NextHop)
+	}
+	cfg.SetFrontActive(true)
+	if out := TruncateDocument(doc, doc.Hops[1], cfg); out.NextHop.SubPort != 443 || out.NextHop.SubScheme != "https" {
+		t.Errorf("front up: next hop = %+v, want 443 over https", out.NextHop)
+	}
+}
+
+// TestAPollTellsTheFront: the acknowledgement a neighbour brings may be the
+// one the old sub port was waiting for (#140), so the front hears of every
+// authorised poll — after the ack is recorded.
+func TestAPollTellsTheFront(t *testing.T) {
+	state := NewState()
+	state.SetDocument(innerDocument())
+	cfg := &Config{SubPort: DefaultSubPort, NextHop: NextHop{SubPort: DefaultSubPort, SubScheme: DefaultSubScheme}}
+	handler := NewChainHandler(cfg, state, &recordingRelay{})
+	var acksAtCall []OuterAck
+	calls := 0
+	handler.onPoll = func() { calls++; acksAtCall = state.OuterAcks() }
+
+	getWithSecret(handler.Handler(), "/chain/v1/document", "inner-2-secret", map[string]string{"X-Chain-Seen": "43"})
+	if calls != 1 || len(acksAtCall) != 1 || acksAtCall[0].LastRevision != 43 {
+		t.Errorf("onPoll calls = %d with acks %+v, want one call after inner-2's ack", calls, acksAtCall)
+	}
+	getWithSecret(handler.Handler(), "/chain/v1/document", "wrong-secret", nil)
+	if calls != 1 {
+		t.Error("a refused poll reached the front")
+	}
+}

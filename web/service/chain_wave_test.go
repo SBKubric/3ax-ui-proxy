@@ -228,3 +228,86 @@ func TestAuthenticateHopAdmitsADrainingFirstTierHop(t *testing.T) {
 		t.Errorf("authenticated %q, want inner-1", authenticated.Name)
 	}
 }
+
+// TestChainWaveMovesAHopBehindItsFront (#140): a box reports its front on every
+// poll. When the report says it now answers on 443 over https, the registry
+// follows and the revision moves — that bump is what carries the new address
+// out to whoever polls the box, and what tells the box its neighbours have
+// moved. The same report again moves nothing.
+func TestChainWaveMovesAHopBehindItsFront(t *testing.T) {
+	registry := newChainService(t)
+	wave := &ChainWaveService{}
+	joinedWithSecret(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
+	before := revisionOf(t, registry)
+
+	report := &chain.FrontReport{Mode: chain.FrontOnly443, SubPort: 443, SubScheme: "https"}
+	if err := wave.RecordFront("inner-1", report, nil); err != nil {
+		t.Fatalf("RecordFront: %v", err)
+	}
+	hop := hopByName(t, registry, "inner-1")
+	if hop.FrontMode != chain.FrontOnly443 || hop.SubPort != 443 || hop.SubScheme != "https" {
+		t.Errorf("hop = mode %q port %d scheme %q, want only443 on 443/https", hop.FrontMode, hop.SubPort, hop.SubScheme)
+	}
+	if got := revisionOf(t, registry); got != before+1 {
+		t.Errorf("revision = %d, want one bump from %d", got, before)
+	}
+
+	if err := wave.RecordFront("inner-1", report, nil); err != nil {
+		t.Fatalf("RecordFront again: %v", err)
+	}
+	if got := revisionOf(t, registry); got != before+1 {
+		t.Errorf("an unchanged report moved the revision to %d", got)
+	}
+
+	// The front goes away: the box reports its own sub port again.
+	if err := wave.RecordFront("inner-1", &chain.FrontReport{Mode: chain.FrontOff, SubPort: 2096, SubScheme: "https"}, nil); err != nil {
+		t.Fatalf("RecordFront off: %v", err)
+	}
+	hop = hopByName(t, registry, "inner-1")
+	if hop.FrontMode != chain.FrontOff || hop.SubPort != 2096 {
+		t.Errorf("hop after the front went = mode %q port %d", hop.FrontMode, hop.SubPort)
+	}
+	if got := revisionOf(t, registry); got != before+2 {
+		t.Errorf("revision = %d, want a second bump", got)
+	}
+}
+
+// TestChainWaveMovesAnOuterHopBehindItsFront: the panel hears only the first
+// tier, so an edge's report arrives in its inner's X-Chain-Outer. As with the
+// freshness, a hop may speak only for the hops outward of it.
+func TestChainWaveMovesAnOuterHopBehindItsFront(t *testing.T) {
+	registry := newChainService(t)
+	wave := &ChainWaveService{}
+	joinedWithSecret(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
+	joinedWithSecret(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	joinedWithSecret(t, registry, AddHopInput{Name: "edge-b", Host: "b.example.net", Role: chain.RoleEdge})
+	before := revisionOf(t, registry)
+	report := &chain.FrontReport{Mode: chain.FrontOnly443, SubPort: 443, SubScheme: "https"}
+
+	// An edge speaking for the edge beside it is ignored.
+	if err := wave.RecordFront("edge-a", nil, []chain.OuterAck{{Name: "edge-b", Front: report}}); err != nil {
+		t.Fatalf("RecordFront: %v", err)
+	}
+	if hop := hopByName(t, registry, "edge-b"); hop.SubPort == 443 {
+		t.Fatal("an edge moved the edge beside it")
+	}
+
+	if err := wave.RecordFront("inner-1", nil, []chain.OuterAck{{Name: "edge-a", Front: report}}); err != nil {
+		t.Fatalf("RecordFront: %v", err)
+	}
+	if hop := hopByName(t, registry, "edge-a"); hop.SubPort != 443 || hop.FrontMode != chain.FrontOnly443 {
+		t.Errorf("edge-a = port %d mode %q, want 443 only443", hop.SubPort, hop.FrontMode)
+	}
+	if got := revisionOf(t, registry); got != before+1 {
+		t.Errorf("revision = %d, want one bump from %d", got, before)
+	}
+
+	// A report that does not parse into anything the registry can hold is
+	// no report at all.
+	if err := wave.RecordFront("inner-1", &chain.FrontReport{Mode: "shared", SubPort: 443, SubScheme: "https"}, nil); err != nil {
+		t.Fatalf("RecordFront: %v", err)
+	}
+	if hop := hopByName(t, registry, "inner-1"); hop.FrontMode != "" || hop.SubPort != 2096 {
+		t.Errorf("an invalid report was stored: %+v", hop)
+	}
+}

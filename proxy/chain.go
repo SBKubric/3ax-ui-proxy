@@ -57,6 +57,9 @@ type RelayController interface {
 	// Apply makes the relay match these ports and this next hop, restarting
 	// it (dokodemo-door has no soft reload).
 	Apply(ports []chain.Port, nextHopHost string) error
+	// Stop takes the relay down: a box behind its front whose chain relays
+	// nothing but 443/tcp has nothing left for it to carry.
+	Stop() error
 	Running() bool
 	Ports() []int
 	RestartedAt() int64
@@ -78,6 +81,10 @@ type Poller struct {
 	// deterministic interval.
 	now    func() time.Time
 	jitter func(time.Duration) time.Duration
+
+	// front, when set, takes over the relay: the box's nginx on 443 shares
+	// that port with it, so the two are rebuilt together (#140).
+	front *Front
 
 	pollSeconds  int       // what the chain says; cfg.PollSeconds overrides
 	joinedAt     time.Time // zero unless this process performed the join
@@ -235,6 +242,11 @@ func (p *Poller) request(ctx context.Context) (*http.Request, error) {
 	if header := EncodeOuterAcks(p.state.OuterAcks()); header != "" {
 		req.Header.Set("X-Chain-Outer", header)
 	}
+	// Where this box's outer neighbours reach it: the panel moves the hop's
+	// sub port in the registry from this, and the revision bump that follows
+	// is what tells a box behind a new front that its neighbours have moved
+	// (#140).
+	req.Header.Set(chain.FrontHeader, p.cfg.FrontReport().Header())
 	return req, nil
 }
 
@@ -344,6 +356,16 @@ func (p *Poller) Apply(doc *chain.Document) error {
 		logger.Infof("proxy-front: chain revision %d: the outer neighbours' secrets changed — auth table reloaded", doc.Revision)
 	}
 
+	if p.front != nil {
+		// Every revision reaches the front, not only the ones that move
+		// the relay: a new active edge or neighbour target changes nothing
+		// dokodemo carries and everything nginx routes.
+		if err := p.front.Apply(doc, needRelay); err != nil {
+			return fmt.Errorf("apply chain revision %d: %w", doc.Revision, err)
+		}
+		logger.Infof("proxy-front: chain revision %d applied (ports +%d -%d)", doc.Revision, added, removed)
+		return nil
+	}
 	if !needRelay {
 		logger.Infof("proxy-front: chain revision %d applied (no relay change)", doc.Revision)
 		return nil

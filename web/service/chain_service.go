@@ -690,6 +690,25 @@ func (s *ChainService) ActiveEdgeHost() (string, bool) {
 	return host, host != ""
 }
 
+// ActiveEdgeFront is where the active edge's sub server answers once its front
+// is up (#140): 443 over https, as the box itself reported. ok is false while
+// the active edge has no front, or there is no active edge: a client link then
+// keeps the panel's own sub port, as it always has.
+func (s *ChainService) ActiveEdgeFront() (port int, scheme string, ok bool) {
+	db := database.GetDB()
+	if db == nil {
+		return 0, "", false
+	}
+	var hop model.ChainHop
+	if err := db.Where("is_active = ?", true).First(&hop).Error; err != nil {
+		return 0, "", false
+	}
+	if hop.FrontMode != chain.FrontOnly443 || hop.SubPort <= 0 || hop.SubScheme == "" {
+		return 0, "", false
+	}
+	return hop.SubPort, hop.SubScheme, true
+}
+
 // BumpRevision moves the registry to a new revision, inside tx when one is
 // given. Callers that change what a document contains — the port composition
 // hooks of §3.4, for instance — use it directly.

@@ -276,6 +276,47 @@ func TestPublicPortReplacesTheInboundsOwnPort(t *testing.T) {
 	}
 }
 
+// TestChainPorts_MTProtoBehindTheFrontIsNotADuplicate is the bug of #140: an
+// MTProto inbound moved behind nginx carries PublicPort 443, and so does the
+// Reality inbound beside it. Both are multiplexed on the one front port, yet
+// the MTProto source used to claim 443 a second time and the whole document
+// was refused with duplicate_port — the chain stopped hearing any revision the
+// moment the operator turned the front on.
+func TestChainPorts_MTProtoBehindTheFrontIsNotADuplicate(t *testing.T) {
+	s := newChainPortsService(t)
+	addInbounds(t,
+		model.Inbound{UserId: 1, Enable: true, Listen: "127.0.0.1", Port: 8443, Protocol: model.VLESS, Tag: "inbound-reality", Remark: "reality", PublicPort: PublicPort},
+		model.Inbound{UserId: 1, Enable: true, Listen: "127.0.0.1", Port: 4343, Protocol: model.MTProto, Tag: "inbound-mtproto", Remark: "mtproto", PublicPort: PublicPort},
+	)
+
+	ports, err := s.Ports()
+	if err != nil {
+		t.Fatalf("Ports: %v", err)
+	}
+	want := []chain.Port{{Port: PublicPort, Network: chain.NetworkTCPUDP, Tag: "inbound-reality", Source: chain.SourceXray}}
+	if len(ports) != 1 || ports[0] != want[0] {
+		t.Errorf("Ports() = %+v, want %+v: the front port once, as the xray inbound's", ports, want)
+	}
+}
+
+// TestChainPorts_MTProtoAloneBehindTheFrontIsRelayed: with nothing but the
+// MTProto inbound behind nginx, 443 is still the port clients use, so it is
+// still relayed — only as TCP, which is all MTProto speaks.
+func TestChainPorts_MTProtoAloneBehindTheFrontIsRelayed(t *testing.T) {
+	s := newChainPortsService(t)
+	addInbounds(t,
+		model.Inbound{UserId: 1, Enable: true, Listen: "127.0.0.1", Port: 4343, Protocol: model.MTProto, Tag: "inbound-mtproto", Remark: "mtproto", PublicPort: PublicPort},
+	)
+
+	ports, err := s.Ports()
+	if err != nil {
+		t.Fatalf("Ports: %v", err)
+	}
+	if len(ports) != 1 || ports[0].Port != PublicPort || ports[0].Network != chain.NetworkTCP {
+		t.Errorf("Ports() = %+v, want 443/tcp alone", ports)
+	}
+}
+
 // TestLoopbackInboundsAreNotRelayed: an inbound bound to the loopback with no
 // public port of its own is reachable by nothing outside the box.
 func TestLoopbackInboundsAreNotRelayed(t *testing.T) {

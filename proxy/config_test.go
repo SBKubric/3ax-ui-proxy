@@ -202,3 +202,64 @@ func TestPublicHostPortOmitsOnlyTheSchemeDefault(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadConfigFrontMode: the box's front (#140) is off unless proxy.json
+// asks for it, and its firewall comes with it unless switched off by name.
+func TestLoadConfigFrontMode(t *testing.T) {
+	cases := []struct {
+		name         string
+		front        string
+		wantOn       bool
+		wantFirewall bool
+		wantWarning  bool
+	}{
+		{name: "absent", front: "", wantOn: false},
+		{name: "off", front: `"front":{"mode":"off"},`, wantOn: false},
+		{name: "only443", front: `"front":{"mode":"only443"},`, wantOn: true, wantFirewall: true},
+		{name: "only443, spelled loosely", front: `"front":{"mode":" ONLY443 "},`, wantOn: true, wantFirewall: true},
+		{name: "only443 without the firewall", front: `"front":{"mode":"only443","firewall":false},`, wantOn: true, wantFirewall: false},
+		// A box that cannot parse its config has no service at all, so a mode
+		// it does not know is a warning and the front stays off.
+		{name: "shared is the panel's", front: `"front":{"mode":"shared"},`, wantOn: false, wantWarning: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeProxyCfg(t, `{"version":2,`+tc.front+`"nextHop":{"host":"10.0.0.7"},"hopSecret":"s"}`)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.Front.On() != tc.wantOn {
+				t.Errorf("Front.On() = %t, want %t", cfg.Front.On(), tc.wantOn)
+			}
+			if tc.wantOn && cfg.Front.FirewallOn() != tc.wantFirewall {
+				t.Errorf("Front.FirewallOn() = %t, want %t", cfg.Front.FirewallOn(), tc.wantFirewall)
+			}
+			warned := strings.Contains(strings.Join(cfg.LegacyWarnings(), "\n"), "front")
+			if warned != tc.wantWarning {
+				t.Errorf("warnings = %v, want a front warning: %t", cfg.LegacyWarnings(), tc.wantWarning)
+			}
+		})
+	}
+}
+
+// TestSaveKeepsTheFrontMode: the box rewrites proxy.json when it joins; the
+// front its owner chose at install must survive that.
+func TestSaveKeepsTheFrontMode(t *testing.T) {
+	path := writeProxyCfg(t, `{"version":2,"front":{"mode":"only443","firewall":false},"nextHop":{"host":"10.0.0.7"}}`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.HopSecret = "joined"
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Front.On() || again.Front.FirewallOn() {
+		t.Errorf("front after a save = %+v", again.Front)
+	}
+}

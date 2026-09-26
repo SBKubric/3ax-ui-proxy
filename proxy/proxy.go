@@ -17,8 +17,11 @@ import (
 // step with the chain document. It blocks until a termination signal.
 //
 // There is no mode switch after startup: the sub port comes up once and stays
-// up, and joining only fills in what the hop did not know yet.
-func Run(cfg *Config) error {
+// up — until the front, if proxy.json asks for one, moves it behind nginx on
+// 443 (#140) — and joining only fills in what the hop did not know yet.
+//
+// stub is the built-in decoy page the front serves when proxy.json names none.
+func Run(cfg *Config, stub string) error {
 	for _, warning := range cfg.LegacyWarnings() {
 		logger.Warning(warning)
 	}
@@ -51,7 +54,8 @@ func Run(cfg *Config) error {
 		}
 	}
 
-	sub, err := NewSubServer(cfg, state, NewChainHandler(cfg, state, relay), join)
+	chainHandler := NewChainHandler(cfg, state, relay)
+	sub, err := NewSubServer(cfg, state, chainHandler, join)
 	if err != nil {
 		return err
 	}
@@ -59,6 +63,12 @@ func Run(cfg *Config) error {
 		return fmt.Errorf("start sub server: %w", err)
 	}
 	defer sub.Stop()
+
+	// The front owns the relay's port list from here on, off or not: with
+	// it off it is the relay exactly as before.
+	front := NewFront(cfg, state, relay, sub, systemFront{}, stub)
+	poller.front = front
+	chainHandler.onPoll = front.NoteAcks
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -73,9 +83,9 @@ func Run(cfg *Config) error {
 	}
 
 	if doc := state.Document(); doc != nil {
-		if err := relay.Apply(doc.Ports, doc.NextHop.Host); err != nil {
-			// A relay that cannot start is not a reason to stop the wave:
-			// the next revision may be the one that fixes it.
+		if err := front.Apply(doc, true); err != nil {
+			// A relay or a front that cannot start is not a reason to stop
+			// the wave: the next revision may be the one that fixes it.
 			logger.Error("proxy-front: starting the relay failed:", err)
 		}
 	}

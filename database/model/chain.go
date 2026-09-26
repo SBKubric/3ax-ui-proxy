@@ -42,8 +42,13 @@ type ChainHop struct {
 	SubPort   int    `json:"subPort" gorm:"not null;default:2096"`       // port of the wave and of this hop's subscriptions
 	SubScheme string `json:"subScheme" gorm:"size:8;not null;default:https"`
 
-	State    string `json:"state" gorm:"size:8;not null;index:idx_chain_hops_role,priority:2"` // pending|joined|legacy|draining
-	IsActive bool   `json:"isActive" gorm:"not null;default:false"`
+	State string `json:"state" gorm:"size:8;not null;index:idx_chain_hops_role,priority:2"` // pending|joined|legacy|draining
+	// FrontMode is what the box last said about its front (#140): off,
+	// only443, or empty for a box that has never reported one. The box is
+	// the only one who knows whether its nginx came up, so the registry
+	// takes SubPort and SubScheme from the same report.
+	FrontMode string `json:"frontMode" gorm:"size:8"`
+	IsActive  bool   `json:"isActive" gorm:"not null;default:false"`
 
 	// The neighbour target of an edge (ADR 0005): a site in the same network
 	// as the edge's address, whose TLS the chain-following Reality inbounds

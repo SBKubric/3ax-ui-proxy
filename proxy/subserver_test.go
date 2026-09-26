@@ -259,3 +259,25 @@ func TestTheUpdateIntervalReachesClientsThroughTheFront(t *testing.T) {
 		}
 	}
 }
+
+// TestPublicURLBehindTheFront (#140): behind the front the sub server sits on
+// the loopback and clients reach it on 443 over https, whatever sub port and
+// TLS proxy.json names — a link built from those would point at a closed port.
+func TestPublicURLBehindTheFront(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &Config{NextHop: NextHop{Host: "1.2.3.4"}, SubPort: DefaultSubPort, Domain: "proxy.example.com"}
+	cfg.SetFrontActive(true)
+	s := testSubServer(t, cfg, NewState())
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/sub/abc", nil)
+	c.Request.Host = "5.6.7.8"
+	if got := s.publicURL(c, s.publicSubPath(), "abc"); got != "https://proxy.example.com/sub/abc" {
+		t.Errorf("publicURL with a domain = %q", got)
+	}
+	cfg.Domain = ""
+	if got := s.publicURL(c, s.publicSubPath(), "abc"); got != "https://5.6.7.8/sub/abc" {
+		t.Errorf("publicURL by address = %q", got)
+	}
+}

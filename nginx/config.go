@@ -64,6 +64,16 @@ type Route struct {
 	// except through nginx, so it keeps the header and with it the real
 	// client address.
 	Relay string
+
+	// Raw marks an upstream off this machine: the next box of the proxy chain
+	// or an edge's neighbour target (ADR 0005). Both read the SNI from the
+	// first bytes they receive — another box's front with ssl_preread, a
+	// site on the internet with its TLS stack — and neither knows the PROXY
+	// header, so the stream has to leave exactly as the client sent it. The
+	// header comes off on Relay, which a raw route therefore must have; the
+	// cost is that the next box sees this one as the client, as it always did
+	// behind the dokodemo relay.
+	Raw bool
 }
 
 // target is where the map sends this route: through the relay when there is
@@ -100,6 +110,23 @@ type Site struct {
 	Root       string // document root of the stub page
 	Panel      *Proxy
 	Sub        *Proxy
+	// Mon is the monitoring contract (<base>mon/v1/) on its own. It lives on
+	// the panel's port like the panel, but mon-server has to reach it on a
+	// box whose panel port only443 has closed, whether or not the panel
+	// itself is published here (ADR 0005).
+	Mon *Proxy
+}
+
+// proxies is every HTTP service the site publishes, in the order they are
+// written out.
+func (s *Site) proxies() []*Proxy {
+	var out []*Proxy
+	for _, p := range []*Proxy{s.Panel, s.Sub, s.Mon} {
+		if p != nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Config is everything the generator needs. It is filled from the panel's
@@ -148,6 +175,9 @@ func (c Config) Validate() error {
 	for _, r := range c.Routes {
 		if r.Upstream == "" {
 			return fmt.Errorf("route %q has no upstream", r.Name)
+		}
+		if r.Raw && r.Relay == "" {
+			return fmt.Errorf("raw route %q has no relay address to take the PROXY header off on", r.Name)
 		}
 		if r.Relay != "" {
 			if r.Relay == r.Upstream {
@@ -199,10 +229,7 @@ func (c Config) Validate() error {
 				return err
 			}
 		}
-		for _, p := range []*Proxy{c.Site.Panel, c.Site.Sub} {
-			if p == nil {
-				continue
-			}
+		for _, p := range c.Site.proxies() {
 			if p.Target == "" {
 				return fmt.Errorf("%s has no target", p.Name)
 			}
@@ -295,7 +322,11 @@ func (c Config) StreamConf() (string, error) {
 		if r.Relay == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "\n# %s — keeps its own port, so the PROXY header is taken off here\n", r.Name)
+		if r.Raw {
+			fmt.Fprintf(&b, "\n# %s — raw stream: the PROXY header is taken off before it leaves the box\n", r.Name)
+		} else {
+			fmt.Fprintf(&b, "\n# %s — keeps its own port, so the PROXY header is taken off here\n", r.Name)
+		}
 		b.WriteString("server {\n")
 		fmt.Fprintf(&b, "    listen %s proxy_protocol;\n", r.Relay)
 		fmt.Fprintf(&b, "    proxy_pass %s;\n", r.Upstream)
@@ -323,7 +354,7 @@ func (c Config) HTTPConf() (string, error) {
 	b.WriteString(header)
 	b.WriteString("\n")
 
-	if s.Panel != nil || s.Sub != nil {
+	if len(s.proxies()) > 0 {
 		// Own name so that a map by the usual name in another conf.d file
 		// does not collide with ours.
 		b.WriteString("map $http_upgrade $threeax_connection_upgrade {\n")
@@ -368,10 +399,7 @@ func writeServer(b *strings.Builder, s *Site, listenExtra, name, cert, key strin
 	b.WriteString("    access_log off;\n")
 	b.WriteString("    server_tokens off;\n\n")
 
-	for _, p := range []*Proxy{s.Panel, s.Sub} {
-		if p == nil {
-			continue
-		}
+	for _, p := range s.proxies() {
 		writeProxy(b, p)
 	}
 

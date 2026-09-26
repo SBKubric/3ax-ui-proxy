@@ -22,45 +22,7 @@ import (
 // output is valid — a directive in the wrong block, a variable that does not
 // exist at that level, a module that is not loaded.
 func TestNginxAcceptsGeneratedConfig(t *testing.T) {
-	if _, err := exec.LookPath("nginx"); err != nil {
-		t.Skip("nginx is not installed on this machine")
-	}
-
-	root := t.TempDir()
-	ConfRoot = root
-	t.Cleanup(func() { ConfRoot = "/etc/nginx" })
-
-	for _, dir := range []string{"conf.d", "stream-enabled", "modules-enabled", "logs", "www"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Carry over the distro's load_module lines. On Debian and Ubuntu the
-	// stream module is dynamic and lives in its own package, so without these
-	// the temporary tree would reject "stream" as an unknown directive even
-	// though the machine can do it.
-	copyModuleConfigs(t, root)
-
-	// A stand-in for the distro's nginx.conf: includes conf.d from inside
-	// http {} and, crucially, has no stream block of its own — exactly the
-	// arrangement withStreamInclude has to patch.
-	mainConf := fmt.Sprintf(`include %s/modules-enabled/*.conf;
-worker_processes 1;
-error_log %s/logs/error.log;
-pid %s/logs/nginx.pid;
-events { worker_connections 64; }
-http {
-    access_log off;
-    include %s/conf.d/*.conf;
-}
-`, root, root, root, root)
-	if err := os.WriteFile(MainConfPath(), []byte(mainConf), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if !HasStream() {
-		t.Skip("this nginx has no stream module (on Debian/Ubuntu: apt install libnginx-mod-stream)")
-	}
+	root := tempNginxTree(t)
 
 	certFile, keyFile := writeSelfSignedCert(t, root, "panel.example.net")
 	// The IP certificate beside it: the empty-SNI map entry and a second
@@ -110,6 +72,73 @@ http {
 	if hasForeignStreamBlock(string(patched)) {
 		t.Error("the include block we added is not recognised as ours; a second apply would duplicate it")
 	}
+}
+
+// tempNginxTree points the package at a temporary nginx tree with the
+// machine's own modules, or skips the test where nginx cannot say anything.
+func tempNginxTree(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("nginx"); err != nil {
+		t.Skip("nginx is not installed on this machine")
+	}
+
+	root := t.TempDir()
+	ConfRoot = root
+	t.Cleanup(func() { ConfRoot = "/etc/nginx" })
+
+	for _, dir := range []string{"conf.d", "stream-enabled", "modules-enabled", "logs", "www"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Carry over the distro's load_module lines. On Debian and Ubuntu the
+	// stream module is dynamic and lives in its own package, so without these
+	// the temporary tree would reject "stream" as an unknown directive even
+	// though the machine can do it.
+	copyModuleConfigs(t, root)
+
+	// A stand-in for the distro's nginx.conf: includes conf.d from inside
+	// http {} and, crucially, has no stream block of its own — exactly the
+	// arrangement withStreamInclude has to patch.
+	mainConf := fmt.Sprintf(`include %s/modules-enabled/*.conf;
+worker_processes 1;
+error_log %s/logs/error.log;
+pid %s/logs/nginx.pid;
+events { worker_connections 64; }
+http {
+    access_log off;
+    include %s/conf.d/*.conf;
+}
+`, root, root, root, root)
+	if err := os.WriteFile(MainConfPath(), []byte(mainConf), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !HasStream() {
+		t.Skip("this nginx has no stream module (on Debian/Ubuntu: apt install libnginx-mod-stream)")
+	}
+	return root
+}
+
+// TestNginxAcceptsTheFrontOfAHop hands a box's front (#140) to nginx: raw
+// relays to another machine next to the loopback HTTP side that keeps the
+// PROXY header, and an HTTP side that exists only by address.
+func TestNginxAcceptsTheFrontOfAHop(t *testing.T) {
+	root := tempNginxTree(t)
+	ipCertFile, ipKeyFile := writeSelfSignedCert(t, root, "198.51.100.20")
+	cfg := goldenHopConfig()
+	cfg.Port = 14443
+	// nginx resolves a static upstream while it loads the config, and a
+	// test must not depend on DNS.
+	cfg.Routes[1].Upstream = "192.0.2.10:443"
+	cfg.Site.IPCertFile, cfg.Site.IPKeyFile = ipCertFile, ipKeyFile
+	cfg.Site.Root = filepath.Join(root, "www")
+
+	staged, err := Stage(cfg)
+	if err != nil {
+		t.Fatalf("nginx refused the front of a hop: %v", err)
+	}
+	t.Cleanup(func() { staged.tx.rollback() })
 }
 
 // TestNginxAcceptsACMEFront hands the port-80 server to nginx, together with

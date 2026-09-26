@@ -821,7 +821,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("proxy: %v", err)
 		}
-		if err := proxy.Run(cfg); err != nil {
+		// The box's front serves the panel's own built-in cover page as its
+		// decoy unless proxy.json names another (#140).
+		stub := ""
+		if tpl, ok := (&service.StubService{}).DefaultTemplate(); ok {
+			stub = tpl.Html
+		}
+		if err := proxy.Run(cfg, stub); err != nil {
 			log.Fatalf("proxy: %v", err)
 		}
 	default:

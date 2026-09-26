@@ -15,6 +15,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+
+	"github.com/coinman-dev/3ax-ui/v2/chain"
 )
 
 // ConfigVersion is the proxy.json format this build speaks (§5.1). It is the
@@ -75,9 +78,80 @@ type Config struct {
 	// hop calls itself stale. It never stops relaying (§3.6).
 	StaleMinutes int `json:"staleMinutes"`
 
+	// Front is nginx on 443 in front of the box (ADR 0005, #140): off unless
+	// the owner asked for it at install.
+	Front FrontConfig `json:"front"`
+
 	path           string   // where this config was loaded from
 	legacyWarnings []string // one line per v1 key found (§5.3)
 	legacyNextHop  string   // v1 upstreamHost, kept only as a join-page prefill
+
+	// frontActive is whether the front is actually up right now — not what
+	// the file asks for, which a box without a certificate cannot deliver. It
+	// decides where outer neighbours and clients are sent (PublicSubPort), so
+	// it is read by every request handler and written by the front's
+	// reconcile, hence atomic.
+	frontActive int32
+}
+
+// FrontConfig is the "front" object of proxy.json.
+type FrontConfig struct {
+	// Mode is off or only443. The panel's shared mode has no meaning on a
+	// box: nothing here needs a second way in.
+	Mode string `json:"mode"`
+	// Firewall closes every port but 443, 80, SSH and the relayed UDP ports
+	// while the front is on. Absent means on; false is the owner's way out,
+	// for a box behind a firewall of its own.
+	Firewall *bool `json:"firewall,omitempty"`
+	// Stub is an HTML file served as the decoy page instead of the built-in
+	// one.
+	Stub string `json:"stub,omitempty"`
+}
+
+// On reports whether proxy.json asks for the front.
+func (f FrontConfig) On() bool { return f.Mode == chain.FrontOnly443 }
+
+// FirewallOn reports whether the front brings its firewall along.
+func (f FrontConfig) FirewallOn() bool { return f.Firewall == nil || *f.Firewall }
+
+// SetFrontActive records whether the front is up. Only the front's reconcile
+// calls it.
+func (c *Config) SetFrontActive(active bool) {
+	var value int32
+	if active {
+		value = 1
+	}
+	atomic.StoreInt32(&c.frontActive, value)
+}
+
+// FrontActive reports whether nginx is in front of this box right now.
+func (c *Config) FrontActive() bool { return atomic.LoadInt32(&c.frontActive) == 1 }
+
+// PublicSubPort is where outer neighbours and clients reach this box's sub
+// server: 443 while the front is up, the sub port otherwise.
+func (c *Config) PublicSubPort() int {
+	if c.FrontActive() {
+		return frontPort
+	}
+	return c.SubPort
+}
+
+// PublicScheme is how they reach it: the front always terminates TLS.
+func (c *Config) PublicScheme() string {
+	if c.FrontActive() {
+		return "https"
+	}
+	return c.Scheme()
+}
+
+// FrontReport is what this box tells its next hop about its front on every
+// poll (chain.FrontHeader).
+func (c *Config) FrontReport() chain.FrontReport {
+	mode := chain.FrontOff
+	if c.FrontActive() {
+		mode = chain.FrontOnly443
+	}
+	return chain.FrontReport{Mode: mode, SubPort: c.PublicSubPort(), SubScheme: c.PublicScheme()}
 }
 
 // legacyKeys are the v1 keys and what replaced them. A v1 proxy.json reaches a
@@ -226,6 +300,18 @@ func (c *Config) applyDefaults() {
 	if c.StaleMinutes <= 0 {
 		c.StaleMinutes = DefaultStaleMinutes
 	}
+	c.Front.Mode = strings.ToLower(strings.TrimSpace(c.Front.Mode))
+	switch c.Front.Mode {
+	case "", chain.FrontOff:
+		c.Front.Mode = chain.FrontOff
+	case chain.FrontOnly443:
+	default:
+		c.legacyWarnings = append(c.legacyWarnings, fmt.Sprintf(
+			"proxy config %s: front mode %q is unknown, the front stays off — use %q or %q",
+			c.path, c.Front.Mode, chain.FrontOff, chain.FrontOnly443))
+		c.Front.Mode = chain.FrontOff
+	}
+	c.Front.Stub = strings.TrimSpace(c.Front.Stub)
 }
 
 // Save writes the config back — how a box records the hopSecret and the

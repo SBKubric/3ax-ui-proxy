@@ -218,3 +218,27 @@ func TestFetchAndPrintStatus(t *testing.T) {
 		t.Error("a bootstrap box reported a status")
 	}
 }
+
+// TestFetchStatusBehindTheFront (#140): once the old sub port has closed, the
+// running process answers only behind nginx, on the loopback address its
+// front.json records — plain HTTP, since nginx terminates TLS.
+func TestFetchStatusBehindTheFront(t *testing.T) {
+	state := NewState()
+	state.SetDocument(innerDocument())
+	cfg := &Config{HopSecret: "inner-1-secret", Domain: "10.0.0.7", StateDir: t.TempDir(), CertFile: "c.pem", KeyFile: "k.pem"}
+	server := httptest.NewServer(testChainHandler(t, cfg, state))
+	defer server.Close()
+	cfg.SubPort = 1 // the old port: nothing answers there any more
+
+	saved, _ := json.Marshal(frontState{Mode: chain.FrontOnly443, OldPortClosed: true, SubListen: strings.TrimPrefix(server.URL, "http://")})
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, frontStateFile), saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := FetchStatus(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	if status.Name != "inner-1" {
+		t.Errorf("status = %+v", status)
+	}
+}

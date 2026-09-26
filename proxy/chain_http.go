@@ -35,6 +35,11 @@ type ChainHandler struct {
 
 	client *http.Client
 	now    func() time.Time
+
+	// onPoll runs after an outer neighbour's poll has been recorded: the
+	// front closes the old sub port once the last neighbour has moved to
+	// 443 (#140). Nil for a box without one.
+	onPoll func()
 }
 
 // NewChainHandler builds the hop's /chain/v1 endpoints.
@@ -112,6 +117,9 @@ func (h *ChainHandler) handleDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.recordAcks(hop, r)
+	if h.onPoll != nil {
+		h.onPoll()
+	}
 
 	if r.Header.Get("If-None-Match") == etag(doc.Revision) {
 		w.Header().Set("ETag", etag(doc.Revision))
@@ -137,7 +145,11 @@ func (h *ChainHandler) handleDocument(w http.ResponseWriter, r *http.Request) {
 // the registry learns the whole chain's freshness without calling outward.
 func (h *ChainHandler) recordAcks(hop chain.Hop, r *http.Request) {
 	seen, _ := strconv.ParseInt(r.Header.Get("X-Chain-Seen"), 10, 64)
-	h.state.RecordOuter(OuterAck{Name: hop.Name, LastRevision: seen, LastSeen: h.now().UnixMilli()})
+	ack := OuterAck{Name: hop.Name, LastRevision: seen, LastSeen: h.now().UnixMilli()}
+	if report, ok := chain.ParseFrontReport(r.Header.Get(chain.FrontHeader)); ok {
+		ack.Front = &report
+	}
+	h.state.RecordOuter(ack)
 	h.state.RecordOuter(DecodeOuterAcks(r.Header.Get("X-Chain-Outer"))...)
 }
 
@@ -161,8 +173,8 @@ func TruncateDocument(doc *chain.Document, hop chain.Hop, cfg *Config) chain.Doc
 		Self:        chain.Self{Name: hop.Name, Role: hop.Role, Host: hop.Host, State: hop.State},
 		NextHop: chain.NextHop{
 			Host:      selfHost(doc, cfg),
-			SubPort:   cfg.SubPort,
-			SubScheme: cfg.Scheme(),
+			SubPort:   cfg.PublicSubPort(),
+			SubScheme: cfg.PublicScheme(),
 			SubPath:   doc.NextHop.SubPath,
 			JsonPath:  doc.NextHop.JsonPath,
 			TunPath:   doc.NextHop.TunPath,

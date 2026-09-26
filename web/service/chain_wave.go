@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/subtle"
+	"fmt"
 	"strings"
 	"time"
 
@@ -17,9 +18,9 @@ import (
 // §3.3): it says who is allowed to poll the panel, and it writes down how
 // fresh every hop is from what the poll carries.
 //
-// It never moves the revision. Freshness is the one thing that changes
-// constantly, and a chain whose revision moved on every poll would spend its
-// life chasing its own tail (§3.4).
+// Freshness never moves the revision: it changes constantly, and a chain whose
+// revision moved on every poll would spend its life chasing its own tail
+// (§3.4). A front report does, and only when it changes something (#140).
 type ChainWaveService struct {
 	settingService SettingService
 }
@@ -178,4 +179,85 @@ func recordSeenTx(tx *gorm.DB, name string, revision, seenAt int64) error {
 		return nil
 	}
 	return tx.Model(&model.ChainHop{}).Where("name = ?", name).Updates(updates).Error
+}
+
+// RecordFront writes down what the polling hop, and the hops outward of it
+// through their acknowledgements, said about their fronts (#140).
+//
+// A report that changes where a hop's sub server answers moves the hop's
+// sub port and scheme in the registry and bumps the revision in the same
+// transaction: the new revision is what makes the hop's outer neighbours fetch
+// the document that sends them to 443, and what the box itself waits for
+// before it closes the port they used to poll (proxy.OldSubPortNeeded). A
+// report that changes nothing writes nothing.
+//
+// As with freshness, a hop speaks only for itself and the hops outward of it,
+// and a report the registry could not hold is ignored.
+func (s *ChainWaveService) RecordFront(hopName string, own *chain.FrontReport, outer []chain.OuterAck) error {
+	db := database.GetDB()
+	if db == nil {
+		return nil
+	}
+	reports := map[string]chain.FrontReport{}
+	if own != nil && own.Valid() {
+		reports[hopName] = *own
+	}
+	if len(outer) > 0 {
+		outward, err := outwardOf(db, hopName)
+		if err != nil {
+			return err
+		}
+		for _, ack := range outer {
+			name := strings.TrimSpace(ack.Name)
+			if _, allowed := outward[name]; !allowed || ack.Front == nil || !ack.Front.Valid() {
+				continue
+			}
+			reports[name] = *ack.Front
+		}
+	}
+	if len(reports) == 0 {
+		return nil
+	}
+
+	var moved []string
+	err := db.Transaction(func(tx *gorm.DB) error {
+		changed := false
+		for name, report := range reports {
+			var hop model.ChainHop
+			if err := tx.Where("name = ?", name).First(&hop).Error; err != nil {
+				if database.IsNotFound(err) {
+					continue
+				}
+				return err
+			}
+			if hop.FrontMode == report.Mode && hop.SubPort == report.SubPort && hop.SubScheme == report.SubScheme {
+				continue
+			}
+			if err := tx.Model(&model.ChainHop{}).Where("id = ?", hop.Id).Updates(map[string]any{
+				"front_mode": report.Mode,
+				"sub_port":   report.SubPort,
+				"sub_scheme": report.SubScheme,
+			}).Error; err != nil {
+				return err
+			}
+			// Only the address matters to the documents; a box that merely
+			// starts reporting what the registry already holds needs no
+			// new revision.
+			if hop.SubPort != report.SubPort || hop.SubScheme != report.SubScheme {
+				changed = true
+			}
+			moved = append(moved, fmt.Sprintf("%s front %s on %s:%d", name, report.Mode, report.SubScheme, report.SubPort))
+		}
+		if changed {
+			return bumpRevisionTx(tx)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, line := range moved {
+		logger.Info("chain:", line)
+	}
+	return nil
 }

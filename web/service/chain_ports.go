@@ -122,9 +122,20 @@ func (s *ChainPortsService) compose() ([]chain.Port, error) {
 	if err != nil {
 		return nil, err
 	}
-	mtproto, err := s.mtprotoPorts()
+	mtproto, behindFront, err := s.mtprotoPorts()
 	if err != nil {
 		return nil, err
+	}
+	// An MTProto inbound behind the nginx front shares the front's port with
+	// whatever else is multiplexed there: nginx tells them apart by SNI, and
+	// the fronts relay that port once. It is not a second claim on it (#140).
+	for _, port := range behindFront {
+		if _, taken := claimed[port.Port]; taken {
+			continue
+		}
+		if err := add(port); err != nil {
+			return nil, err
+		}
 	}
 	rest := append(tunnels, mtproto...)
 	for _, port := range extra {
@@ -244,29 +255,37 @@ func (s *ChainPortsService) tunnelPorts() ([]chain.Port, error) {
 // mtprotoPorts lists the MTProto inbounds. They are deliberately kept out of
 // the xray config (web/service/xray.go — an mtg sidecar serves them), so the
 // table is the only place that knows their ports.
-func (s *ChainPortsService) mtprotoPorts() ([]chain.Port, error) {
+//
+// The ones nginx publishes on its public port come back apart, in
+// behindFront: that port is shared by design, so they must not collide with
+// the xray inbound multiplexed beside them.
+func (s *ChainPortsService) mtprotoPorts() (ports, behindFront []chain.Port, err error) {
 	db := s.handle()
 	if db == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var inbounds []model.Inbound
-	err := db.Model(&model.Inbound{}).
+	err = db.Model(&model.Inbound{}).
 		Where("enable = ? AND protocol = ?", true, model.MTProto).Order("id").Find(&inbounds).Error
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	ports := make([]chain.Port, 0, len(inbounds))
 	for index := range inbounds {
 		inbound := &inbounds[index]
 		if inbound.LinkPort() <= 0 {
 			continue
 		}
-		ports = append(ports, chain.Port{
+		port := chain.Port{
 			Port:    inbound.LinkPort(),
 			Network: chain.NetworkTCP,
 			Tag:     "mtproto-" + strconv.Itoa(inbound.Id),
 			Source:  chain.SourceMtproto,
-		})
+		}
+		if inbound.PublicPort > 0 {
+			behindFront = append(behindFront, port)
+			continue
+		}
+		ports = append(ports, port)
 	}
-	return ports, nil
+	return ports, behindFront, nil
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/database"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
 	"github.com/coinman-dev/3ax-ui/v2/logger"
@@ -522,6 +523,11 @@ func (s *NginxService) buildConfig(set NginxSettings) (nginx.Config, error) {
 		}
 		site.Sub = sub
 	}
+	mon, err := s.monProxy()
+	if err != nil {
+		return cfg, err
+	}
+	site.Mon = mon
 	cfg.Site = site
 	return cfg, nil
 }
@@ -713,6 +719,29 @@ func (s *NginxService) panelProxy() (*nginx.Proxy, error) {
 	}, nil
 }
 
+// monProxy publishes the monitoring contract, which the panel serves under its
+// own base path. mon-server reaches it on 443 with the publicly trusted IP
+// certificate (ADR 0005); in only443 the panel's own port is closed, so this is
+// the only way in. The endpoints answer a bare 404 without the token, so the
+// location gives a scanner nothing the panel port did not.
+func (s *NginxService) monProxy() (*nginx.Proxy, error) {
+	port, err := s.settingService.GetPort()
+	if err != nil {
+		return nil, err
+	}
+	basePath, err := s.settingService.GetBasePath()
+	if err != nil {
+		return nil, err
+	}
+	certFile, _ := s.settingService.GetCertFile()
+	return &nginx.Proxy{
+		Name:   "monitoring",
+		Paths:  []string{basePath + "mon/v1/"},
+		Target: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		TLS:    certFile != "",
+	}, nil
+}
+
 // subProxy describes the subscription server the same way.
 func (s *NginxService) subProxy() (*nginx.Proxy, error) {
 	enable, err := s.settingService.GetSubEnable()
@@ -743,6 +772,11 @@ func (s *NginxService) subProxy() (*nginx.Proxy, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("the subscription server has no path to publish")
 	}
+	// The wave rides on the subscription server (§3.3), and once the
+	// subscriptions are behind 443 so is the address a first-tier hop polls
+	// (panelAsNextHop). Without this path its document request would get the
+	// stub page (#140).
+	paths = append(paths, chain.PathPrefix+"/")
 	certFile, _ := s.settingService.GetSubCertFile()
 	return &nginx.Proxy{
 		Name:   "subscriptions",

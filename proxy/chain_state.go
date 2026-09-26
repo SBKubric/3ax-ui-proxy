@@ -74,10 +74,13 @@ func ParseDocument(data []byte) (*chain.Document, error) {
 // the X-Chain-Outer header (§3.3). A hop reports what its own outer
 // neighbours told it, so the registry learns the freshness of every hop
 // without ever calling outward.
+//
+// Front is the neighbour's own front report (#140), passed on as it came.
 type OuterAck struct {
-	Name         string `json:"name"`
-	LastRevision int64  `json:"lastRevision"`
-	LastSeen     int64  `json:"lastSeen"`
+	Name         string             `json:"name"`
+	LastRevision int64              `json:"lastRevision"`
+	LastSeen     int64              `json:"lastSeen"`
+	Front        *chain.FrontReport `json:"front,omitempty"`
 }
 
 // State is everything the running hop knows about itself: the current

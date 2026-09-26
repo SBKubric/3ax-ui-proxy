@@ -164,3 +164,45 @@ func TestResolveRequestDoesNotUseClientRealIPAsHost(t *testing.T) {
 		t.Errorf("host with X-Forwarded-Host = %q, want net-ru.modulator.net", host)
 	}
 }
+
+// TestBuildURLsFollowTheActiveEdgesFront (#140): with the host override on, a
+// client's link names the active edge. Once that edge's front is up its sub
+// server answers on 443 only, so the link has to say so — the panel's own sub
+// port there is closed. An edge without a front keeps the link it had.
+func TestBuildURLsFollowTheActiveEdgesFront(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "x-ui.db")); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() { database.CloseDB() })
+	db := database.GetDB()
+	for key, value := range map[string]string{"subPort": "2096", "subCertFile": "/c.pem", "subKeyFile": "/k.pem"} {
+		db.Where("key = ?", key).Delete(&model.Setting{})
+		if err := db.Create(&model.Setting{Key: key, Value: value}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	edge := &model.ChainHop{Name: "edge-a", Host: "a.example.net", Role: model.ChainRoleEdge, State: model.ChainStateJoined,
+		IsActive: true, SubPort: 2096, SubScheme: "https"}
+	if err := db.Create(edge).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// What buildSubs does for every request: the override of the moment.
+	withOverride := func() *SubService {
+		svc := NewSubService(false, "", "")
+		svc.overrideHost, svc.overrideOn = svc.settingService.GetProxyOverride()
+		return svc
+	}
+	subURL, _, _ := withOverride().BuildURLs("https", "panel.example.com:2053", "/sub/", "/json/", "/clash/", "abc")
+	if subURL != "https://a.example.net:2096/sub/abc" {
+		t.Errorf("sub URL through an edge without a front = %q", subURL)
+	}
+
+	if err := db.Model(edge).Updates(map[string]any{"front_mode": "only443", "sub_port": 443}).Error; err != nil {
+		t.Fatal(err)
+	}
+	subURL, jsonURL, _ := withOverride().BuildURLs("https", "panel.example.com:2053", "/sub/", "/json/", "/clash/", "abc")
+	if subURL != "https://a.example.net/sub/abc" || jsonURL != "https://a.example.net/json/abc" {
+		t.Errorf("URLs through an edge behind its front = %q, %q", subURL, jsonURL)
+	}
+}

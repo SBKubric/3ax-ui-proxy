@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1484,6 +1485,14 @@ func (s *SubService) getBaseSchemeAndHost(requestScheme, requestHostWithPort str
 	baseHost := ""
 	if s.overrideOn {
 		baseHost = s.overrideHost
+		// Behind its front the active edge answers on 443 only (#140); the
+		// panel's own sub port there is closed.
+		if port, scheme, ok := (&service.ChainService{}).ActiveEdgeFront(); ok {
+			if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
+				return scheme, wrapIPv6(baseHost)
+			}
+			return scheme, net.JoinHostPort(baseHost, strconv.Itoa(port))
+		}
 	}
 	if baseHost == "" {
 		// The front-end comes first: when nginx publishes the subscriptions under
