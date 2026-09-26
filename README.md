@@ -113,8 +113,11 @@ The installer writes `/etc/x-ui/proxy.json`, issues TLS, **joins the chain befor
 | `PROXY_SUB_LISTEN` | all interfaces | bind address for it |
 | `PROXY_RELAY_LISTEN` | `::` | bind address of the relay (`0.0.0.0` on hosts without IPv6) |
 | `PROXY_CERT` / `PROXY_KEY` | — | TLS paths, only meaningful with `PROXY_TLS=manual` |
+| `PROXY_FRONT` | `off` | `only443` puts nginx on 443 in front of this hop: TCP on 443 only, split by SNI, and a firewall around it (see below) |
 
 With the default `PROXY_TLS=letsencrypt-ip` the installer issues a Let's Encrypt certificate **for the box's own IP address** — a fresh disposable front has no domain, and Let's Encrypt only issues IP certificates under the `shortlived` profile, so it is valid for about six days and renewed automatically. That needs port 80 free, both at issue time and at every renewal; if it is not, the installer warns and the box runs without TLS, serving its join page over plain HTTP with a warning banner. A box that relays port 80 through the chain cannot hold such a certificate — install it with `PROXY_TLS=manual` or `none`.
+
+**Front 443 on a hop** (`PROXY_FRONT=only443`, or `"front": {"mode": "only443"}` in `/etc/x-ui/proxy.json`): nginx takes 443 and splits it by SNI. An edge passes its neighbour target's server name raw to its next hop and an unknown name raw to the neighbour target itself; an inner passes the active edge's server name on and gives anything else a decoy page; a request by IP, without SNI, reaches the hop's subscriptions and `/chain/v1` through the IP certificate. The relay stops holding 443/tcp and other TCP ports (UDP is relayed as before), and the hop closes everything but 443/tcp, 80/tcp, SSH and the relayed UDP ports (`"firewall": false` leaves the ports alone). The hop tells the panel on every poll, the panel moves its sub port to 443 and the old sub port closes once the hops polling it have moved; an edge closes it at once, and client subscription links become `https://<edge>/…`. It needs the Let's Encrypt IP certificate — without one the front stays off. Details: `docs/runbooks/proxy-front.md` §3.5.
 
 **CLI** (the same binary in both roles):
 
@@ -465,8 +468,11 @@ The installer writes `/etc/x-ui/proxy.json`, issues TLS, **joins the chain befor
 | `PROXY_SUB_LISTEN` | all interfaces | bind address for it |
 | `PROXY_RELAY_LISTEN` | `::` | bind address of the relay (`0.0.0.0` on hosts without IPv6) |
 | `PROXY_CERT` / `PROXY_KEY` | — | TLS paths, only meaningful with `PROXY_TLS=manual`; there they are required — absolute paths to readable PEM files, or the install stops before changing anything |
+| `PROXY_FRONT` | `off` | `only443` puts nginx on 443 in front of this hop: TCP on 443 only, split by SNI, and a firewall around it (see below) |
 
 With the default `PROXY_TLS=letsencrypt-ip` the installer issues a Let's Encrypt certificate **for the box's own IP address** — a fresh disposable front has no domain, and Let's Encrypt only issues IP certificates under the `shortlived` profile, so it is valid for about six days and renewed automatically. That needs port 80 free, both at issue time and at every renewal; if it is not, the installer warns and the box runs without TLS, serving its join page over plain HTTP with a warning banner. A box that relays port 80 through the chain cannot hold such a certificate — install it with `PROXY_TLS=manual` or `none`. A reinstall keeps the IP certificate already on the box (in `/root/cert/ip`, valid for more than a day and renewed by acme.sh) instead of issuing a new one.
+
+**Front 443 on a hop** (`PROXY_FRONT=only443`, or `"front": {"mode": "only443"}` in `/etc/x-ui/proxy.json`): nginx takes 443 and splits it by SNI. An edge passes its neighbour target's server name raw to its next hop and an unknown name raw to the neighbour target itself; an inner passes the active edge's server name on and gives anything else a decoy page; a request by IP, without SNI, reaches the hop's subscriptions and `/chain/v1` through the IP certificate. The relay stops holding 443/tcp and other TCP ports (UDP is relayed as before), and the hop closes everything but 443/tcp, 80/tcp, SSH and the relayed UDP ports (`"firewall": false` leaves the ports alone). The hop tells the panel on every poll, the panel moves its sub port to 443 and the old sub port closes once the hops polling it have moved; an edge closes it at once, and client subscription links become `https://<edge>/…`. It needs the Let's Encrypt IP certificate — without one the front stays off. Details: `docs/runbooks/proxy-front.md` §3.5.
 
 **CLI** (the same binary in both roles):
 

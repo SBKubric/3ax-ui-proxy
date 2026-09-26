@@ -104,7 +104,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/SBKubric/3ax-ui-proxy/main/ins
 
 **Через join page (если токена под рукой нет):** запустите то же самое без `PROXY_JOIN_TOKEN`. Бокс стартует в bootstrap-режиме: релея нет, слушает только sub-порт и отдаёт одноразовую страницу входа. Футер печатает ссылку; повторно её покажет `x-ui chain join-url` (файл `/etc/x-ui/chain-join.url`). На странице — next hop (предзаполнен) и поле join-токена. После принятого входа страница отвечает 404, файл ссылки исчезает, релей и полный sub-сервер стартуют в том же процессе.
 
-Переменные установщика — в [README](../../README.md#11-proxy-chain-anti-blocking). Коротко: `PROXY_NEXT_HOP` (обязательна), `PROXY_NEXT_HOP_SUB_PORT` (2096), `PROXY_NEXT_HOP_SCHEME` (https), `PROXY_JOIN_TOKEN`, `PROXY_TLS` (`letsencrypt-ip`), `PROXY_TLS_IPV6` (выкл.), `PROXY_DOMAIN`, `PROXY_SUB_PORT` (2096), `PROXY_SUB_LISTEN`, `PROXY_RELAY_LISTEN` (`::`), `PROXY_CERT`/`PROXY_KEY` (только при `PROXY_TLS=manual`).
+Переменные установщика — в [README](../../README.md#11-proxy-chain-anti-blocking). Коротко: `PROXY_NEXT_HOP` (обязательна), `PROXY_NEXT_HOP_SUB_PORT` (2096), `PROXY_NEXT_HOP_SCHEME` (https), `PROXY_JOIN_TOKEN`, `PROXY_TLS` (`letsencrypt-ip`), `PROXY_TLS_IPV6` (выкл.), `PROXY_DOMAIN`, `PROXY_SUB_PORT` (2096), `PROXY_SUB_LISTEN`, `PROXY_RELAY_LISTEN` (`::`), `PROXY_CERT`/`PROXY_KEY` (только при `PROXY_TLS=manual`), `PROXY_FRONT` (`off` | `only443`, §3.5).
 
 Старые переменные (`PROXY_UPSTREAM_HOST`, `PROXY_UPSTREAM_BASE`, `PROXY_EXTRA_PORTS`, `PROXY_RELAY_MANIFEST`, `PROXY_SUB_PATH`, `PROXY_JSON_PATH`, `PROXY_XRAY_CONFIG`) установщик **отвергает с ошибкой**, а не игнорирует: молча проглоченный `PROXY_EXTRA_PORTS` дал бы фронт без половины портов, и выяснилось бы это только на клиенте.
 
@@ -149,6 +149,33 @@ ssh bridge 'grep -RIl "privateKey\|PrivateKey" /etc/x-ui /usr/local/x-ui; ls -la
 На панели: звено в состоянии `joined`, свежий `last_seen_at`, `lastRevision` совпадает с текущей ревизией реестра.
 
 Следующее звено снаружи ставится тем же порядком, с `PROXY_NEXT_HOP` = адрес только что введённого звена.
+
+### 3.5 Фронт 443 на звене (`only443`)
+
+С `PROXY_FRONT=only443` (или `"front": {"mode": "only443"}` в `/etc/x-ui/proxy.json` и `systemctl restart x-ui`) звено принимает TCP только на 443 — nginx разводит поток по SNI (ADR 0005, спека §5.11):
+
+- **edge**: имя сервера своего target-соседа — сырым потоком на 443 next hop'а; неизвестный SNI — сырым потоком на сам target-сосед; без target'а в реестре — заглушка и WARN в логе (клиенты через это edge не пройдут, пока target не задан);
+- **inner**: имя сервера active edge — сырым потоком на 443 next hop'а; неизвестный SNI — заглушка;
+- **по IP без SNI** — HTTP-сторона с IP-сертификатом из `/root/cert/ip`: подписки, `/chain/v1/`, `/join/` → sub-сервер звена на loopback; остальное — заглушка.
+
+Нужно: IP-сертификат (`PROXY_TLS=letsencrypt-ip`, §3.3) и nginx со stream-модулем (ставится установщиком). Без сертификата фронт не поднимается: в логе `the front stays off`, релей работает как раньше.
+
+Что меняется на звене:
+
+- relay не держит 443/tcp (его держит nginx), 443/udp и прочий UDP релеит как раньше, TCP-порты кроме 443 **не релеит** (WARN со списком);
+- файрвол `THREEAX-IN`: открыты 443/tcp, 80/tcp, SSH, relayed UDP; остальное DROP. Выключается `"front": {"mode": "only443", "firewall": false}`;
+- sub-сервер переезжает на loopback за nginx. Звено сообщает панели свой фронт при опросе, панель ставит ему `subPort=443`/`https` и бампает ревизию. **Старый sub-порт живёт, пока каждый прямой внешний сосед не подтвердит ревизию новее той, на которой поднялся фронт** — только тогда порт закрывается (и в файрволе тоже). У edge внешних соседей нет, поэтому порт закрывается сразу; клиентские ссылки подписки панель с этого момента строит как `https://<edge>/…` — старые ссылки с `:2096` перестают работать, клиентам надо обновить подписку;
+- заглушка — встроенная страница панели или свой HTML: `"front": {"mode": "only443", "stub": "/etc/x-ui/stub.html"}`.
+
+Проверка:
+
+```bash
+ssh bridge 'x-ui chain status; cat /etc/x-ui/chain/front.json; ss -ltnp | grep -E ":443 |:2096 "; iptables -S THREEAX-IN'
+curl -sk https://<ip звена>/chain/v1/status -o /dev/null -w '%{http_code}\n'   # 404 без bearer — HTTP-сторона отвечает
+openssl s_client -connect <ip edge>:443 -servername <имя сервера target-соседа> </dev/null 2>/dev/null | head -3
+```
+
+`front.json` хранит ревизию подъёма фронта (`since`) и `oldPortClosed`. Выключение: `"mode": "off"` + рестарт — nginx-конфиг и файрвол снимаются, relay снова держит все порты, sub-порт открывается.
 
 ## 4. Host override: активное edge
 
