@@ -48,6 +48,7 @@
 | порядок | `position` — место среди inner'ов, `0` у ближайшего к real server |
 | состояние | `pending` (заведено, join-токен выдан, бокс ещё не вошёл) → `joined` → `draining` (удалено, но ещё обслуживает бывших внешних соседей, §4.5); плюс `legacy` для мигрированного host override (2.3) |
 | активность | `is_active` — ровно у одного edge или ни у одного |
+| target-сосед | только у edge: `realityTarget` (host:port) и `realityServerName` (необязательно; пусто — хост из target); см. ниже «Target-сосед и inbound'ы за цепочкой» |
 
 Одна цепочка на панель: inner'ы образуют один путь `real server ← inner[0] ← inner[1] … ← inner[n]`, все edge подвешены к **последнему** inner'у (`inner[n]`), а если inner'ов нет — прямо к панели. Запасные edge отличаются от активного только флагом `is_active`; они уже вошли в цепочку, относят трафик туда же и ждут переключения.
 
@@ -73,6 +74,10 @@ type ChainHop struct {
 
     State    string `json:"state"    gorm:"size:8;not null;index:idx_chain_hops_role,priority:2"` // pending|joined|legacy|draining
     IsActive bool   `json:"isActive" gorm:"not null;default:false"`
+
+    // Target-сосед edge (ADR 0005, #139). Только у role="edge".
+    RealityTarget     string `json:"realityTarget"     gorm:"size:262"` // host:port
+    RealityServerName string `json:"realityServerName" gorm:"size:255"` // пусто = хост из RealityTarget
 
     // Уход звена (§4.5). Заполнены только у state="draining" и только
     // на время draining: строка вместе с ними исчезает при завершении.
@@ -109,6 +114,15 @@ type ChainHop struct {
 | `chainDrainMinutes` | int | `10` | сколько удалённое звено обслуживает бывших внешних соседей, пока они не перецепятся (§4.5) |
 
 `chainRevision` — состояние, а не предпочтение: в `entity.AllSetting` его **нет**, чтобы сохранение формы настроек не откатило ревизию (та же логика, что у `monLastContact`, `web/service/setting.go:96-99`). `chainExtraPorts`, `chainPollSeconds`, `chainStaleMinutes`, `chainJoinTokenHours`, `chainDrainMinutes` — предпочтения, они в `AllSetting` и в форме.
+
+#### Target-сосед и inbound'ы за цепочкой (#139, ADR 0005)
+
+- **Поля звена.** `realityTarget` — `host:port`, порт обязателен (1–65535); `realityServerName` — доменное имя без порта, необязательно: пусто — берётся хост из target. Если хост target — IP-адрес, имя обязательно (SNI несёт только имена). Имя без target — отказ. Только у edge: у inner — отказ `reality_target_edge_only`. Коды отказов: `invalid_reality_target`, `invalid_reality_server_name`, `reality_target_edge_only`, `no_neighbour_target`, `follow_chain_not_reality`. Пустой `realityTarget` в `update` убирает соседа вместе с именем.
+- **Inbound за цепочкой** — колонка `inbounds.follow_chain` (`model.Inbound.FollowChain`, `json:"followChain"`; исключение из ADR 0002, записано там). Флаг ставится только Reality-inbound'у (`streamSettings.security = "reality"`), иначе отказ `follow_chain_not_reality`.
+- **Переписывание.** У каждого помеченного inbound'а панель ставит `realitySettings.target` = target-сосед (ключ `target`, как пишет форма; устаревший `dest` рядом удаляется), `realitySettings.serverNames` = `[имя сервера]` (строгий SNI) и `realitySettings.settings.serverName` = то же имя. Непомеченные inbound'ы не трогаются. Xray подхватывает изменение через `needRestart` после коммита.
+- **Когда.** `setActive` (§4.7) — в той же транзакции; `update` активного edge с изменённым соседом — в той же транзакции; сохранение помеченного inbound'а при active edge — сразу при сохранении. У active edge нет соседа, а помеченные inbound'ы есть — отказ `no_neighbour_target` (и для `setActive`, и для снятия соседа у active edge, и для пометки inbound'а). Нет active edge — inbound сохраняется как есть.
+- **`/proxy off` (`clearActive`)** помеченные inbound'ы не трогает: target и `serverNames` остаются от последнего active edge, ссылки работают (меняется только хост). В логе — предупреждение, в ответе бота — строка `tgbot.commands.chainOffFollowers`.
+- **`Profile-Update-Interval`.** Пока есть хотя бы один помеченный inbound (включённый или нет — его ссылки уже у клиентов), все подписки панели (`/sub`, `/json`, `/clash`) отдают `1` = `min(subUpdates, 1)` часов: заголовок несёт целые часы, 1 — наименьшее значение; `subUpdates = 0` тоже становится 1. Без помеченных — как было. Звенья передают заголовок клиентам как есть (`proxy.passthroughHeaders`).
 
 ### 2.3 Миграция `proxyOverrideEnable` / `proxyOverrideHost`
 
@@ -148,7 +162,7 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
 |---|---|
 | `GET /panel/api/chain/list` | реестр целиком: `{revision, activeEdge, hops:[…]}` |
 | `POST /panel/api/chain/add` | завести звено; ответ несёт `joinToken` — **единственный раз** |
-| `POST /panel/api/chain/update/:id` | сменить `name`, `host`, `subPort`, `subScheme` |
+| `POST /panel/api/chain/update/:id` | сменить `name`, `host`, `subPort`, `subScheme`, `realityTarget`, `realityServerName` |
 | `POST /panel/api/chain/del/:id` | удалить звено: немедленно, если снаружи от него никого нет, иначе через `draining` (§4.5) |
 | `POST /panel/api/chain/setActive/:id` | сделать edge активным |
 | `POST /panel/api/chain/reissueToken/:id` | перевыпустить join-токен (старый мёртв) |
@@ -170,6 +184,10 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
     "nextHopId":2,"state":"pending","joinTokenExpires":1758386400000}]}
 ```
 
+`GET /list` также несёт `followingInbounds` — число inbound'ов за цепочкой (редактор по нему решает, какое подтверждение показать перед переключением), а каждое звено — `realityTarget`/`realityServerName`.
+
+Target-сосед edge оркестратор (orchestrator#20) пишет так: `POST /panel/api/chain/update/<id>` с телом `{"realityTarget":"198.51.100.20:443","realityServerName":"www.example.com"}` (id — из `GET /list` по имени); ответ `{"success":true,…}` или `success:false` с кодом в `msg`. Можно сразу при заведении: те же поля в теле `POST /add`.
+
 `POST /add` — тело `{"name":"edge-b","role":"edge","host":"b.example.net","subPort":2096,"position":null}`; ответ `obj`: `{"hop":{…},"joinToken":"…32 символа…","joinTokenExpires":1758386400000}`. Для `role="edge"` `next_hop_id` вычисляет панель (последний inner или `NULL`); для `role="inner"` — по `position` (см. 2.5.3). Ошибки валидации — `success:false` с текстом (конверт панели не различает коды; HTTP всегда `200`, кроме `404` неавторизованному).
 
 **Шов для mon-server и оркестратора.** Наружу реестр открывается только на чтение и только по контракту мониторинга 3 (`docs/spec/monitoring-contract.md` §4.1): `GET /mon/v1/state` получает поле `chain` (звенья `joined`/`legacy`, §6.1):
@@ -189,7 +207,8 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
 
 - `/proxy` без аргументов — список звеньев: роль, имя, хост, состояние (`joined`/`pending`/`legacy`), свежесть (`lastRevision` против `chainRevision`), здоровье от мониторинга (UP/DOWN/UNKNOWN по `path = edge:<name>` для edge и `path = inner:<name>` для inner, §6.3), маркер активного. Ключ `tgbot.commands.chainList` + `tgbot.commands.chainHop`.
 - `/proxy <имя>` — переключить активный edge: запись в реестр, `chainRevision++`, ответ `tgbot.commands.chainSwitched` (`Name==`, `Host==`) плюс **одна строка предупреждения** `tgbot.commands.chainSwitchNote`: уже выданные ссылки и конфиги продолжают ходить через прежнее edge, пока клиент не перечитает подписку (§4.7). Неизвестное имя, `pending`-звено или inner → тот же список плюс `tgbot.commands.chainUnknownName`.
-- `/proxy off` сохраняется как есть: гасит host override (`is_active=false` у всех edge) — ровно то, что делал `SetProxyOverrideEnable(false)`.
+- **С inbound'ами за цепочкой** (#139) `/proxy <имя>` не переключает сразу: ответ — `tgbot.commands.chainConfirm` + `chainFollowNote` («клиентам нужно обновить подписку, старые ссылки перестанут работать») и inline-кнопка `tgbot.buttons.chainSwitch` («Переключить», callback `chain_switch <имя>`). Без нажатия ничего не меняется; callback заново проверяет звено (существует, joined/legacy, не уходит, есть target-сосед) тем же `SetActive` и заменяет вопрос ответом `chainSwitched` + `chainFollowNote`. У edge без target-соседа кнопки нет — ответ `chainNoNeighbour`. Без помеченных inbound'ов — как описано выше.
+- `/proxy off` сохраняется как есть: гасит host override (`is_active=false` у всех edge) — ровно то, что делал `SetProxyOverrideEnable(false)`. При помеченных inbound'ах в ответе добавляется `chainOffFollowers`: они остаются на target-соседе последнего edge.
 
 Регистрация в `SetMyCommands` не меняется, меняется только `tgbot.commands.proxyDesc` (`translate.en_US.toml:1155`) — он **переписывается** под цепочку: «Show and switch the proxy chain edges (admin)». Старые ключи одиночного override — `tgbot.commands.proxyStatus`, `proxyEnabled`, `proxyDisabled`, `proxyUsage` — этим же тикетом бота **удаляются** (не остаются «на всякий случай»): команда `/proxy` целиком переезжает на цепочку, и ни один из этих текстов больше не достижим. Новые ключи добавляются **в конец** секции `tgbot.commands` во всех 13 локалях; начинаем с `en_US`/`ru_RU` (отсутствующий ключ падает в имя ключа). Защита от пустого описания (`tgbot.go:282-287`) остаётся.
 
@@ -270,16 +289,19 @@ func (s *SettingService) GetProxyOverride() (string, bool) {
 ```
 {"version":1,"revision":42,"generatedAt":1758380000000,
  "self":{"name":"inner-2","role":"inner","host":"203.0.113.9","state":"joined"},
+ // у edge с target-соседом ещё "realityTarget":"…:443","realityServerName":"…"
  "nextHop":{"host":"10.0.0.7","subPort":2096,"subScheme":"https",
             "subPath":"/sub/","jsonPath":"/json/","tunPath":"/tun/"},
  "activeEdge":"edge-a",
- "hops":[{"name":…,"role":…,"host":…,"subPort":…,"secretHash":…,"state":…}],
+ "hops":[{"name":…,"role":…,"host":…,"subPort":…,"secretHash":…,"state":…,
+         "realityTarget":…,"realityServerName":…}],  // последние два — только у edge с соседом
  "ports":[{"port":443,"network":"tcp,udp","tag":"inbound-443","source":"xray"}]}
 ```
 
 - `self` — как звено называется в реестре. Имя нужно ему для `/chain/v1/status` и логов, `host` — чтобы заметить расхождение с тем, что владелец ввёл (§4.4), `state` — чтобы знать, что оно **уходит**: `joined` | `legacy` | `pending` | `draining`. Отсутствие `self.state` читается как `joined` (бокс старее панели). Единственное следствие `draining` на боксе — правило §4.5.3: отдавая документ внешнему соседу, такое звено подставляет в его `nextHop` свой собственный `nextHop`, а не себя.
 - `nextHop` — единственное, что звено знает про «глубже»: хост, порт и пути подписок. Пути едут в документе, поэтому `proxy.json` больше не хранит `subPath`/`jsonPath`/`tunPath` (§4 рамки).
 - `hops` — **сам звено и всё, что снаружи от него**; `secretHash` = `sha256(hop secret)` hex; `state` — `joined` | `legacy` | `pending` | `draining`. `pending`-звенья в списке не появляются, кроме перевходящих (§4.5.7); `draining`-звено появляется ровно в одном списке — в `hops[]` своего next hop'а, и это единственное место, где его `secretHash` ещё жив (§4.5.2). Звено использует из этого списка только хэши своих **прямых** внешних соседей (тех, кто к нему подключается); остальные записи — материал для UI и для сверки `outer[]`.
+- `realityTarget` / `realityServerName` (в `self` и в записях `hops` для edge) — target-сосед edge (#139): edge нужен свой, чтобы развести SNI на 443 (#140), inner'у — имена всех edge. Имя сервера всегда развёрнуто (умолчание реестра уже применено). Поля необязательные (`omitempty`), версия документа не меняется; их изменение бампает ревизию, как любая правка реестра.
 - `ports` — полный список relayed ports (§3.7). Он одинаков для всех звеньев цепочки: порты real server пробрасываются один-в-один до самого края.
 
 ### 3.2 Полный пример: `real ← inner-1 ← inner-2 ← {edge-a (active), edge-b}`
@@ -751,6 +773,8 @@ Runbook (в `docs/runbooks/proxy-front.md`, раздел «Смерть inner'а
 Почему нельзя обойтись одним шагом 3 без 2: join-токен одноразовый и уже израсходован при первом входе звена; без перевыпуска бокс не докажет соседу, кто он.
 
 ### 4.7 Переключение активного edge
+
+**Inbound'ы за цепочкой (#139).** Если они есть, та же транзакция `setActive` переписывает им target и `serverNames` на target-сосед нового active edge (§2.2, «Target-сосед и inbound'ы за цепочкой»), а у edge без соседа переключение отказывает (`no_neighbour_target`). Тогда переключение меняет SNI в ссылках: старые ссылки перестают работать, пока клиент не перечитает подписку, поэтому бот и редактор сначала просят подтверждение. Остальное ниже — про хост и боксы — не меняется.
 
 **Подтверждаем: ни входа, ни выхода не требует.** Оба edge уже `joined`, у обоих есть hop secret, оба уже relay'ят и уже качают подписки. Переключение — одна запись в реестре (`is_active`) плюс `chainRevision++`; меняется ровно одно следствие: `GetProxyOverride()` (2.3) начинает возвращать другой хост, и панель подставляет его в новые конфиги и ссылки подписки. На звеньях не меняется ничего (§3.5). Переключение мгновенно для всех, кто перечитает подписку; уже выданные конфиги продолжают ходить через прежний edge, пока он жив, — и это правильно, иначе переключение рвало бы клиентов.
 
@@ -1237,7 +1261,9 @@ Ant Design Vue, `<a-collapse>` с одной панелью `pages.settings.chai
 
 Звено, которое уходит, остаётся в списке со `[draining]` вместо `[joined]`, без кнопок (`update`, `Make active`, `Reissue`, `Delete` по нему отказывают, §4.5.5) и с подсказкой `drainingHint`; строка исчезает сама, когда панель завершит уход. Удаление — `a-modal-confirm`; после подтверждения диалог показывает ответ `del`: либо «удалено», либо «уходит, ждём: <имена>, до <время>». Попытка удалить active edge вместо диалога подтверждения показывает предупреждение `pages.settings.chain.deleteActiveRefused` («Choose another edge with "Make active" first, then delete this one.») и не удаляет звено.
 
-Кнопка «Make active» показывает в диалоге подтверждения **одну строку предупреждения** `pages.settings.chain.switchNote`: «Links already handed out keep going through the current edge until clients refresh the subscription.» / «Уже выданные ссылки продолжат ходить через прежнее edge, пока клиент не перечитает подписку.» Это не отказ и не второй шаг — просто напоминание о свойстве переключения (§4.7); бот печатает ту же строку после `/proxy <имя>` (§2.5).
+Кнопка «Make active» показывает в диалоге подтверждения **одну строку предупреждения** `pages.settings.chain.switchNote`: «Links already handed out keep going through the current edge until clients refresh the subscription.» / «Уже выданные ссылки продолжат ходить через прежнее edge, пока клиент не перечитает подписку.» Это не отказ и не второй шаг — просто напоминание о свойстве переключения (§4.7); бот печатает ту же строку после `/proxy <имя>` (§2.5). **При inbound'ах за цепочкой** (`followingInbounds > 0` в `GET /list`, #139) тот же диалог становится предупреждением: заголовок `chain.followSwitchTitle`, текст `chain.followSwitchNote` («клиентам нужно обновить подписку, старые ссылки перестанут работать»); без «Sure» ничего не меняется.
+
+Карточка edge показывает target-сосед (`chain-hop-<name>-neighbour`: «neighbour: host:port · SNI имя» или «no neighbour target») и кнопку `chain-hop-<name>-neighbour-edit`, открывающую модалку `chain-neighbour-modal` с полями `chain-neighbour-target` и `chain-neighbour-server-name`; сохранение — `POST update/:id`. В форме inbound'а, в настройках Reality, — переключатель «Follow the proxy chain» (`inbound-follow-chain`).
 
 #### Таблица `data-testid` (для Playwright, `e2e/`)
 

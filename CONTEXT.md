@@ -101,11 +101,11 @@ _Avoid_: nginx mode, reverse proxy, gateway
 _Avoid_: web front, public API, site
 
 **Neighbour target** (target-сосед):
-Чужой сайт в той же сети, что и адрес edge front; его TLS изображает Reality-inbound, и туда же уходит TLS с незнакомым SNI. Свой у каждого edge; панель ставит Reality-inbound'ам target-сосед active edge.
+Чужой сайт в той же сети, что и адрес edge front; его TLS изображает Reality-inbound, и туда же уходит TLS с незнакомым SNI. Свой у каждого edge; панель ставит Reality-inbound'ам target-сосед active edge. В реестре — пара `realityTarget` (host:port) и `realityServerName` (имя сервера; пусто — хост из target).
 _Avoid_: dest, camouflage site, SNI domain
 
 **Chain-following inbound** (inbound за цепочкой):
-Reality-inbound, у которого панель при смене active edge переписывает target и serverNames на target-сосед нового active edge.
+Reality-inbound, у которого панель при смене active edge переписывает target и serverNames на target-сосед нового active edge. Помечается флагом `followChain` в форме inbound'а; при `/proxy off` остаётся на target-соседе последнего active edge.
 _Avoid_: managed inbound, auto inbound
 
 ## Monitoring
