@@ -226,7 +226,7 @@ func (a *SUBController) ApplyCommonHeaders(
 	profileRoutingRules string,
 ) {
 	c.Writer.Header().Set("Subscription-Userinfo", header)
-	c.Writer.Header().Set("Profile-Update-Interval", updateInterval)
+	c.Writer.Header().Set("Profile-Update-Interval", chainUpdateInterval(updateInterval))
 
 	//Basics
 	if profileTitle != "" {
