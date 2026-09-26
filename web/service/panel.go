@@ -44,13 +44,14 @@ func (s *PanelService) RestartPanel(delay time.Duration) error {
 	return nil
 }
 
-// GetUpdateInfo checks GitHub for the latest 3x-ui release.
+// GetUpdateInfo checks GitHub for the latest release of this fork on the
+// channel of the running version (see latestPanelVersion).
 func (s *PanelService) GetUpdateInfo() (*PanelUpdateInfo, error) {
-	latest, err := fetchLatestPanelVersion()
+	current := config.GetVersion()
+	latest, err := latestPanelVersion(current)
 	if err != nil {
 		return nil, err
 	}
-	current := config.GetVersion()
 	return &PanelUpdateInfo{
 		CurrentVersion:  current,
 		LatestVersion:   latest,
@@ -58,10 +59,24 @@ func (s *PanelService) GetUpdateInfo() (*PanelUpdateInfo, error) {
 	}, nil
 }
 
-// StartUpdate starts the official updater outside of the current web request.
+// StartUpdate starts this fork's updater outside of the current web request.
 func (s *PanelService) StartUpdate() error {
+	return startPanelUpdate(config.GetVersion())
+}
+
+// startPanelUpdate runs update.sh of panelRepo at the release latestPanelVersion
+// offers for current, pinned to that tag, and refuses when that release is not
+// newer than current: the web update never downgrades (#130).
+func startPanelUpdate(current string) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("panel web update is supported only on Linux installations")
+	}
+	tag, err := latestPanelVersion(current)
+	if err != nil {
+		return fmt.Errorf("failed to find the latest panel release: %w", err)
+	}
+	if !isNewerVersion(tag, current) {
+		return fmt.Errorf("no newer release of %s than %s (latest on this channel: %s)", panelRepo, current, tag)
 	}
 
 	bash, err := exec.LookPath("bash")
@@ -74,7 +89,7 @@ func (s *PanelService) StartUpdate() error {
 	}
 
 	mainFolder, serviceFolder := resolveUpdateFolders()
-	updateScript := fmt.Sprintf("set -o pipefail; %s -fLs https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/update.sh | %s", shellQuote(curl), shellQuote(bash))
+	updateScript := panelUpdateScript(curl, bash, tag)
 
 	if systemdRun, err := exec.LookPath("systemd-run"); err == nil {
 		unitName := fmt.Sprintf("x-ui-web-update-%d", time.Now().Unix())
@@ -82,6 +97,7 @@ func (s *PanelService) StartUpdate() error {
 			"--unit", unitName,
 			"--setenv", "XUI_MAIN_FOLDER="+mainFolder,
 			"--setenv", "XUI_SERVICE="+serviceFolder,
+			"--setenv", "XUI_REPO="+panelRepo,
 			bash, "-lc", updateScript,
 		)
 		out, err := cmd.CombinedOutput()
@@ -102,6 +118,7 @@ func (s *PanelService) StartUpdate() error {
 	cmd.Env = append(os.Environ(),
 		"XUI_MAIN_FOLDER="+mainFolder,
 		"XUI_SERVICE="+serviceFolder,
+		"XUI_REPO="+panelRepo,
 	)
 	setDetachedProcess(cmd)
 	if err := cmd.Start(); err != nil {
@@ -114,48 +131,110 @@ func (s *PanelService) StartUpdate() error {
 	return nil
 }
 
+// panelRepo is the GitHub repository the panel looks for new releases in and
+// updates from: this fork, not the 3AX-UI upstream it is built on (#130).
+const panelRepo = "SBKubric/sane-3x-ui"
+
+// panelGitHubAPI is GitHub's REST API root; tests point it at a fake.
+var panelGitHubAPI = "https://api.github.com"
+
+// panelRelease is the part of a GitHub release the update check reads.
+type panelRelease struct {
+	TagName    string `json:"tag_name"`
+	Draft      bool   `json:"draft"`
+	Prerelease bool   `json:"prerelease"`
+}
+
 var (
-	panelVerCacheMu sync.Mutex
-	panelVerCache   string
-	panelVerCacheAt time.Time
+	panelVerCacheMu      sync.Mutex
+	panelVerCache        string
+	panelVerCacheChannel string
+	panelVerCacheAt      time.Time
 )
 
-// fetchLatestPanelVersion returns the tag of the latest 3AX-UI release on GitHub.
-// GitHub's /releases/latest returns the newest non-prerelease, so only stable
-// releases trigger the "update available" hint (betas are pre-releases). Result
-// is cached for an hour to avoid hammering the API on dashboard refreshes.
-func fetchLatestPanelVersion() (string, error) {
+func resetPanelVersionCache() {
 	panelVerCacheMu.Lock()
-	if panelVerCache != "" && time.Since(panelVerCacheAt) < time.Hour {
+	panelVerCache, panelVerCacheChannel, panelVerCacheAt = "", "", time.Time{}
+	panelVerCacheMu.Unlock()
+}
+
+// latestPanelVersion returns the newest release of panelRepo on the channel of
+// the running version: a pre-release build (a tag with a suffix, such as
+// v1.9.0-chain.8) is offered every non-draft release, newest by version
+// precedence; a stable build only stable releases (GitHub's /releases/latest).
+// The result is cached per channel for an hour to avoid hammering the API on
+// dashboard refreshes.
+func latestPanelVersion(current string) (string, error) {
+	channel := "stable"
+	if _, pre, ok := parseVersion(current); ok && pre != "" {
+		channel = "pre"
+	}
+	panelVerCacheMu.Lock()
+	if panelVerCache != "" && panelVerCacheChannel == channel && time.Since(panelVerCacheAt) < time.Hour {
 		v := panelVerCache
 		panelVerCacheMu.Unlock()
 		return v, nil
 	}
 	panelVerCacheMu.Unlock()
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get("https://api.github.com/repos/coinman-dev/3ax-ui/releases/latest")
+	var latest string
+	var err error
+	if channel == "pre" {
+		latest, err = newestPanelRelease()
+	} else {
+		var rel panelRelease
+		err = getPanelReleases("/releases/latest", &rel)
+		latest = rel.TagName
+	}
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	var release Release
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", err
-	}
-	if release.TagName == "" {
-		return "", fmt.Errorf("latest panel release tag is empty")
+	if latest == "" {
+		return "", fmt.Errorf("no %s release of %s found", channel, panelRepo)
 	}
 
 	panelVerCacheMu.Lock()
-	panelVerCache = release.TagName
-	panelVerCacheAt = time.Now()
+	panelVerCache, panelVerCacheChannel, panelVerCacheAt = latest, channel, time.Now()
 	panelVerCacheMu.Unlock()
-	return release.TagName, nil
+	return latest, nil
+}
+
+// newestPanelRelease picks the highest non-draft tag among the repository's
+// recent releases, pre-releases included.
+func newestPanelRelease() (string, error) {
+	var releases []panelRelease
+	if err := getPanelReleases("/releases?per_page=100", &releases); err != nil {
+		return "", err
+	}
+	newest := ""
+	for _, rel := range releases {
+		if rel.Draft {
+			continue
+		}
+		if newest == "" {
+			if _, _, ok := parseVersion(rel.TagName); ok {
+				newest = rel.TagName
+			}
+			continue
+		}
+		if cmp, ok := compareVersionStrings(rel.TagName, newest); ok && cmp > 0 {
+			newest = rel.TagName
+		}
+	}
+	return newest, nil
+}
+
+func getPanelReleases(path string, out any) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(panelGitHubAPI + "/repos/" + panelRepo + path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GitHub API returned status %d for %s releases: %s", resp.StatusCode, panelRepo, resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 func resolveUpdateFolders() (string, string) {
@@ -184,47 +263,109 @@ func isNewerVersion(latest string, current string) bool {
 	return cmp > 0
 }
 
+// compareVersionStrings orders two release tags: X.Y.Z or X.Y.Z.W (the fork's
+// 1.8.1.x line), optionally with a pre-release suffix after the first '-'
+// ("1.9.0-chain.8", "1.6.3-beta", a git-describe "1.5.0-beta-16-g1b74ce41").
+// Numeric parts compare first (missing ones count as 0); on a tie a release
+// beats its own pre-releases, and pre-releases compare by semver precedence of
+// their dot-separated identifiers, so "chain.10" > "chain.9" (#130).
 func compareVersionStrings(a string, b string) (int, bool) {
-	aParts, okA := parseVersionParts(a)
-	bParts, okB := parseVersionParts(b)
+	aNums, aPre, okA := parseVersion(a)
+	bNums, bPre, okB := parseVersion(b)
 	if !okA || !okB {
 		return 0, false
 	}
-	for i := 0; i < len(aParts); i++ {
-		if aParts[i] > bParts[i] {
-			return 1, true
+	for i := 0; i < max(len(aNums), len(bNums)); i++ {
+		var x, y int
+		if i < len(aNums) {
+			x = aNums[i]
 		}
-		if aParts[i] < bParts[i] {
-			return -1, true
+		if i < len(bNums) {
+			y = bNums[i]
+		}
+		if x != y {
+			return cmpInt(x, y), true
 		}
 	}
-	return 0, true
+	switch {
+	case aPre == "" && bPre == "":
+		return 0, true
+	case aPre == "":
+		return 1, true
+	case bPre == "":
+		return -1, true
+	}
+	return comparePreRelease(aPre, bPre), true
 }
 
-func parseVersionParts(version string) ([3]int, bool) {
-	var result [3]int
+// parseVersion splits a tag into its 3 or 4 numeric parts and the pre-release
+// suffix ("" for a release).
+func parseVersion(version string) ([]int, string, bool) {
 	s := normalizeVersionTag(version)
-	// Drop any pre-release / git-describe suffix so "1.6.3-beta" or
-	// "1.5.0-beta-16-g1b74ce41-dirty" compare by their numeric X.Y.Z prefix.
+	pre := ""
 	if i := strings.IndexByte(s, '-'); i >= 0 {
-		s = s[:i]
+		s, pre = s[:i], s[i+1:]
 	}
 	parts := strings.Split(s, ".")
-	if len(parts) < 3 {
-		return result, false
+	if len(parts) < 3 || len(parts) > 4 {
+		return nil, "", false
 	}
-	for i := 0; i < 3; i++ {
-		n, err := strconv.Atoi(parts[i])
+	nums := make([]int, len(parts))
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
 		if err != nil {
-			return result, false
+			return nil, "", false
 		}
-		result[i] = n
+		nums[i] = n
 	}
-	return result, true
+	return nums, pre, true
+}
+
+// comparePreRelease applies semver's pre-release precedence: identifiers
+// compare left to right, numeric ones numerically and below alphanumeric ones,
+// and a shorter list that is a prefix of the other comes first.
+func comparePreRelease(a string, b string) int {
+	aIDs, bIDs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < min(len(aIDs), len(bIDs)); i++ {
+		x, errX := strconv.Atoi(aIDs[i])
+		y, errY := strconv.Atoi(bIDs[i])
+		switch {
+		case errX == nil && errY == nil:
+			if x != y {
+				return cmpInt(x, y)
+			}
+		case errX == nil:
+			return -1
+		case errY == nil:
+			return 1
+		default:
+			if c := strings.Compare(aIDs[i], bIDs[i]); c != 0 {
+				return c
+			}
+		}
+	}
+	return cmpInt(len(aIDs), len(bIDs))
+}
+
+func cmpInt(a int, b int) int {
+	switch {
+	case a > b:
+		return 1
+	case a < b:
+		return -1
+	}
+	return 0
 }
 
 func normalizeVersionTag(version string) string {
 	return strings.TrimPrefix(strings.TrimSpace(version), "v")
+}
+
+// panelUpdateScript is the shell line of the web update: panelRepo's update.sh
+// taken at tag and told to install exactly that tag.
+func panelUpdateScript(curl string, bash string, tag string) string {
+	url := "https://raw.githubusercontent.com/" + panelRepo + "/" + tag + "/update.sh"
+	return fmt.Sprintf("set -o pipefail; %s -fLs %s | %s -s -- %s", shellQuote(curl), shellQuote(url), shellQuote(bash), shellQuote(tag))
 }
 
 func shellQuote(value string) string {

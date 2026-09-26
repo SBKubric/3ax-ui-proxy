@@ -1,5 +1,5 @@
 #!/bin/bash
-# SBKubric/3ax-ui-proxy
+# SBKubric/sane-3x-ui
 
 red='\033[0;31m'
 green='\033[0;32m'
@@ -48,7 +48,7 @@ REPO_BRANCH="${XUI_REPO_BRANCH:-main}"
 
 # GitHub repo (owner/name) to fetch the release binary, wrapper and service
 # files from. Override with XUI_REPO=owner/name to install from a fork.
-XUI_REPO="${XUI_REPO:-SBKubric/3ax-ui-proxy}"
+XUI_REPO="${XUI_REPO:-SBKubric/sane-3x-ui}"
 
 # check root
 [[ $EUID -ne 0 ]] && echo -e "${red}Fatal error: ${plain} Please run this script with root privilege \n " && exit 1
