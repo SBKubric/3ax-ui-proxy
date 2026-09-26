@@ -436,3 +436,63 @@ func TestAReEnteringHopStaysVisible(t *testing.T) {
 		}
 	}
 }
+
+// TestTheDocumentCarriesTheNeighbourTargets: an edge reads its own neighbour
+// target in self (the front's SNI split needs its own server name, #140), and
+// an inner reads every edge's in its hops, because its front has to pass all
+// of their names on. The fields are optional — an edge without a neighbour
+// has none, and no document version changes over them.
+func TestTheDocumentCarriesTheNeighbourTargets(t *testing.T) {
+	documents, registry := newChainDocuments(t)
+	enteredHop(t, registry, AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
+	enteredHop(t, registry, AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge,
+		RealityTarget: "www.neighbour-a.example:443"})
+	edgeB := enteredHop(t, registry, AddHopInput{Name: "edge-b", Host: "b.example.net", Role: chain.RoleEdge})
+
+	edgeA, err := documents.Build("edge-a")
+	if err != nil {
+		t.Fatalf("Build(edge-a): %v", err)
+	}
+	if edgeA.Version != 1 {
+		t.Errorf("document version %d, want 1: the neighbour fields are optional", edgeA.Version)
+	}
+	if edgeA.Self.RealityTarget != "www.neighbour-a.example:443" || edgeA.Self.RealityServerName != "www.neighbour-a.example" {
+		t.Errorf("edge-a self neighbour = %q/%q, want its target and the target's host as the name",
+			edgeA.Self.RealityTarget, edgeA.Self.RealityServerName)
+	}
+
+	inner, err := documents.Build("inner-1")
+	if err != nil {
+		t.Fatalf("Build(inner-1): %v", err)
+	}
+	if inner.Self.RealityTarget != "" || inner.Self.RealityServerName != "" {
+		t.Errorf("an inner carries a neighbour of its own: %+v", inner.Self)
+	}
+	names := map[string]string{}
+	for _, hop := range inner.Hops {
+		names[hop.Name] = hop.RealityTarget + " " + hop.RealityServerName
+	}
+	if names["edge-a"] != "www.neighbour-a.example:443 www.neighbour-a.example" {
+		t.Errorf("inner-1 reads edge-a's neighbour as %q", names["edge-a"])
+	}
+	if names["edge-b"] != " " {
+		t.Errorf("inner-1 reads a neighbour for edge-b, which has none: %q", names["edge-b"])
+	}
+
+	// A neighbour written later moves the revision, or no box would fetch it.
+	before := inner.Revision
+	if err := registry.Update(edgeB.Id, UpdateHopInput{RealityTarget: strRef("198.51.100.20:443"),
+		RealityServerName: strRef("www.neighbour-b.example")}); err != nil {
+		t.Fatalf("Update(edge-b): %v", err)
+	}
+	edgeBDoc, err := documents.Build("edge-b")
+	if err != nil {
+		t.Fatalf("Build(edge-b): %v", err)
+	}
+	if edgeBDoc.Revision <= before {
+		t.Errorf("revision %d after edge-b got a neighbour, want more than %d", edgeBDoc.Revision, before)
+	}
+	if edgeBDoc.Self.RealityTarget != "198.51.100.20:443" || edgeBDoc.Self.RealityServerName != "www.neighbour-b.example" {
+		t.Errorf("edge-b self neighbour = %+v", edgeBDoc.Self)
+	}
+}

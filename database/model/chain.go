@@ -1,6 +1,10 @@
 package model
 
-import "github.com/coinman-dev/3ax-ui/v2/chain"
+import (
+	"net"
+
+	"github.com/coinman-dev/3ax-ui/v2/chain"
+)
 
 // The chain registry (docs/spec/proxy-chain.md §2.2). One table, because the
 // registry needs a unique name, lookups by next_hop_id and indexes — none of
@@ -41,6 +45,15 @@ type ChainHop struct {
 	State    string `json:"state" gorm:"size:8;not null;index:idx_chain_hops_role,priority:2"` // pending|joined|legacy|draining
 	IsActive bool   `json:"isActive" gorm:"not null;default:false"`
 
+	// The neighbour target of an edge (ADR 0005): a site in the same network
+	// as the edge's address, whose TLS the chain-following Reality inbounds
+	// imitate while this edge is the active one. RealityTarget is host:port;
+	// RealityServerName is the name those inbounds accept, empty meaning the
+	// host part of the target (NeighbourServerName). Only an edge carries
+	// them; the orchestrator finds the site and writes it here.
+	RealityTarget     string `json:"realityTarget" gorm:"size:262"`
+	RealityServerName string `json:"realityServerName" gorm:"size:255"`
+
 	// A hop on its way out (§4.5). These three are filled only while State is
 	// draining and only for as long as it lasts: the row disappears with them
 	// when the last former neighbour has re-chained, or when the deadline
@@ -69,4 +82,17 @@ type ChainHop struct {
 // silently migrate the registry into a second, empty table.
 func (ChainHop) TableName() string {
 	return "chain_hops"
+}
+
+// NeighbourServerName is the one server name a chain-following inbound
+// accepts while this edge is active: the name the owner gave, or else the host
+// part of the target. Empty when the hop has no neighbour target at all.
+func (h ChainHop) NeighbourServerName() string {
+	if h.RealityServerName != "" {
+		return h.RealityServerName
+	}
+	if host, _, err := net.SplitHostPort(h.RealityTarget); err == nil {
+		return host
+	}
+	return ""
 }

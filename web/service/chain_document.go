@@ -135,6 +135,9 @@ func (s *ChainDocumentService) BuildAllWithPanelHost(fallbackHost string) (map[s
 			SubPort:    hop.SubPort,
 			SecretHash: hop.SecretHash,
 			State:      hop.State,
+
+			RealityTarget:     hop.RealityTarget,
+			RealityServerName: hop.NeighbourServerName(),
 		})
 	}
 	activeEdge := ""
@@ -152,9 +155,10 @@ func (s *ChainDocumentService) BuildAllWithPanelHost(fallbackHost string) (map[s
 			Version:     chain.DocumentVersion,
 			Revision:    revision,
 			GeneratedAt: generatedAt,
-			Self:        chain.Self{Name: hop.Name, Role: hop.Role, Host: hop.Host, State: hop.State},
-			NextHop:     s.nextHopOf(hop, byId, panelHop),
-			Ports:       ports,
+			Self: chain.Self{Name: hop.Name, Role: hop.Role, Host: hop.Host, State: hop.State,
+				RealityTarget: hop.RealityTarget, RealityServerName: hop.NeighbourServerName()},
+			NextHop: s.nextHopOf(hop, byId, panelHop),
+			Ports:   ports,
 		}
 		if hop.Role == chain.RoleEdge {
 			// Outward of an edge there are only clients, and the edge beside

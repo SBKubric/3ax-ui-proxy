@@ -81,6 +81,14 @@ type Inbound struct {
 	// row and deliberately leave this one alone, so editing an inbound in the UI
 	// cannot silently reset it and break every link the inbound issued.
 	PublicPort int `json:"publicPort" form:"publicPort" gorm:"default:0"`
+
+	// FollowChain marks a chain-following inbound (ADR 0005): a Reality
+	// inbound whose target and serverNames the panel rewrites to the neighbour
+	// target of the active edge on every switch. A column here rather than a
+	// table of its own is the one exception ADR 0002 records: the flag
+	// belongs to the inbound, travels with its API and export, and lives
+	// exactly as long as the inbound does.
+	FollowChain bool `json:"followChain" form:"followChain" gorm:"not null;default:false"`
 }
 
 // LinkPort is the port to put into a client link or QR code.

@@ -677,3 +677,50 @@ func TestChainDelSkipDrainDropsTheRow(t *testing.T) {
 		}
 	}
 }
+
+// TestChainNeighbourTargetThroughTheAPI is the call the orchestrator makes
+// (#139): an edge's neighbour target goes in through add or update, list
+// hands it back, and list says how many inbounds follow the chain so the
+// editor knows when a switch needs a stronger confirmation.
+func TestChainNeighbourTargetThroughTheAPI(t *testing.T) {
+	r := newChainRouter(t)
+	cookie := monUILogin(t, r)
+	added := chainAdd(t, r, cookie,
+		`{"name":"edge-a","host":"a.example.net","role":"edge","realityTarget":"www.neighbour-a.example:443"}`)
+	if added.Hop.RealityTarget != "www.neighbour-a.example:443" {
+		t.Fatalf("add answered realityTarget %q", added.Hop.RealityTarget)
+	}
+
+	env := monUIDecode(t, chainPost(r, "/panel/api/chain/update/"+strconv.Itoa(added.Hop.Id), cookie,
+		`{"realityTarget":"198.51.100.20:443","realityServerName":"www.neighbour-a.example"}`))
+	if !env.Success {
+		t.Fatalf("update: %s", env.Msg)
+	}
+	env = monUIDecode(t, chainPost(r, "/panel/api/chain/update/"+strconv.Itoa(added.Hop.Id), cookie,
+		`{"realityTarget":"198.51.100.20"}`))
+	if env.Success || !strings.Contains(env.Msg, service.CodeInvalidRealityTarget) {
+		t.Errorf("a target without a port: success=%v msg %q", env.Success, env.Msg)
+	}
+
+	if err := database.GetDB().Create(&model.Inbound{
+		UserId: 1, Port: 24443, Protocol: model.VLESS, Tag: "inbound-24443", Remark: "follower",
+		StreamSettings: `{"security":"reality","realitySettings":{}}`, FollowChain: true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	listed := monUIDecode(t, monUIGet(r, "/panel/api/chain/list", cookie))
+	var list struct {
+		FollowingInbounds int64            `json:"followingInbounds"`
+		Hops              []model.ChainHop `json:"hops"`
+	}
+	if err := json.Unmarshal(listed.Obj, &list); err != nil {
+		t.Fatalf("list obj: %v (%s)", err, listed.Obj)
+	}
+	if list.FollowingInbounds != 1 {
+		t.Errorf("followingInbounds = %d, want 1", list.FollowingInbounds)
+	}
+	if len(list.Hops) != 1 || list.Hops[0].RealityTarget != "198.51.100.20:443" ||
+		list.Hops[0].RealityServerName != "www.neighbour-a.example" {
+		t.Errorf("list hops = %+v, want edge-a with its neighbour target", list.Hops)
+	}
+}
