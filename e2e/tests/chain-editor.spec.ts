@@ -40,6 +40,73 @@ async function removeHop(request: APIRequestContext, name: string) {
   }
 }
 
+/** The panel's sub server, where boxes join (docker-compose.yml publishes it). */
+const SUB_URL = process.env.E2E_SUB_URL || 'http://127.0.0.1:2096';
+
+/** Creates a hop through the registry API and returns it with its join token. */
+async function addHop(request: APIRequestContext, hop: object) {
+  const added = await (await request.post('/panel/api/chain/add', { data: hop })).json();
+  expect(added.success, added.msg).toBe(true);
+  return { id: added.obj.hop.id as number, joinToken: added.obj.joinToken as string };
+}
+
+/**
+ * A disabled VLESS + Reality inbound whose cover is www.original.example,
+ * created through the API the inbound form posts to.
+ */
+async function createRealityInbound(request: APIRequestContext, remark: string, port: number, followChain: boolean) {
+  const res = await request.post('/panel/api/inbounds/add', {
+    data: {
+      up: 0,
+      down: 0,
+      total: 0,
+      remark,
+      enable: false,
+      expiryTime: 0,
+      listen: '',
+      port,
+      protocol: 'vless',
+      followChain,
+      settings: JSON.stringify({ clients: [], decryption: 'none', fallbacks: [] }),
+      streamSettings: JSON.stringify({
+        network: 'tcp',
+        security: 'reality',
+        tcpSettings: { header: { type: 'none' } },
+        realitySettings: {
+          show: false,
+          xver: 0,
+          target: 'www.original.example:443',
+          serverNames: ['www.original.example'],
+          privateKey: 'yBaw532IIUNuQWDTncozoBaLJmcd1JZzvsHUgVPxMk8',
+          shortIds: ['ab12'],
+          settings: {
+            publicKey: 'wdZxPhgkfTXCJ3Mn6WgLyCMJv0Z6Lm1kqvZnxj6Q6hk',
+            fingerprint: 'chrome',
+            serverName: '',
+            spiderX: '/',
+          },
+        },
+      }),
+      sniffing: JSON.stringify({ enabled: false, destOverride: [] }),
+    },
+  });
+  const body = await res.json();
+  expect(body.success, `inbound "${remark}" was not created: ${body.msg}`).toBe(true);
+  return body.obj.id as number;
+}
+
+async function getInbound(request: APIRequestContext, id: number) {
+  const got = await (await request.get(`/panel/api/inbounds/get/${id}`)).json();
+  expect(got.success, got.msg).toBe(true);
+  return got.obj;
+}
+
+/** The target and serverNames an inbound's Reality settings carry. */
+async function realityOf(request: APIRequestContext, id: number) {
+  const reality = JSON.parse((await getInbound(request, id)).streamSettings).realitySettings;
+  return { target: reality.target, serverNames: reality.serverNames };
+}
+
 test.describe('chain editor', () => {
   test('adding a hop hands out its join token once, and reissue replaces it', async ({
     authedPage,
@@ -202,6 +269,98 @@ test.describe('chain editor', () => {
 
     const list = await (await authedRequest.get('/panel/api/chain/list')).json();
     expect(list.obj.activeEdge).toBe('');
+  });
+
+  test('an edge carries its neighbour target, and a switch with chain-following inbounds is confirmed first', async ({
+    authedPage,
+    authedRequest,
+    request,
+  }) => {
+    // #139, ADR 0005. The neighbour target is what the orchestrator writes
+    // through the registry API; the chain editor shows and edits it on the
+    // edge card; Reality inbounds marked in the inbound form follow the active
+    // edge's; and a switch that rewrites them asks first.
+    for (const name of ['e2e-nb-a', 'e2e-nb-b']) await removeHop(authedRequest, name);
+    const inboundIds: number[] = [];
+    try {
+      const a = await addHop(authedRequest, {
+        name: 'e2e-nb-a',
+        host: 'a.e2e.example',
+        role: 'edge',
+        realityTarget: 'www.neighbour-a.example:443',
+      });
+      const b = await addHop(authedRequest, { name: 'e2e-nb-b', host: 'b.e2e.example', role: 'edge' });
+      // Only a hop whose box has entered can be made active: both enter the
+      // way a real box does, with their join token on the panel's sub port.
+      for (const token of [a.joinToken, b.joinToken]) {
+        const joined = await request.post(`${SUB_URL}/chain/v1/join`, { data: { token } });
+        expect(joined.status()).toBe(200);
+      }
+
+      // One Reality inbound follows the chain, one does not.
+      inboundIds.push(await createRealityInbound(authedRequest, 'e2e-follower', 24211, true));
+      inboundIds.push(await createRealityInbound(authedRequest, 'e2e-follower-later', 24212, false));
+
+      await openSubscriptionTab(authedPage);
+      await expect(authedPage.getByTestId('chain-hop-e2e-nb-a-neighbour')).toContainText(
+        'www.neighbour-a.example:443 · SNI www.neighbour-a.example',
+      );
+      await expect(authedPage.getByTestId('chain-hop-e2e-nb-b-neighbour')).toHaveText('no neighbour target');
+
+      // The edge card edits it: an address target with the name its site answers to.
+      await authedPage.getByTestId('chain-hop-e2e-nb-b-neighbour-edit').click();
+      const modal = authedPage.getByTestId('chain-neighbour-modal');
+      await field(authedPage, 'chain-neighbour-target').fill('198.51.100.20:443');
+      await field(authedPage, 'chain-neighbour-server-name').fill('www.neighbour-b.example');
+      await authedPage.getByRole('button', { name: 'OK' }).click();
+      await expect(authedPage.getByTestId('chain-hop-e2e-nb-b-neighbour')).toContainText(
+        '198.51.100.20:443 · SNI www.neighbour-b.example',
+      );
+      await expect(modal).toBeHidden();
+
+      // With an inbound following the chain, "Make active" says what the
+      // switch does to the links clients hold — and cancelling changes nothing.
+      await authedPage.getByTestId('chain-hop-e2e-nb-a-make-active').click();
+      const confirm = authedPage.getByRole('dialog').filter({ hasText: 'e2e-nb-a' });
+      await expect(confirm).toContainText('Clients must refresh their subscription');
+      await expect(confirm).toContainText('the old links will stop working');
+      await confirm.getByRole('button', { name: 'Cancel' }).click();
+      await expect(authedPage.getByTestId('chain-hop-e2e-nb-a-active-marker')).toHaveCount(0);
+
+      await authedPage.getByTestId('chain-hop-e2e-nb-a-make-active').click();
+      await authedPage.getByRole('dialog').filter({ hasText: 'e2e-nb-a' }).getByRole('button', { name: 'Sure' }).click();
+      await expect(authedPage.getByTestId('chain-hop-e2e-nb-a-active-marker')).toBeVisible();
+
+      // The follower took edge-a's neighbour; the other inbound kept its own.
+      expect(await realityOf(authedRequest, inboundIds[0])).toEqual({
+        target: 'www.neighbour-a.example:443',
+        serverNames: ['www.neighbour-a.example'],
+      });
+      expect((await realityOf(authedRequest, inboundIds[1])).target).toBe('www.original.example:443');
+
+      // The inbound form marks the second one: saved while edge-a is active,
+      // it takes edge-a's neighbour at once.
+      await authedPage.goto('/panel/inbounds');
+      await authedPage.getByTestId(`inbound-actions-${inboundIds[1]}`).click();
+      await authedPage.getByRole('menuitem', { name: 'Edit' }).click();
+      const follow = authedPage.getByTestId('inbound-follow-chain');
+      // antd's switch sets aria-checked only while it is on.
+      await expect(follow).not.toHaveAttribute('aria-checked', 'true');
+      await follow.click();
+      await expect(follow).toHaveAttribute('aria-checked', 'true');
+      await authedPage.getByRole('button', { name: 'Update' }).click();
+      await expect
+        .poll(async () => (await getInbound(authedRequest, inboundIds[1])).followChain)
+        .toBe(true);
+      expect(await realityOf(authedRequest, inboundIds[1])).toEqual({
+        target: 'www.neighbour-a.example:443',
+        serverNames: ['www.neighbour-a.example'],
+      });
+    } finally {
+      for (const id of inboundIds) await authedRequest.post(`/panel/api/inbounds/del/${id}`);
+      await authedRequest.post('/panel/api/chain/clearActive');
+      for (const name of ['e2e-nb-a', 'e2e-nb-b']) await removeHop(authedRequest, name);
+    }
   });
 
   test('the registry is invisible without a session', async ({ request }) => {

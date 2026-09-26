@@ -106,6 +106,12 @@ type AddHopInput struct {
 	SubPort   int
 	SubScheme string
 	Position  *int
+
+	// The neighbour target of an edge (ADR 0005), both optional: the
+	// orchestrator usually writes them later through Update, once it has
+	// found a site next to the edge's address.
+	RealityTarget     string
+	RealityServerName string
 }
 
 // UpdateHopInput changes what the owner is allowed to change on an existing
@@ -116,6 +122,11 @@ type UpdateHopInput struct {
 	Host      *string
 	SubPort   *int
 	SubScheme *string
+
+	// An empty RealityTarget removes the neighbour target, server name
+	// included.
+	RealityTarget     *string
+	RealityServerName *string
 }
 
 // List returns the registry with the current revision and poll interval.
@@ -173,6 +184,10 @@ func (s *ChainService) Add(in AddHopInput) (*model.ChainHop, string, int64, erro
 	if err != nil {
 		return nil, "", 0, err
 	}
+	realityTarget, realityServerName, err := neighbourTarget(in.RealityTarget, in.RealityServerName)
+	if err != nil {
+		return nil, "", 0, err
+	}
 
 	token := chain.NewSecret()
 	expires, err := s.joinTokenExpiry()
@@ -181,14 +196,19 @@ func (s *ChainService) Add(in AddHopInput) (*model.ChainHop, string, int64, erro
 	}
 
 	hop := &model.ChainHop{
-		Name:             name,
-		Host:             host,
-		Role:             in.Role,
-		SubPort:          subPort,
-		SubScheme:        subScheme,
-		State:            chain.StatePending,
-		JoinTokenHash:    chain.HashSecret(token),
-		JoinTokenExpires: expires,
+		Name:              name,
+		Host:              host,
+		Role:              in.Role,
+		SubPort:           subPort,
+		SubScheme:         subScheme,
+		RealityTarget:     realityTarget,
+		RealityServerName: realityServerName,
+		State:             chain.StatePending,
+		JoinTokenHash:     chain.HashSecret(token),
+		JoinTokenExpires:  expires,
+	}
+	if err := neighbourOnlyOnEdges(hop, in.Role); err != nil {
+		return nil, "", 0, err
 	}
 
 	err = database.GetDB().Transaction(func(tx *gorm.DB) error {
@@ -244,7 +264,8 @@ func (s *ChainService) Add(in AddHopInput) (*model.ChainHop, string, int64, erro
 // something really changed, because a spurious bump restarts relays for
 // nothing (§3.5).
 func (s *ChainService) Update(id int, in UpdateHopInput) error {
-	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+	followers := 0
+	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
 		hop, err := loadHop(tx, id)
 		if err != nil {
 			return err
@@ -292,17 +313,63 @@ func (s *ChainService) Update(id int, in UpdateHopInput) error {
 				hop.SubScheme, changed = subScheme, true
 			}
 		}
-		if !changed {
+		neighbourChanged, err := updateNeighbourTarget(hop, in)
+		if err != nil {
+			return err
+		}
+		if !changed && !neighbourChanged {
 			return nil
 		}
 		if err := tx.Save(hop).Error; err != nil {
 			return err
+		}
+		// The active edge's neighbour is what the followers imitate right
+		// now, so a new one reaches them in this same write (ADR 0005).
+		if neighbourChanged && hop.IsActive {
+			rewritten, err := followEdgeTx(tx, hop)
+			if err != nil {
+				return err
+			}
+			followers = rewritten
 		}
 		if err := pruneMonTargetsTx(tx); err != nil {
 			return err
 		}
 		return bumpRevisionTx(tx)
 	})
+	if err != nil {
+		return err
+	}
+	chainFollowersRestart(followers)
+	return nil
+}
+
+// updateNeighbourTarget applies the neighbour target half of an update to hop
+// and reports whether it changed. A target sent empty removes the neighbour,
+// server name included; a server name sent alone keeps the stored target.
+func updateNeighbourTarget(hop *model.ChainHop, in UpdateHopInput) (bool, error) {
+	if in.RealityTarget == nil && in.RealityServerName == nil {
+		return false, nil
+	}
+	target, serverName := hop.RealityTarget, hop.RealityServerName
+	if in.RealityTarget != nil {
+		target = *in.RealityTarget
+		if strings.TrimSpace(target) == "" {
+			serverName = ""
+		}
+	}
+	if in.RealityServerName != nil {
+		serverName = *in.RealityServerName
+	}
+	target, serverName, err := neighbourTarget(target, serverName)
+	if err != nil {
+		return false, err
+	}
+	if target == hop.RealityTarget && serverName == hop.RealityServerName {
+		return false, nil
+	}
+	hop.RealityTarget, hop.RealityServerName = target, serverName
+	return true, neighbourOnlyOnEdges(hop, hop.Role)
 }
 
 // Delete takes a hop out of the chain (§4.5). Which of the two deletes it
@@ -431,7 +498,8 @@ func (s *ChainService) Delete(id int, force, skipDrain bool) (*DeleteResult, err
 // behind /proxy <name> and the switch button. Nothing changes on any box
 // (§4.7): the only consequence is which host the panel publishes.
 func (s *ChainService) SetActive(id int) error {
-	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+	followers := 0
+	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
 		hop, err := loadHop(tx, id)
 		if err != nil {
 			return err
@@ -448,6 +516,14 @@ func (s *ChainService) SetActive(id int) error {
 		if hop.IsActive {
 			return nil
 		}
+		// The inbounds follow the edge in the same transaction: a switch that
+		// moved the host but left them on the old edge's neighbour would give
+		// clients an address in one network and a cover site in another.
+		changed, err := followEdgeTx(tx, hop)
+		if err != nil {
+			return err
+		}
+		followers = changed
 		if err := tx.Model(&model.ChainHop{}).Where("is_active = ?", true).
 			Update("is_active", false).Error; err != nil {
 			return err
@@ -458,6 +534,11 @@ func (s *ChainService) SetActive(id int) error {
 		}
 		return bumpRevisionTx(tx)
 	})
+	if err != nil {
+		return err
+	}
+	chainFollowersRestart(followers)
+	return nil
 }
 
 // ClearActive turns the override off without deleting anything: what /proxy
@@ -473,6 +554,17 @@ func (s *ChainService) ClearActive() error {
 			return nil
 		}
 		logger.Warning("chain: override disabled, the real server address is now published")
+		// Owner decision on #139: the followers stay as the last active edge
+		// left them, so their links keep working with only the host changed.
+		// Their cover now sits in another network than the address clients
+		// reach, which is worth a line in the log.
+		var followers int64
+		if err := tx.Model(&model.Inbound{}).Where("follow_chain = ?", true).Count(&followers).Error; err != nil {
+			return err
+		}
+		if followers > 0 {
+			logger.Warningf("chain: %d chain-following inbound(s) keep the last active edge's neighbour target", followers)
+		}
 		return bumpRevisionTx(tx)
 	})
 }

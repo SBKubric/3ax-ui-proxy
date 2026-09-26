@@ -228,3 +228,34 @@ func hostPort(t *testing.T, rawURL string) (string, int) {
 	}
 	return host, number
 }
+
+// TestTheUpdateIntervalReachesClientsThroughTheFront: while inbounds follow
+// the chain the panel shortens Profile-Update-Interval so clients pick up the
+// new SNI after a switch (#139). A front that dropped the header would leave
+// its clients on the app's own default, so both the raw and the JSON
+// subscription must carry it on unchanged.
+func TestTheUpdateIntervalReachesClientsThroughTheFront(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Profile-Update-Interval", "1")
+		_, _ = w.Write([]byte("vless://a@h:443#x"))
+	}))
+	defer upstream.Close()
+
+	host, port := hostPort(t, upstream.URL)
+	state := NewState()
+	document := testDocument(42)
+	document.NextHop = chain.NextHop{Host: host, SubPort: port, SubScheme: "http", SubPath: "/s/", JsonPath: "/j/"}
+	state.SetDocument(document)
+	s := testSubServer(t, &Config{NextHop: NextHop{Host: "10.0.0.7"}}, state)
+
+	for _, path := range []string{"/s/abc", "/j/abc"} {
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", path, w.Code)
+		}
+		if got := w.Header().Get("Profile-Update-Interval"); got != "1" {
+			t.Errorf("%s: Profile-Update-Interval = %q, want the panel's 1", path, got)
+		}
+	}
+}

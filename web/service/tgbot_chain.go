@@ -6,8 +6,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/coinman-dev/3ax-ui/v2/chain"
 	"github.com/coinman-dev/3ax-ui/v2/database/model"
+
+	"github.com/mymmrac/telego"
+	tu "github.com/mymmrac/telego/telegoutil"
 )
+
+// chainSwitchCallback prefixes the callback data of the "Switch" button:
+// "chain_switch <name>". A hop name is at most 32 characters, so the data
+// stays well inside Telegram's 64 bytes and never goes through the hash
+// storage.
+const chainSwitchCallback = "chain_switch"
 
 // chainHealth reports one hop's health for the /proxy listing (§6.3, §7.4 of
 // docs/spec/proxy-chain.md). Ticket #87 plugs monitoring in by replacing
@@ -25,13 +35,14 @@ var chainHealthLookup chainHealth = defaultChainHealth
 // chainProxyCommand is the body of /proxy once the chain registry exists
 // (§2.5, §7.6): "/proxy" lists every hop, "/proxy <name>" switches the active
 // edge, "/proxy off" clears it. It never touches Telegram itself, so it is
-// plain to unit test.
-func (t *Tgbot) chainProxyCommand(args []string) string {
+// plain to unit test: the reply comes back as text plus, when the owner has
+// to confirm a switch first, the keyboard to send with it.
+func (t *Tgbot) chainProxyCommand(args []string) (string, *telego.InlineKeyboardMarkup) {
 	switch {
 	case len(args) == 0:
-		return t.chainListing("")
+		return t.chainListing(""), nil
 	case strings.EqualFold(args[0], "off"):
-		return t.chainOff()
+		return t.chainOff(), nil
 	default:
 		return t.chainSwitch(strings.TrimSpace(args[0]))
 	}
@@ -39,38 +50,100 @@ func (t *Tgbot) chainProxyCommand(args []string) string {
 
 // chainOff clears the active edge — the chain-registry meaning of "/proxy
 // off" (§2.5), still delegated to DisableProxyOverride so the legacy keys
-// come along with it.
+// come along with it. Chain-following inbounds stay on the last edge's
+// neighbour target (#139), and the reply says so: their cover now belongs to
+// another network than the address clients are given.
 func (t *Tgbot) chainOff() string {
 	if err := t.settingService.DisableProxyOverride(); err != nil {
 		return t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error())
 	}
-	return t.I18nBot("tgbot.commands.chainOff")
+	msg := t.I18nBot("tgbot.commands.chainOff")
+	if followers, err := (&ChainService{}).FollowingInbounds(); err == nil && followers > 0 {
+		msg += "\r\n" + t.I18nBot("tgbot.commands.chainOffFollowers")
+	}
+	return msg
 }
 
 // chainSwitch makes the named edge active. An unknown name, or a name that is
 // not a joined/legacy edge (an inner front or a pending hop), falls back to
 // the same listing an unadorned /proxy gives, with a warning on top (§7.6).
-func (t *Tgbot) chainSwitch(name string) string {
+//
+// While inbounds follow the chain a switch changes the SNI in their links and
+// the old links stop working (ADR 0005), so nothing is switched here: the
+// reply warns and carries a "Switch" button, and chainSwitchConfirmed does
+// the switch once it is pressed.
+func (t *Tgbot) chainSwitch(name string) (string, *telego.InlineKeyboardMarkup) {
+	chainSvc := &ChainService{}
+	state, err := chainSvc.List()
+	if err != nil {
+		return t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error()), nil
+	}
+	hop := findChainHop(state, name)
+	if hop == nil || !chainSwitchable(hop) {
+		return t.chainUnknownListing(name, state), nil
+	}
+	followers, err := chainSvc.FollowingInbounds()
+	if err != nil {
+		return t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error()), nil
+	}
+	if followers == 0 || hop.IsActive {
+		return t.chainSwitchNow(chainSvc, state, hop, false), nil
+	}
+	if hop.RealityTarget == "" {
+		return t.I18nBot("tgbot.commands.chainNoNeighbour", "Name=="+html.EscapeString(name)), nil
+	}
+	keyboard := tu.InlineKeyboard(tu.InlineKeyboardRow(
+		tu.InlineKeyboardButton(t.I18nBot("tgbot.buttons.chainSwitch")).
+			WithCallbackData(t.encodeQuery(chainSwitchCallback + " " + name)),
+	))
+	msg := t.I18nBot("tgbot.commands.chainConfirm", "Name=="+html.EscapeString(name))
+	msg += "\r\n" + t.I18nBot("tgbot.commands.chainFollowNote")
+	return msg, keyboard
+}
+
+// chainSwitchConfirmed is the "Switch" button. The button may be pressed long
+// after it was offered, so everything is asked again — the hop still exists,
+// has joined, is not leaving, and has a neighbour target — by the very
+// registry call an unconfirmed switch makes.
+func (t *Tgbot) chainSwitchConfirmed(name string) string {
 	chainSvc := &ChainService{}
 	state, err := chainSvc.List()
 	if err != nil {
 		return t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error())
 	}
 	hop := findChainHop(state, name)
-	if hop == nil {
+	if hop == nil || !chainSwitchable(hop) {
 		return t.chainUnknownListing(name, state)
 	}
+	return t.chainSwitchNow(chainSvc, state, hop, true)
+}
+
+// chainSwitchNow makes hop active and words the answer. With followers the
+// note is the stronger one: their old links have just stopped working.
+func (t *Tgbot) chainSwitchNow(chainSvc *ChainService, state *ChainState, hop *model.ChainHop, followers bool) string {
+	name := hop.Name
 	if err := chainSvc.SetActive(hop.Id); err != nil {
 		switch ChainErrorCode(err) {
-		case CodeNotAnEdge, CodeHopNotJoined:
+		case CodeNotAnEdge, CodeHopNotJoined, CodeHopIsDraining:
 			return t.chainUnknownListing(name, state)
+		case CodeNoNeighbourTarget:
+			return t.I18nBot("tgbot.commands.chainNoNeighbour", "Name=="+html.EscapeString(name))
 		default:
 			return t.I18nBot("tgbot.commands.proxyError", "Error=="+err.Error())
 		}
 	}
 	msg := t.I18nBot("tgbot.commands.chainSwitched", "Name=="+html.EscapeString(name))
-	msg += "\r\n" + t.I18nBot("tgbot.commands.chainSwitchNote")
-	return msg
+	if followers {
+		return msg + "\r\n" + t.I18nBot("tgbot.commands.chainFollowNote")
+	}
+	return msg + "\r\n" + t.I18nBot("tgbot.commands.chainSwitchNote")
+}
+
+// chainSwitchable is what SetActive accepts, asked before a switch is offered
+// so the button is never shown for a hop that would be refused anyway.
+func chainSwitchable(hop *model.ChainHop) bool {
+	return hop.Role == chain.RoleEdge &&
+		(hop.State == chain.StateJoined || hop.State == chain.StateLegacy)
 }
 
 // chainListing renders a plain "/proxy" — the chain, with the usage hint

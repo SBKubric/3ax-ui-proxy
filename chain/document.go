@@ -75,11 +75,21 @@ type Document struct {
 // instead of itself, so they re-chain past it while it is still serving them.
 // An absent State reads as joined — a box older than the panel simply does not
 // know how to drain.
+//
+// RealityTarget and RealityServerName are this edge's neighbour target (ADR
+// 0005): the site next to its address that an unknown SNI is passed on to,
+// and the one name its front hands to the Reality inbounds. The server name
+// is always spelled out, the registry's default already applied. Both are
+// absent for an inner and for an edge that has none, so a box older than the
+// fields reads the document exactly as before.
 type Self struct {
 	Name  string `json:"name"`
 	Role  string `json:"role"`
 	Host  string `json:"host"`
 	State string `json:"state,omitempty"`
+
+	RealityTarget     string `json:"realityTarget,omitempty"`
+	RealityServerName string `json:"realityServerName,omitempty"`
 }
 
 // Draining reports whether this hop is on its way out of the chain (§4.5.3).
@@ -100,6 +110,10 @@ type NextHop struct {
 // Hop is one entry of the outward-truncated hop list. SecretHash is the sha256
 // hex of that hop's hop secret: a hop authorises its direct outer neighbours by
 // comparing against these, and never sees a secret in the clear.
+//
+// An edge entry carries that edge's neighbour target as Self does: an inner's
+// front passes every edge's server name through to the Reality inbounds, so
+// it needs all of them. Optional, like Self's.
 type Hop struct {
 	Name       string `json:"name"`
 	Role       string `json:"role"`
@@ -107,6 +121,9 @@ type Hop struct {
 	SubPort    int    `json:"subPort"`
 	SecretHash string `json:"secretHash"`
 	State      string `json:"state"`
+
+	RealityTarget     string `json:"realityTarget,omitempty"`
+	RealityServerName string `json:"realityServerName,omitempty"`
 }
 
 // Port is one relayed port, identical in every document of the chain: the real

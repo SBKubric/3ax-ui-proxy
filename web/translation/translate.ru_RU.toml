@@ -441,6 +441,8 @@
 "filterDown" = "недоступные"
 "healthTooltip" = "Цели не в состоянии UP"
 "probeBadge" = "проба"
+"followChain" = "Следовать за цепочкой"
+"followChainDesc" = "При каждой смене активного edge панель ставит Target и SNI из target-соседа этого edge. После этого клиентам нужно обновить подписку."
 
 [pages.client]
 "add" = "Добавить клиента"
@@ -830,6 +832,20 @@
 "chain.clearActiveTitle" = "Выключить оверрайд?"
 "chain.clearActiveNote" = "Активного звена не останется; пока новое не выбрано, панель публикует адрес настоящего сервера."
 "chain.healthNone" = "нет данных"
+"chain.neighbour" = "сосед"
+"chain.neighbourNone" = "нет target-соседа"
+"chain.neighbourEdit" = "Target-сосед"
+"chain.neighbourTitle" = "Target-сосед этого edge"
+"chain.neighbourDesc" = "Сайт в той же сети, что и адрес edge. Пока edge активно, Reality-inbound'ы за цепочкой изображают его. Пустой target убирает соседа."
+"chain.neighbourTarget" = "Target (host:port)"
+"chain.neighbourServerName" = "Имя сервера (SNI)"
+"chain.neighbourServerNameDesc" = "Для target с доменом необязательно: берётся его хост. Обязательно, если target — IP-адрес."
+"chain.followSwitchTitle" = "Переключить активное edge? Клиентам нужно обновить подписку"
+"chain.followSwitchNote" = "За цепочкой следуют inbound'ы: клиентам нужно обновить подписку, старые ссылки перестанут работать."
+"chain.errors.invalid_reality_target" = "Target-сосед — это host:port, например www.example.com:443."
+"chain.errors.invalid_reality_server_name" = "Имя сервера — доменное имя; для target, заданного IP-адресом, оно обязательно."
+"chain.errors.reality_target_edge_only" = "Target-сосед бывает только у edge."
+"chain.errors.no_neighbour_target" = "У этого edge нет target-соседа, а за цепочкой следуют inbound'ы. Сначала задайте его target."
 
 [pages.xray]
 "title" = "Настройки Xray"
@@ -1234,6 +1250,10 @@
 "chainFresh" = "актуальна"
 "chainRev" = "ревизия {{ .Rev }}"
 "chainEmpty" = "В реестре пока нет звеньев."
+"chainConfirm" = "⚠️ Переключить активное edge на <code>{{ .Name }}</code>?"
+"chainFollowNote" = "Клиентам нужно обновить подписку: старые ссылки перестанут работать."
+"chainNoNeighbour" = "❗ У <code>{{ .Name }}</code> нет target-соседа, а за цепочкой следуют inbound'ы. Сначала задайте его target в редакторе цепочки."
+"chainOffFollowers" = "⚠️ Inbound'ы за цепочкой сохраняют target-сосед последнего edge: их ссылки продолжают работать, меняется только хост."
 
 [tgbot.messages]
 "cpuThreshold" = "🔴 Загрузка процессора составляет {{ .Percent }}%, что превышает пороговое значение {{ .Threshold }}%"
@@ -1367,6 +1387,7 @@
 "change_comment" = "⚙️💬 Комментарий"
 "ResetAllTraffics" = "Сбросить весь трафик"
 "SortedTrafficUsageReport" = "Отсортированный отчет об использовании трафика"
+"chainSwitch" = "Переключить"
 
 [tgbot.answers]
 "successfulOperation" = "✅ Успешно!"

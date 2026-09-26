@@ -117,6 +117,20 @@ const ChainUtil = {
         return !!hop && hop.state === ChainUtil.STATE_DRAINING;
     },
 
+    /**
+     * The one server name the chain-following inbounds accept while this edge
+     * is active: the one given, or else the host of the neighbour target —
+     * the registry's own rule (ChainHop.NeighbourServerName).
+     */
+    neighbourServerName(hop) {
+        if (!hop || !hop.realityTarget) return '';
+        if (hop.realityServerName) return hop.realityServerName;
+        const target = hop.realityTarget;
+        const colon = target.lastIndexOf(':');
+        const host = colon > 0 ? target.slice(0, colon) : target;
+        return host.replace(/^\[|\]$/g, '');
+    },
+
     /** A legacy hop never entered by token: it wants re-installing (§2.3). */
     isLegacy(hop) {
         return !!hop && hop.state === ChainUtil.STATE_LEGACY;

@@ -66,6 +66,11 @@ type chainListResponse struct {
 	Hops         []model.ChainHop `json:"hops"`
 	PortsProblem *chainProblem    `json:"portsProblem"`
 
+	// FollowingInbounds is how many inbounds follow the chain (#139): with
+	// any, a switch changes the SNI in their links, and the editor asks for a
+	// stronger confirmation than a plain switch needs.
+	FollowingInbounds int64 `json:"followingInbounds"`
+
 	// Draining is one card per hop on its way out (§4.5): the names it still
 	// waits for and the deadline, neither of which the hop row itself carries.
 	Draining []service.DrainingHop `json:"draining"`
@@ -88,6 +93,11 @@ type chainAddRequest struct {
 	SubPort   int    `json:"subPort"`
 	SubScheme string `json:"subScheme"`
 	Position  *int   `json:"position"`
+
+	// An edge's neighbour target (ADR 0005): host:port, and the server name
+	// its site answers to — optional unless the target is an address.
+	RealityTarget     string `json:"realityTarget"`
+	RealityServerName string `json:"realityServerName"`
 }
 
 // chainUpdateRequest is the body of POST update/:id: every field is a pointer,
@@ -105,6 +115,10 @@ type chainUpdateRequest struct {
 	Host      *string `json:"host"`
 	SubPort   *int    `json:"subPort"`
 	SubScheme *string `json:"subScheme"`
+
+	// An empty realityTarget removes the neighbour target.
+	RealityTarget     *string `json:"realityTarget"`
+	RealityServerName *string `json:"realityServerName"`
 
 	Role      *string `json:"role"`
 	Position  *int    `json:"position"`
@@ -199,6 +213,12 @@ func (a *ChainController) list(c *gin.Context) {
 		Hops:        state.Hops,
 		Draining:    state.Draining,
 	}
+	followers, err := a.chainService.FollowingInbounds()
+	if err != nil {
+		a.fail(c, err)
+		return
+	}
+	response.FollowingInbounds = followers
 	if problem := a.portsService.LastProblem(); problem != nil {
 		response.PortsProblem = &chainProblem{Code: problem.Code, Message: problem.Message}
 	}
@@ -219,6 +239,9 @@ func (a *ChainController) add(c *gin.Context) {
 		SubPort:   request.SubPort,
 		SubScheme: request.SubScheme,
 		Position:  request.Position,
+
+		RealityTarget:     request.RealityTarget,
+		RealityServerName: request.RealityServerName,
 	})
 	if err != nil {
 		a.fail(c, err)
@@ -227,7 +250,8 @@ func (a *ChainController) add(c *gin.Context) {
 	jsonObj(c, gin.H{"hop": hop, "joinToken": token, "joinTokenExpires": expires}, nil)
 }
 
-// POST update/:id — name, host, sub port and sub scheme (§2.4). Role, position
+// POST update/:id — name, host, sub port, sub scheme and an edge's neighbour
+// target (§2.4, #139). Role, position
 // and activity are not here: they move through add, del and setActive, which
 // are the calls that keep the topology invariants.
 func (a *ChainController) update(c *gin.Context) {
@@ -252,6 +276,9 @@ func (a *ChainController) update(c *gin.Context) {
 		Host:      request.Host,
 		SubPort:   request.SubPort,
 		SubScheme: request.SubScheme,
+
+		RealityTarget:     request.RealityTarget,
+		RealityServerName: request.RealityServerName,
 	})
 	if err != nil {
 		a.fail(c, err)

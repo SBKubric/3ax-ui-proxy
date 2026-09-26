@@ -73,12 +73,19 @@
                     :title="lastSeenText(hop)">[[ freshnessText(hop) ]]</span>
                 <a-tag v-if="hop.isActive" color="green"
                     :data-testid="'chain-hop-' + hop.name + '-active-marker'">{{ i18n "pages.settings.chain.active"}}</a-tag>
+                <!-- The site next to this edge's address that the Reality
+                     inbounds following the chain imitate while it is active
+                     (ADR 0005). -->
+                <span class="mon-muted" :data-testid="'chain-hop-' + hop.name + '-neighbour'">[[ neighbourText(hop) ]]</span>
                 <span v-if="isDraining(hop)" class="mon-muted"
                     :data-testid="'chain-hop-' + hop.name + '-draining'">[[ drainingText(hop) ]]</span>
                 <template v-else>
                 <a-button v-if="hop.isActive" size="small" :style="{ marginInlineStart: '8px' }"
                     @click="confirmClearActive()"
                     data-testid="chain-clear-active">{{ i18n "pages.settings.chain.clearActive"}}</a-button>
+                <a-button size="small" icon="edit" :style="{ marginInlineStart: '8px' }"
+                    @click="openNeighbour(hop)"
+                    :data-testid="'chain-hop-' + hop.name + '-neighbour-edit'">{{ i18n "pages.settings.chain.neighbourEdit"}}</a-button>
                 <a-button v-if="canMakeActive(hop)" type="primary" size="small"
                     :style="{ marginInlineStart: '8px' }" @click="confirmMakeActive(hop)"
                     :data-testid="'chain-hop-' + hop.name + '-make-active'">{{ i18n "pages.settings.chain.makeActive"}}</a-button>
@@ -161,6 +168,22 @@
     </a-form>
 </a-modal>
 
+<a-modal v-model="neighbourModal.visible" title='{{ i18n "pages.settings.chain.neighbourTitle"}}'
+    @ok="submitNeighbour()" :confirm-loading="busy" data-testid="chain-neighbour-modal">
+    <p class="mon-muted">{{ i18n "pages.settings.chain.neighbourDesc"}}</p>
+    <a-form layout="vertical">
+        <a-form-item label='{{ i18n "pages.settings.chain.neighbourTarget"}}'>
+            <a-input v-model="neighbourModal.form.realityTarget" placeholder="www.example.com:443"
+                data-testid="chain-neighbour-target"></a-input>
+        </a-form-item>
+        <a-form-item label='{{ i18n "pages.settings.chain.neighbourServerName"}}'
+            extra='{{ i18n "pages.settings.chain.neighbourServerNameDesc"}}'>
+            <a-input v-model="neighbourModal.form.realityServerName" placeholder="www.example.com"
+                data-testid="chain-neighbour-server-name"></a-input>
+        </a-form-item>
+    </a-form>
+</a-modal>
+
 <a-modal v-model="portsModal.visible" title='{{ i18n "pages.settings.chain.ports"}}' :footer="null"
     data-testid="chain-ports-modal">
     <pre class="mon-mono" data-testid="chain-ports-json">[[ portsModal.text ]]</pre>
@@ -236,6 +259,10 @@
         legacyReinstall: '{{ i18n "pages.settings.chain.legacyReinstall" }}',
         makeActiveTitle: '{{ i18n "pages.settings.chain.makeActiveTitle" }}',
         switchNote: '{{ i18n "pages.settings.chain.switchNote" }}',
+        followSwitchTitle: '{{ i18n "pages.settings.chain.followSwitchTitle" }}',
+        followSwitchNote: '{{ i18n "pages.settings.chain.followSwitchNote" }}',
+        neighbour: '{{ i18n "pages.settings.chain.neighbour" }}',
+        neighbourNone: '{{ i18n "pages.settings.chain.neighbourNone" }}',
         deleteConfirmTitle: '{{ i18n "pages.settings.chain.deleteConfirmTitle" }}',
         deleteActiveRefusedTitle: '{{ i18n "pages.settings.chain.deleteActiveRefusedTitle" }}',
         deleteActiveRefused: '{{ i18n "pages.settings.chain.deleteActiveRefused" }}',
@@ -269,6 +296,9 @@
                 activeEdge: '',
                 hops: [],
                 portsProblem: null,
+                // How many inbounds follow the chain (#139): with any, a
+                // switch breaks the links clients hold, and says so first.
+                followingInbounds: 0,
                 health: {},
                 // Join tokens live here and nowhere else: the panel keeps only
                 // the hash, so a token exists in this page from the moment it
@@ -277,6 +307,7 @@
                 draining: {},
                 busy: false,
                 addModal: { visible: false, form: {} },
+                neighbourModal: { visible: false, hop: null, form: {} },
                 portsModal: { visible: false, text: '' },
             };
         },
@@ -314,6 +345,7 @@
                     this.activeEdge = msg.obj.activeEdge || '';
                     this.hops = msg.obj.hops || [];
                     this.portsProblem = msg.obj.portsProblem || null;
+                    this.followingInbounds = msg.obj.followingInbounds || 0;
                     // One card per departing hop: who it still waits for and
                     // until when (§4.5.4).
                     const draining = {};
@@ -431,16 +463,52 @@
                 });
             },
             confirmMakeActive(hop) {
+                // With inbounds following the chain the switch rewrites their
+                // SNI, and every link clients hold stops working until they
+                // refresh the subscription (ADR 0005): the owner is told that
+                // before anything happens. Without them it is the plain
+                // reminder of §4.7 — the old links keep their old edge.
+                const following = this.followingInbounds > 0;
                 this.confirm({
-                    title: this.text.makeActiveTitle,
-                    // One line, not a second step: switching is instant, but
-                    // the links already handed out keep their old edge (§4.7).
-                    content: hop.name + ' — ' + this.text.switchNote,
+                    title: following ? this.text.followSwitchTitle : this.text.makeActiveTitle,
+                    content: hop.name + ' — ' + (following ? this.text.followSwitchNote : this.text.switchNote),
                     onOk: async () => {
                         const msg = await ChainApi.setActive(hop.id);
                         if (msg.success) await this.load();
                     },
                 });
+            },
+            // "neighbour: www.example.com:443 · SNI www.example.com", the name
+            // being the one the registry falls back to when none was given.
+            neighbourText(hop) {
+                if (!hop.realityTarget) return this.text.neighbourNone;
+                return this.text.neighbour + ': ' + hop.realityTarget + ' · SNI ' + ChainUtil.neighbourServerName(hop);
+            },
+            openNeighbour(hop) {
+                this.neighbourModal.hop = hop;
+                this.neighbourModal.form = {
+                    realityTarget: hop.realityTarget || '',
+                    realityServerName: hop.realityServerName || '',
+                };
+                this.neighbourModal.visible = true;
+            },
+            // Both fields go every time: an empty target removes the
+            // neighbour, and the registry refuses that while inbounds follow
+            // this edge as the active one.
+            async submitNeighbour() {
+                const form = this.neighbourModal.form;
+                this.busy = true;
+                const target = (form.realityTarget || '').trim();
+                const msg = await ChainApi.update(this.neighbourModal.hop.id, {
+                    realityTarget: target,
+                    // A name without a target is refused; clearing the target
+                    // clears both.
+                    realityServerName: target ? (form.realityServerName || '').trim() : '',
+                });
+                this.busy = false;
+                if (!msg.success) return;
+                this.neighbourModal.visible = false;
+                await this.load();
             },
             confirmDelete(hop) {
                 if (hop.isActive) {

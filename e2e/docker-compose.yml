@@ -25,6 +25,9 @@ services:
         exec /app/DockerEntrypoint.sh
     ports:
       - "2053:2053"
+      # The panel's sub server: chain-editor.spec.ts enters hops into the
+      # chain through its POST /chain/v1/join, as a real box does.
+      - "2096:2096"
     # Anonymous volume: a fresh /etc/x-ui (and fresh x-ui.db) every time this
     # compose project is brought up, never a host bind-mount. `make e2e` runs
     # `docker compose down -v` on teardown so the volume never survives a run.

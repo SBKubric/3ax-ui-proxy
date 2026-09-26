@@ -456,6 +456,7 @@
                                                     @click="e => e.preventDefault()"
                                                     type="more"
                                                     :style="{ fontSize: '20px', textDecoration: 'solid' }"
+                                                    :data-testid="'inbound-actions-' + dbInbound.id"
                                                 ></a-icon>
                                                 <a-menu
                                                     slot="overlay"
@@ -2623,6 +2624,11 @@
                     port: inbound.port,
                     protocol: inbound.protocol,
                     settings: inbound.settings.toString(),
+                    // Only a Reality inbound can follow the chain; the switch
+                    // lives in the Reality settings and means nothing once
+                    // the security was changed away from it.
+                    followChain: !!(dbInbound.followChain && inbound.canEnableStream() &&
+                        inbound.stream.isReality),
                 };
                 if (inbound.canEnableStream()) {
                     data.streamSettings = inbound.stream.toString();
@@ -2681,6 +2687,11 @@
                     port: inbound.port,
                     protocol: inbound.protocol,
                     settings: inbound.settings.toString(),
+                    // Only a Reality inbound can follow the chain; the switch
+                    // lives in the Reality settings and means nothing once
+                    // the security was changed away from it.
+                    followChain: !!(dbInbound.followChain && inbound.canEnableStream() &&
+                        inbound.stream.isReality),
                 };
                 if (inbound.canEnableStream()) {
                     data.streamSettings = inbound.stream.toString();
