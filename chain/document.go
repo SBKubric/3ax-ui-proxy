@@ -7,6 +7,11 @@
 // exactly one definition of the wire format instead of two that drift apart.
 package chain
 
+// PathPrefix is where the wave lives on every hop and on the panel (§3.3). It
+// is not configurable: a hop has to find it on its next hop before it has any
+// document to tell it where to look.
+const PathPrefix = "/chain/v1"
+
 // DocumentVersion is the only document version this code speaks. It travels in
 // the document so a box that meets a newer panel can refuse loudly instead of
 // applying half a format it does not understand.

@@ -100,6 +100,23 @@ type Site struct {
 	Root       string // document root of the stub page
 	Panel      *Proxy
 	Sub        *Proxy
+	// Mon is the monitoring contract (<base>mon/v1/) on its own. It lives on
+	// the panel's port like the panel, but mon-server has to reach it on a
+	// box whose panel port only443 has closed, whether or not the panel
+	// itself is published here (ADR 0005).
+	Mon *Proxy
+}
+
+// proxies is every HTTP service the site publishes, in the order they are
+// written out.
+func (s *Site) proxies() []*Proxy {
+	var out []*Proxy
+	for _, p := range []*Proxy{s.Panel, s.Sub, s.Mon} {
+		if p != nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Config is everything the generator needs. It is filled from the panel's
@@ -199,10 +216,7 @@ func (c Config) Validate() error {
 				return err
 			}
 		}
-		for _, p := range []*Proxy{c.Site.Panel, c.Site.Sub} {
-			if p == nil {
-				continue
-			}
+		for _, p := range c.Site.proxies() {
 			if p.Target == "" {
 				return fmt.Errorf("%s has no target", p.Name)
 			}
@@ -323,7 +337,7 @@ func (c Config) HTTPConf() (string, error) {
 	b.WriteString(header)
 	b.WriteString("\n")
 
-	if s.Panel != nil || s.Sub != nil {
+	if len(s.proxies()) > 0 {
 		// Own name so that a map by the usual name in another conf.d file
 		// does not collide with ours.
 		b.WriteString("map $http_upgrade $threeax_connection_upgrade {\n")
@@ -368,10 +382,7 @@ func writeServer(b *strings.Builder, s *Site, listenExtra, name, cert, key strin
 	b.WriteString("    access_log off;\n")
 	b.WriteString("    server_tokens off;\n\n")
 
-	for _, p := range []*Proxy{s.Panel, s.Sub} {
-		if p == nil {
-			continue
-		}
+	for _, p := range s.proxies() {
 		writeProxy(b, p)
 	}
 

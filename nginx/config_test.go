@@ -132,6 +132,32 @@ func TestGeneratedConfigsWithIPCertificate(t *testing.T) {
 	}
 }
 
+// TestHTTPSideServesMonitoring: the monitoring contract lives under the
+// panel's base path on the panel's own port, which only443 closes. mon-server
+// reaches it through the HTTP side instead (ADR 0005), whether or not the rest
+// of the panel is published there.
+func TestHTTPSideServesMonitoring(t *testing.T) {
+	c := goldenConfig()
+	c.Mode = ModeOnly443
+	c.Site = goldenSite()
+	c.Site.Mon = &Proxy{Name: "monitoring", Paths: []string{"/uS2J19TzcfZuEAPyNH/mon/v1/"}, Target: "127.0.0.1:33757", TLS: true}
+	http := must(t, c.HTTPConf)
+	for _, want := range []string{
+		"    # monitoring\n    location /uS2J19TzcfZuEAPyNH/mon/v1/ {\n        proxy_pass https://127.0.0.1:33757;\n",
+		// The websocket map is emitted for any proxied service.
+		"map $http_upgrade $threeax_connection_upgrade {",
+	} {
+		if !strings.Contains(http, want) {
+			t.Errorf("the HTTP side lacks %q:\n%s", want, http)
+		}
+	}
+
+	c.Site.Mon.Target = ""
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "monitoring has no target") {
+		t.Errorf("a monitoring proxy without a target validated: %v", err)
+	}
+}
+
 // TestFallbackPrefersReality guards the reasoning behind the default entry: a
 // prober with an unknown server name has to land on Reality, which answers it
 // by proxying to the site it borrows its identity from. Sending it to our own

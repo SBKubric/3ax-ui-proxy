@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -255,4 +256,54 @@ func TestBuildConfigRefusesABrokenIPCertificate(t *testing.T) {
 	if _, err := s.buildConfig(NginxSettings{Mode: string(nginx.ModeShared), RealityPort: 8443}); err == nil {
 		t.Fatal("an expired IP certificate was silently left out of the config")
 	}
+}
+
+// TestBuildConfig_HTTPSideCarriesTheChainAndMonitoring is the bug of #140 on
+// the panel: with the subscriptions behind 443 the first-tier hop is told to
+// poll the panel on 443 (panelAsNextHop), but the HTTP side published only the
+// subscription paths, so /chain/v1/document reached the stub page and every
+// poll failed to parse. The same front closes the panel port mon-server used
+// for /mon/v1. Both are now published on the HTTP side.
+func TestBuildConfig_HTTPSideCarriesTheChainAndMonitoring(t *testing.T) {
+	s := newNginxTestServer(t)
+	seedInbounds(t)
+	dir := useIPCertDir(t)
+	useCertDirs(t, t.TempDir())
+	writeIPCert(t, dir, time.Now().Add(5*24*time.Hour), []string{"203.0.113.5"}, nil)
+	if err := s.settingService.setString("webBasePath", "/uS2J19TzcfZuEAPyNH/"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := s.buildConfig(NginxSettings{Mode: string(nginx.ModeOnly443), SubsBehind443: true, RealityPort: 8443})
+	if err != nil {
+		t.Fatalf("buildConfig: %v", err)
+	}
+	if cfg.Site == nil || cfg.Site.Sub == nil {
+		t.Fatalf("no subscriptions on the HTTP side: %+v", cfg.Site)
+	}
+	if !slicesContains(cfg.Site.Sub.Paths, "/chain/v1/") {
+		t.Errorf("sub paths = %v, want /chain/v1/ beside them: a hop polls the panel there", cfg.Site.Sub.Paths)
+	}
+	if cfg.Site.Mon == nil {
+		t.Fatal("the HTTP side does not publish /mon/v1")
+	}
+	port, _ := s.settingService.GetPort()
+	if want := []string{"/uS2J19TzcfZuEAPyNH/mon/v1/"}; len(cfg.Site.Mon.Paths) != 1 || cfg.Site.Mon.Paths[0] != want[0] {
+		t.Errorf("monitoring paths = %v, want %v", cfg.Site.Mon.Paths, want)
+	}
+	if want := net.JoinHostPort("127.0.0.1", strconv.Itoa(port)); cfg.Site.Mon.Target != want {
+		t.Errorf("monitoring target = %q, want the panel at %q", cfg.Site.Mon.Target, want)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("the config does not validate: %v", err)
+	}
+}
+
+func slicesContains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
