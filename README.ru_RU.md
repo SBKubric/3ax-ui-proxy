@@ -179,6 +179,7 @@ ansible-playbook -i inventories/stand-full wipe.yml -e wipe_confirm=yes --ask-va
 - **Порты цепочки из таблицы inbound'ов.** Порты, которые релеит звено, берутся из inbound'ов панели, а не из `bin/config.json`, так что новый inbound доходит до каждого звена.
 - **Исправления установщика.** ACME по умолчанию ходит по IPv4. Тег версии, переданный без TTY, больше не теряется. `--beta` больше не оставляет сервер без службы. Существующая установка обновляется `update.sh` этого форка, а не upstream'а.
 - **Подписки.** Пользователи VLESS получают `"encryption":"none"` в JSON-подписке. Ссылка на страницу профиля несёт собственный адрес и порт прокси.
+- **UDP через WireGuard-outbound'ы (WARP, NordVPN).** Новые WireGuard-outbound'ы создаются с `noKernelTun: true`. Под панелью xray работает от root и выбирает kernel TUN, а через него UDP не проходит (`use of WriteTo with pre-connected connection`), хотя TCP работает. Ранее созданные outbound'ы не меняются: если через такой не ходит UDP, включите **No Kernel Tun** в его настройках.
 
 ---
 

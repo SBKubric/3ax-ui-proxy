@@ -958,6 +958,7 @@
 "endpoint" = "Конечная точка"
 "psk" = "Общий ключ"
 "domainStrategy" = "Стратегия домена"
+"noKernelTunHint" = "Вкл.: TUN в userspace (gVisor). Выкл.: kernel TUN — его xray выбирает, когда работает от root, как под панелью; через такой outbound не проходит UDP (use of WriteTo with pre-connected connection), TCP работает. Оставьте включённым, если kernel TUN точно не нужен."
 
 [pages.xray.tun]
 "nameDesc" = "Имя интерфейса TUN. Значение по умолчанию - 'xray0'"
