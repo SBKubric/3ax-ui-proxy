@@ -64,6 +64,16 @@ type Route struct {
 	// except through nginx, so it keeps the header and with it the real
 	// client address.
 	Relay string
+
+	// Raw marks an upstream off this machine: the next box of the proxy chain
+	// or an edge's neighbour target (ADR 0005). Both read the SNI from the
+	// first bytes they receive — another box's front with ssl_preread, a
+	// site on the internet with its TLS stack — and neither knows the PROXY
+	// header, so the stream has to leave exactly as the client sent it. The
+	// header comes off on Relay, which a raw route therefore must have; the
+	// cost is that the next box sees this one as the client, as it always did
+	// behind the dokodemo relay.
+	Raw bool
 }
 
 // target is where the map sends this route: through the relay when there is
@@ -165,6 +175,9 @@ func (c Config) Validate() error {
 	for _, r := range c.Routes {
 		if r.Upstream == "" {
 			return fmt.Errorf("route %q has no upstream", r.Name)
+		}
+		if r.Raw && r.Relay == "" {
+			return fmt.Errorf("raw route %q has no relay address to take the PROXY header off on", r.Name)
 		}
 		if r.Relay != "" {
 			if r.Relay == r.Upstream {
@@ -309,7 +322,11 @@ func (c Config) StreamConf() (string, error) {
 		if r.Relay == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "\n# %s — keeps its own port, so the PROXY header is taken off here\n", r.Name)
+		if r.Raw {
+			fmt.Fprintf(&b, "\n# %s — raw stream: the PROXY header is taken off before it leaves the box\n", r.Name)
+		} else {
+			fmt.Fprintf(&b, "\n# %s — keeps its own port, so the PROXY header is taken off here\n", r.Name)
+		}
 		b.WriteString("server {\n")
 		fmt.Fprintf(&b, "    listen %s proxy_protocol;\n", r.Relay)
 		fmt.Fprintf(&b, "    proxy_pass %s;\n", r.Upstream)

@@ -132,6 +132,53 @@ func TestGeneratedConfigsWithIPCertificate(t *testing.T) {
 	}
 }
 
+// goldenHopConfig is the front of a box in the proxy chain (#140): the edge's
+// server name leaves raw for the next hop's 443, an unknown one raw for the
+// neighbour target, and a request by address lands on the HTTP side.
+func goldenHopConfig() Config {
+	return Config{
+		Mode: ModeOnly443,
+		Port: 443,
+		Routes: []Route{
+			{Name: "clients of edge-a → next hop", SNIs: []string{"www.neighbour.example"},
+				Upstream: "203.0.113.9:443", Relay: "127.0.0.1:8084", Raw: true},
+			{Name: "neighbour target of edge-a", Upstream: "www.neighbour.example:443",
+				Relay: "127.0.0.1:8085", Raw: true, Fallback: true},
+		},
+		Site: &Site{
+			IPCertFile: "/root/cert/ip/fullchain.pem",
+			IPKeyFile:  "/root/cert/ip/privkey.pem",
+			Listen:     "127.0.0.1:8082",
+			Root:       "/usr/local/x-ui/www",
+			Sub:        &Proxy{Name: "sub server of edge-a", Paths: []string{"/sub/", "/chain/v1/"}, Target: "127.0.0.1:8083"},
+		},
+	}
+}
+
+// TestGeneratedHopConfig: between boxes the stream carries no PROXY header.
+// The next hop's front reads the SNI from the very first bytes it gets, and a
+// neighbour's site has never heard of the header, so a raw route has it taken
+// off on the loopback before the stream leaves — while the HTTP side on the
+// same box keeps it, and with it the client's address.
+func TestGeneratedHopConfig(t *testing.T) {
+	c := goldenHopConfig()
+	stream := must(t, c.StreamConf)
+	check(t, "stream_hop_raw.conf", stream)
+	for _, want := range []string{
+		"    listen 127.0.0.1:8084 proxy_protocol;\n    proxy_pass 203.0.113.9:443;\n",
+		"    default 127.0.0.1:8085;\n",
+		"# clients of edge-a → next hop — raw stream: the PROXY header is taken off before it leaves the box\n",
+	} {
+		if !strings.Contains(stream, want) {
+			t.Errorf("stream lacks %q", want)
+		}
+	}
+	if strings.Contains(stream, "keeps its own port") {
+		t.Error("a raw route is described as an inbound that kept its own port")
+	}
+	check(t, "http_hop.conf", must(t, c.HTTPConf))
+}
+
 // TestHTTPSideServesMonitoring: the monitoring contract lives under the
 // panel's base path on the panel's own port, which only443 closes. mon-server
 // reaches it through the HTTP side instead (ADR 0005), whether or not the rest
@@ -356,6 +403,13 @@ func TestValidate(t *testing.T) {
 			name: "nothing to serve",
 			want: "nothing to serve",
 			mut:  func(c *Config) { c.Routes = nil },
+		},
+		{
+			// A raw route without the loopback listener that takes the PROXY
+			// header off would hand the header to another box's front.
+			name: "raw route without a relay",
+			want: "raw route",
+			mut:  func(c *Config) { c.Routes[1].Relay = ""; c.Routes[1].Raw = true },
 		},
 		{
 			// mode off is never wrong, whatever else is in the struct.
