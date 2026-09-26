@@ -1,5 +1,17 @@
 {{define "form/realitySettings"}}
 <template>
+    <!-- Follow the proxy chain (ADR 0005): the panel sets Target and SNI to
+         the active edge's neighbour target on every switch. -->
+    <a-form-item>
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    <span>{{ i18n "pages.inbounds.followChainDesc" }}</span>
+                </template> {{ i18n "pages.inbounds.followChain" }} <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-switch v-model="dbInbound.followChain" data-testid="inbound-follow-chain"></a-switch>
+    </a-form-item>
     <a-form-item label='Show'>
         <a-switch v-model="inbound.stream.reality.show"></a-switch>
     </a-form-item>

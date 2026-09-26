@@ -18,6 +18,9 @@ class DBInbound {
         // Set by the nginx front-end when the inbound is published on another
         // port than it listens on; 0 means the two are the same.
         this.publicPort = 0;
+        // A chain-following Reality inbound (ADR 0005): the panel switches
+        // its target and SNI with the active edge of the proxy chain.
+        this.followChain = false;
         this.protocol = "";
         this.settings = "";
         this.streamSettings = "";
