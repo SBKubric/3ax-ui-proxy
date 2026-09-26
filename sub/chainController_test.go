@@ -519,3 +519,34 @@ func TestChainJoinDistrustsTheObservedHeader(t *testing.T) {
 		})
 	}
 }
+
+// TestChainDocumentRecordsTheFront (#140): the poll carries the box's front
+// report, and an edge's arrives in its inner's acknowledgements. Both move
+// the hop in the registry and bump the revision.
+func TestChainDocumentRecordsTheFront(t *testing.T) {
+	engine, registry := newChainRouter(t)
+	_, secret := enterHop(t, registry, service.AddHopInput{Name: "inner-1", Host: "10.0.0.7", Role: chain.RoleInner})
+	enterHop(t, registry, service.AddHopInput{Name: "edge-a", Host: "a.example.net", Role: chain.RoleEdge})
+	state, _ := registry.List()
+
+	front := chain.FrontReport{Mode: chain.FrontOnly443, SubPort: 443, SubScheme: "https"}
+	outer, err := json.Marshal([]chain.OuterAck{{Name: "edge-a", LastRevision: state.Revision, LastSeen: 1, Front: &front}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := documentRequest(secret)
+	request.Header.Set(chain.FrontHeader, front.Header())
+	request.Header.Set(chain.OuterHeader, base64.StdEncoding.EncodeToString(outer))
+	if recorder := do(engine, request); recorder.Code != http.StatusOK {
+		t.Fatalf("GET /chain/v1/document: %d", recorder.Code)
+	}
+
+	for _, name := range []string{"inner-1", "edge-a"} {
+		if hop := hopFromRegistry(t, registry, name); hop.SubPort != 443 || hop.SubScheme != "https" || hop.FrontMode != chain.FrontOnly443 {
+			t.Errorf("%s = port %d scheme %q mode %q, want behind its front", name, hop.SubPort, hop.SubScheme, hop.FrontMode)
+		}
+	}
+	if after, _ := registry.List(); after.Revision != state.Revision+1 {
+		t.Errorf("revision = %d, want one bump from %d", after.Revision, state.Revision)
+	}
+}
