@@ -23,12 +23,14 @@ import (
 // by name and run them in a bash of their own, with nothing on the machine
 // touched.
 
-// shellFunctions returns the named top-level functions of install.sh. A name
-// the script does not define is left out, so a test run against an older
-// script fails on its assertions rather than on the extraction.
-func shellFunctions(t *testing.T, names ...string) string {
+// scriptFunctions returns the named top-level functions of a script —
+// install.sh, update.sh or x-ui.sh, which share their certificate helpers word
+// for word. A name the script does not define is left out, so a test run
+// against an older script fails on its assertions rather than on the
+// extraction.
+func scriptFunctions(t *testing.T, script string, names ...string) string {
 	t.Helper()
-	file, err := os.Open("install.sh")
+	file, err := os.Open(script)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,11 +68,17 @@ func shellFunctions(t *testing.T, names ...string) string {
 // installer's colour variables empty and env on top of a minimal environment.
 func runInstallShell(t *testing.T, functions []string, body string, env ...string) (string, error) {
 	t.Helper()
+	return runScriptShell(t, "install.sh", functions, body, env...)
+}
+
+// runScriptShell is runInstallShell for any of the three scripts.
+func runScriptShell(t *testing.T, scriptFile string, functions []string, body string, env ...string) (string, error) {
+	t.Helper()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash is not available")
 	}
-	script := "red='' green='' yellow='' blue='' plain=''\n" + shellFunctions(t, functions...) + body
+	script := "red='' green='' yellow='' blue='' plain=''\n" + scriptFunctions(t, scriptFile, functions...) + body
 	cmd := exec.Command(bash, "-c", script)
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
 	out, err := cmd.CombinedOutput()

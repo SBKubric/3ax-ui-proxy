@@ -253,12 +253,32 @@ cleanup_firewall() {
 # left alone unless asked — it may well be serving something that was here
 # before the panel.
 cleanup_nginx() {
-    local http_conf stream_conf main_conf changed
+    local http_conf stream_conf acme_conf main_conf changed
     main_conf="/etc/nginx/nginx.conf"
     stream_conf="/etc/nginx/stream-enabled/3ax-ui.conf"
     http_conf="/etc/nginx/conf.d/3ax-ui.conf"
-    [[ -f "/etc/nginx/http.d/3ax-ui.conf" ]] && http_conf="/etc/nginx/http.d/3ax-ui.conf"
+    acme_conf="/etc/nginx/conf.d/3ax-ui-acme.conf"
+    if [[ -d /etc/nginx/http.d ]]; then
+        http_conf="/etc/nginx/http.d/3ax-ui.conf"
+        acme_conf="/etc/nginx/http.d/3ax-ui-acme.conf"
+    fi
     changed=0
+
+    # acme.sh goes back to renewing standalone: the webroot goes with the panel.
+    acme_unmigrate_from_webroot
+
+    # Port 80 goes back to the way the package left it: our server out, the
+    # distro's default site back in (x-ui nginx acme-front took it out).
+    if [[ -f "$acme_conf" ]]; then
+        rm -f "$acme_conf"
+        changed=1
+        if [[ -f /etc/nginx/sites-available/default && ! -e /etc/nginx/sites-enabled/default ]]; then
+            ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+        fi
+        if [[ -f /etc/nginx/http.d/default.conf.disabled-by-3ax-ui && ! -e /etc/nginx/http.d/default.conf ]]; then
+            mv /etc/nginx/http.d/default.conf.disabled-by-3ax-ui /etc/nginx/http.d/default.conf
+        fi
+    fi
 
     for f in "$stream_conf" "$http_conf"; do
         if [[ -f "$f" ]]; then
@@ -302,7 +322,7 @@ cleanup_nginx() {
         fi
     fi
 
-    rm -rf /usr/local/x-ui/www
+    rm -rf /usr/local/x-ui/www "$(acme_webroot)"
 }
 
 uninstall() {
@@ -1277,6 +1297,220 @@ install_acme() {
     return 0
 }
 
+# acme_ip_flags pins acme.sh to one IP family: IPv4 unless XUI_TLS_IPV6=1 (or
+# PROXY_TLS_IPV6=1). A cold dual-stack connect to the CA on a box without a
+# working IPv6 path costs curl its whole connect timeout, and acme.sh then gives
+# up with `Cannot init API`. The full story is beside the same function in
+# install.sh.
+acme_ip_flags() {
+    if [[ "${PROXY_TLS_IPV6:-${XUI_TLS_IPV6:-}}" == "1" ]]; then
+        echo "--listen-v6"
+        return
+    fi
+    echo "--listen-v4 --request-v4"
+}
+
+# acme_webroot prints where acme.sh drops the HTTP-01 challenge and nginx
+# serves it from on port 80 — nginx.ACMEWebroot in the binary.
+#
+# The certificate helpers from here to acme_issue_webroot are the same text in
+# install.sh, update.sh and x-ui.sh, and so is acme_ip_flags: each script runs
+# on its own, and one issuing path for the panel and the hops means one text.
+# install_acme_webroot_test.go keeps the copies, and this path, in step.
+acme_webroot() {
+    echo "/usr/local/x-ui/acme-webroot"
+}
+
+# acme_nginx_reload_cmd makes nginx re-read a renewed certificate: the HTTP
+# side of the front serves the files acme.sh has just replaced.
+acme_nginx_reload_cmd() {
+    echo "systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null"
+}
+
+# acme_reload_cmd is the --reloadcmd of every certificate the scripts issue:
+# nginx reloads, and x-ui restarts, because the panel — or a hop's sub port —
+# serves the same files. "|| true" because the x-ui service may not exist yet
+# during a first install, and acme.sh reports a failed reloadcmd as a failure.
+acme_reload_cmd() {
+    echo "$(acme_nginx_reload_cmd); systemctl restart x-ui 2>/dev/null || rc-service x-ui restart 2>/dev/null || true"
+}
+
+# acme_front_ready puts nginx on port 80 in front of the ACME webroot.
+#
+# Port 80 belongs to nginx on every box (ADR 0005). acme.sh used to listen
+# there itself in standalone mode and lost the port to any nginx already
+# running — the distro's default site included — so issuance and renewal
+# failed on exactly the boxes that run the front. Now acme.sh only writes the
+# challenge file and nginx answers the CA.
+#
+# Once acme_front_setup has failed in this run it stays failed: that function
+# may have stopped an nginx the run installed, and starting it again here
+# would put the distro's default site back in front of the standalone path.
+acme_front_ready() {
+    if [[ "${acme_front_failed:-0}" == "1" ]]; then
+        echo -e "${yellow}nginx could not take port 80 earlier in this run — not issuing through it.${plain}"
+        return 1
+    fi
+    if ! command -v nginx >/dev/null 2>&1; then
+        install_nginx
+    fi
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo -e "${red}nginx is not installed, and it is nginx that answers the CA on port 80 — no certificate can be issued.${plain}"
+        return 1
+    fi
+    if ! "${xui_folder}/x-ui" nginx acme-front; then
+        echo -e "${red}nginx could not take port 80 for the ACME challenge (see above).${plain}"
+        return 1
+    fi
+}
+
+# acme_issue_webroot <cert-dir> <reloadcmd> <name>... issues a Let's Encrypt
+# certificate for the names through nginx's webroot on port 80 and installs it
+# as <cert-dir>/fullchain.pem and <cert-dir>/privkey.pem.
+#
+# The one issuing path of the panel and the hops, for addresses and domains
+# alike. An address gets the shortlived profile (~160 h) renewed every 3 days,
+# around its half-life, so a daily cron that misses a run still has days in
+# hand; a domain gets acme.sh's defaults. An empty <reloadcmd> means
+# acme_reload_cmd.
+#
+# Non-zero when the certificate could not be had, and then only what this
+# attempt created is removed: a failed re-issue must not take the working
+# certificate, or acme.sh's record that renews it, with it.
+acme_issue_webroot() {
+    local __dir="$1" __reload="$2"
+    shift 2
+    local __name __d __all_ip=1 __try __ok=0 __rc __log __dir_existed=0
+    local -a __args=() __created=()
+    for __name in "$@"; do
+        __args+=(-d "${__name}")
+        is_ip "${__name}" || __all_ip=0
+        for __d in "${HOME}/.acme.sh/${__name}" "${HOME}/.acme.sh/${__name}_ecc"; do
+            [[ -e "${__d}" ]] || __created+=("${__d}")
+        done
+    done
+    [[ ${__all_ip} -eq 1 ]] && __args+=(--certificate-profile shortlived --days 3)
+    [[ -z "${__reload}" ]] && __reload="$(acme_reload_cmd)"
+    [[ -e "${__dir}" ]] && __dir_existed=1
+
+    acme_front_ready || return 1
+    mkdir -p "${__dir}"
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force >/dev/null 2>&1
+    __log=$(mktemp)
+    for __try in 1 2; do
+        # shellcheck disable=SC2046 # acme_ip_flags returns two flags on purpose
+        ~/.acme.sh/acme.sh --issue "${__args[@]}" --webroot "$(acme_webroot)" \
+            --server letsencrypt $(acme_ip_flags) --force 2>&1 | tee "${__log}"
+        __rc=${PIPESTATUS[0]}
+        if [[ ${__rc} -eq 0 ]]; then
+            __ok=1
+            break
+        fi
+        # The CA answered and said no: the challenge could not be fetched
+        # from port 80, or a limit was hit. Asking again would only spend
+        # another of its failed-validation allowances.
+        if grep -qE 'urn:ietf:params:acme:error|Invalid status|Verify error|Verification error|rateLimited' "${__log}"; then
+            echo -e "${red}Validation failed: the CA could not fetch the challenge through port 80, or refused the order (see above). Not retrying.${plain}"
+            break
+        fi
+        # The CA did not answer at all — a cold dual-stack connect eating
+        # curl's timeout, a CA slow to hand out a nonce. acme.sh's own retry
+        # budget is not reachable from here, hence one more attempt.
+        if [[ ${__try} -eq 1 ]] && grep -qE 'Cannot init API|Could not get nonce|libcurl-errors|curl error|: Timeout|timed out' "${__log}"; then
+            echo -e "${yellow}The CA did not answer — retrying once...${plain}"
+            continue
+        fi
+        break
+    done
+    rm -f "${__log}"
+
+    if [[ ${__ok} -eq 1 ]]; then
+        # acme.sh exits non-zero when reloadcmd fails, so check the files, not $?.
+        ~/.acme.sh/acme.sh --installcert -d "$1" \
+            --key-file "${__dir}/privkey.pem" \
+            --fullchain-file "${__dir}/fullchain.pem" \
+            --reloadcmd "${__reload}" >/dev/null 2>&1 || true
+        if [[ ! -s "${__dir}/fullchain.pem" || ! -s "${__dir}/privkey.pem" ]]; then
+            echo -e "${red}The certificate was issued but not installed into ${__dir}.${plain}"
+            __ok=0
+        fi
+    fi
+    if [[ ${__ok} -ne 1 ]]; then
+        for __d in "${__created[@]}"; do
+            rm -rf "${__d}"
+        done
+        [[ ${__dir_existed} -eq 1 ]] || rm -rf "${__dir}"
+        return 1
+    fi
+    chmod 600 "${__dir}/privkey.pem" 2>/dev/null
+    chmod 644 "${__dir}/fullchain.pem" 2>/dev/null
+    # Keeps acme.sh current and its cron job in place: the renewals are the point.
+    ~/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
+    return 0
+}
+
+# acme_unmigrate_from_webroot undoes install.sh/update.sh's
+# acme_migrate_to_webroot at uninstall time. The webroot goes with the panel,
+# and a certificate still pointing acme.sh at it would fail its next renewal:
+# Le_Webroot goes back to "no" (standalone) and the nginx reload the migration
+# put in front of the reload command comes off again. Configs on any other
+# webroot, DNS or ALPN are left alone; a second run finds nothing to do.
+acme_unmigrate_from_webroot() {
+    local __home="${HOME:-/root}/.acme.sh" __dir __name __conf __cmd __b64 __prefix
+    [[ -d "${__home}" ]] || return 0
+    command -v openssl >/dev/null 2>&1 || return 0
+    __prefix="$(acme_nginx_reload_cmd)"
+    for __dir in "${__home}"/*/; do
+        __dir="${__dir%/}"
+        __name="$(basename "${__dir}")"
+        __name="${__name%_ecc}"
+        __conf="${__dir}/${__name}.conf"
+        { [[ -f "${__conf}" ]] && grep -qx "Le_Webroot='$(acme_webroot)'" "${__conf}"; } || continue
+
+        __cmd=$(sed -n "s/^Le_ReloadCmd='__ACME_BASE64__START_\(.*\)__ACME_BASE64__END_'$/\1/p" "${__conf}" | head -n 1)
+        [[ -n "${__cmd}" ]] && __cmd=$(printf '%s' "${__cmd}" | openssl base64 -d -A 2>/dev/null)
+        [[ "${__cmd}" == "${__prefix}" ]] && __cmd=""
+        __cmd="${__cmd#"${__prefix}; "}"
+
+        sed -i -e "s|^Le_Webroot=.*$|Le_Webroot='no'|" -e "/^Le_ReloadCmd=/d" "${__conf}"
+        if [[ -n "${__cmd}" ]]; then
+            __b64=$(printf '%s' "${__cmd}" | openssl base64 -e | tr -d '\r\n')
+            [[ -n "$(tail -c 1 "${__conf}")" ]] && echo >>"${__conf}"
+            echo "Le_ReloadCmd='__ACME_BASE64__START_${__b64}__ACME_BASE64__END_'" >>"${__conf}"
+        fi
+        echo -e "${yellow}acme.sh renews ${__name} standalone on port 80 again.${plain}"
+    done
+}
+
+# install_nginx: port 80 belongs to nginx (ADR 0005), so a certificate menu on
+# a box without it installs it first. install.sh's version also checks the
+# stream module the 443 front needs; port 80 needs nginx alone, and
+# `x-ui nginx acme-front` starts and enables it.
+install_nginx() {
+    LOGI "Installing nginx, which answers the CA on port 80..."
+    case "${release}" in
+    ubuntu | debian | armbian)
+        apt-get install -y -q nginx libnginx-mod-stream >/dev/null 2>&1 ||
+            apt-get install -y -q nginx >/dev/null 2>&1
+        ;;
+    fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol | centos)
+        dnf install -y nginx nginx-mod-stream >/dev/null 2>&1 ||
+            dnf install -y nginx >/dev/null 2>&1 ||
+            yum install -y nginx >/dev/null 2>&1
+        ;;
+    arch | manjaro | parch)
+        pacman -Syu --noconfirm nginx >/dev/null 2>&1
+        ;;
+    alpine)
+        apk add nginx nginx-mod-stream >/dev/null 2>&1 || apk add nginx >/dev/null 2>&1
+        rc-update add nginx default >/dev/null 2>&1
+        ;;
+    *)
+        LOGW "Unknown OS — install nginx by hand."
+        ;;
+    esac
+}
+
 ssl_cert_issue_main() {
     echo -e "${green}\t1.${plain} Get SSL (Domain)"
     echo -e "${green}\t2.${plain} Revoke"
@@ -1465,132 +1699,23 @@ ssl_cert_issue_for_ip() {
         fi
     fi
 
-    # install socat
-    case "${release}" in
-    ubuntu | debian | armbian)
-        apt-get update >/dev/null 2>&1 && apt-get install socat -y >/dev/null 2>&1
-        ;;
-    fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
-        dnf -y update >/dev/null 2>&1 && dnf -y install socat >/dev/null 2>&1
-        ;;
-    centos)
-        if [[ "${VERSION_ID}" =~ ^7 ]]; then
-            yum -y update >/dev/null 2>&1 && yum -y install socat >/dev/null 2>&1
-        else
-            dnf -y update >/dev/null 2>&1 && dnf -y install socat >/dev/null 2>&1
-        fi
-        ;;
-    arch | manjaro | parch)
-        pacman -Sy --noconfirm socat >/dev/null 2>&1
-        ;;
-    opensuse-tumbleweed | opensuse-leap)
-        zypper refresh >/dev/null 2>&1 && zypper -q install -y socat >/dev/null 2>&1
-        ;;
-    alpine)
-        apk add socat curl openssl >/dev/null 2>&1
-        ;;
-    *)
-        LOGW "Unsupported OS for automatic socat installation"
-        ;;
-    esac
-
-    # Create certificate directory
     certPath="/root/cert/ip"
-    mkdir -p "$certPath"
-
-    # Build domain arguments
-    local domain_args="-d ${server_ip}"
+    local -a names=("${server_ip}")
     if [[ -n "$ipv6_addr" ]] && is_ipv6 "$ipv6_addr"; then
-        domain_args="${domain_args} -d ${ipv6_addr}"
+        names+=("${ipv6_addr}")
         LOGI "Including IPv6 address: ${ipv6_addr}"
     fi
 
-    # Choose port for HTTP-01 listener (default 80, allow override)
-    local WebPort=""
-    read -rp "Port to use for ACME HTTP-01 listener (default 80): " WebPort
-    WebPort="${WebPort:-80}"
-    if ! [[ "${WebPort}" =~ ^[0-9]+$ ]] || ((WebPort < 1 || WebPort > 65535)); then
-        LOGE "Invalid port provided. Falling back to 80."
-        WebPort=80
-    fi
-    LOGI "Using port ${WebPort} to issue certificate for IP: ${server_ip}"
-    if [[ "${WebPort}" -ne 80 ]]; then
-        LOGI "Reminder: Let's Encrypt still reaches port 80; forward external port 80 to ${WebPort} for validation."
-    fi
-
-    while true; do
-        if is_port_in_use "${WebPort}"; then
-            LOGI "Port ${WebPort} is currently in use."
-
-            local alt_port=""
-            read -rp "Enter another port for acme.sh standalone listener (leave empty to abort): " alt_port
-            alt_port="${alt_port// /}"
-            if [[ -z "${alt_port}" ]]; then
-                LOGE "Port ${WebPort} is busy; cannot proceed with issuance."
-                return 1
-            fi
-            if ! [[ "${alt_port}" =~ ^[0-9]+$ ]] || ((alt_port < 1 || alt_port > 65535)); then
-                LOGE "Invalid port provided."
-                return 1
-            fi
-            WebPort="${alt_port}"
-            continue
-        else
-            LOGI "Port ${WebPort} is free and ready for standalone validation."
-            break
-        fi
-    done
-
-    # Reload command - restarts panel after renewal
-    local reloadCmd="systemctl restart x-ui 2>/dev/null || rc-service x-ui restart 2>/dev/null"
-
-    # issue the certificate for IP with shortlived profile
-    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force
-    ~/.acme.sh/acme.sh --issue \
-        ${domain_args} \
-        --standalone \
-        --server letsencrypt \
-        --certificate-profile shortlived \
-        --days 6 \
-        --httpport ${WebPort} \
-        --force
-
-    if [ $? -ne 0 ]; then
+    # nginx answers the challenge on port 80 from its webroot. After a failure
+    # acme_issue_webroot removes only what the attempt created.
+    LOGI "Issuing the certificate for IP: ${server_ip} (port 80 must be reachable from the internet)"
+    if ! acme_issue_webroot "${certPath}" "" "${names[@]}"; then
         LOGE "Failed to issue certificate for IP: ${server_ip}"
-        LOGE "Make sure port ${WebPort} is open and the server is accessible from the internet"
-        # Cleanup acme.sh data for both IPv4 and IPv6 if specified
-        rm -rf ~/.acme.sh/${server_ip} 2>/dev/null
-        [[ -n "$ipv6_addr" ]] && rm -rf ~/.acme.sh/${ipv6_addr} 2>/dev/null
-        rm -rf ${certPath} 2>/dev/null
-        return 1
-    else
-        LOGI "Certificate issued successfully for IP: ${server_ip}"
-    fi
-
-    # Install the certificate
-    # Note: acme.sh may report "Reload error" and exit non-zero if reloadcmd fails,
-    # but the cert files are still installed. We check for files instead of exit code.
-    ~/.acme.sh/acme.sh --installcert -d ${server_ip} \
-        --key-file "${certPath}/privkey.pem" \
-        --fullchain-file "${certPath}/fullchain.pem" \
-        --reloadcmd "${reloadCmd}" 2>&1 || true
-
-    # Verify certificate files exist (don't rely on exit code - reloadcmd failure causes non-zero)
-    if [[ ! -f "${certPath}/fullchain.pem" || ! -f "${certPath}/privkey.pem" ]]; then
-        LOGE "Certificate files not found after installation"
-        # Cleanup acme.sh data for both IPv4 and IPv6 if specified
-        rm -rf ~/.acme.sh/${server_ip} 2>/dev/null
-        [[ -n "$ipv6_addr" ]] && rm -rf ~/.acme.sh/${ipv6_addr} 2>/dev/null
-        rm -rf ${certPath} 2>/dev/null
+        LOGE "Make sure port 80 is open and the server is accessible from the internet"
         return 1
     fi
 
     LOGI "Certificate files installed successfully"
-
-    # enable auto-renew
-    ~/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1
-    chmod 600 $certPath/privkey.pem 2>/dev/null
-    chmod 644 $certPath/fullchain.pem 2>/dev/null
 
     # Set certificate paths for the panel
     local webCertFile="${certPath}/fullchain.pem"
@@ -1623,41 +1748,6 @@ ssl_cert_issue() {
             LOGE "install acme failed, please check logs"
             return 1
         fi
-    fi
-
-    # install socat
-    case "${release}" in
-    ubuntu | debian | armbian)
-        apt-get update >/dev/null 2>&1 && apt-get install socat -y >/dev/null 2>&1
-        ;;
-    fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
-        dnf -y update >/dev/null 2>&1 && dnf -y install socat >/dev/null 2>&1
-        ;;
-    centos)
-        if [[ "${VERSION_ID}" =~ ^7 ]]; then
-            yum -y update >/dev/null 2>&1 && yum -y install socat >/dev/null 2>&1
-        else
-            dnf -y update >/dev/null 2>&1 && dnf -y install socat >/dev/null 2>&1
-        fi
-        ;;
-    arch | manjaro | parch)
-        pacman -Sy --noconfirm socat >/dev/null 2>&1
-        ;;
-    opensuse-tumbleweed | opensuse-leap)
-        zypper refresh >/dev/null 2>&1 && zypper -q install -y socat >/dev/null 2>&1
-        ;;
-    alpine)
-        apk add socat curl openssl >/dev/null 2>&1
-        ;;
-    *)
-        LOGW "Unsupported OS for automatic socat installation"
-        ;;
-    esac
-    if [ $? -ne 0 ]; then
-        LOGE "install socat failed, please check logs"
-        return 1
-    else
-        LOGI "install socat succeed..."
     fi
 
     # get the domain here, and we need to verify it
@@ -1693,95 +1783,32 @@ ssl_cert_issue() {
         LOGI "Your domain is ready for issuing certificates now..."
     fi
 
-    # create a directory for the certificate
+    # The directory for the certificate. An existing one is kept: the new
+    # files replace the old ones only once they have been issued.
     certPath="/root/cert/${domain}"
-    if [ ! -d "$certPath" ]; then
-        mkdir -p "$certPath"
-    else
-        rm -rf "$certPath"
-        mkdir -p "$certPath"
-    fi
 
-    # get the port number for the standalone server
-    local WebPort=""
-    read -rp "Please choose which port to use (default is 80): " WebPort
-    WebPort="${WebPort// /}"
-    WebPort="${WebPort:-80}"
-    if ! [[ "${WebPort}" =~ ^[0-9]+$ ]] || ((WebPort < 1 || WebPort > 65535)); then
-        LOGW "Your input '${WebPort}' is invalid, will use default port 80."
-        WebPort=80
-    fi
-    LOGI "Will use port: ${WebPort} to issue certificates. Please make sure this port is open."
-
-    # issue the certificate
-    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --force
-    ~/.acme.sh/acme.sh --issue -d ${domain} --listen-v6 --standalone --httpport ${WebPort} --force
-    if [ $? -ne 0 ]; then
-        LOGE "Issuing certificate failed, please check logs."
-        rm -rf ~/.acme.sh/${domain}
-        return 1
-    else
-        LOGI "Issuing certificate succeeded, installing certificates..."
-    fi
-
-    reloadCmd="x-ui restart"
-
-    LOGI "Default --reloadcmd for ACME is: ${yellow}x-ui restart"
-    LOGI "This command will run on every certificate issue and renew."
-    read -rp "Would you like to modify --reloadcmd for ACME? (y/n): " setReloadcmd
+    # The reload command runs on every issue and renewal. The default reloads
+    # nginx — it serves this certificate on 443 once the front is on — and
+    # restarts x-ui, which serves it on the panel port.
+    local reloadCmd=""
+    echo -e "${green}Default --reloadcmd for ACME: ${yellow}$(acme_reload_cmd)${plain}"
+    echo -e "${green}This command will run on every certificate issue and renew.${plain}"
+    read -rp "Would you like to use your own --reloadcmd instead? (y/n): " setReloadcmd
     if [[ "$setReloadcmd" == "y" || "$setReloadcmd" == "Y" ]]; then
-        echo -e "\n${green}\t1.${plain} Preset: systemctl reload nginx ; x-ui restart"
-        echo -e "${green}\t2.${plain} Input your own command"
-        echo -e "${green}\t0.${plain} Keep default reloadcmd"
-        read -rp "Choose an option: " choice
-        case "$choice" in
-        1)
-            if systemctl list-unit-files 2>/dev/null | grep -q '^nginx\.service' || command -v nginx >/dev/null 2>&1; then
-                reloadCmd="systemctl reload nginx ; x-ui restart"
-                LOGI "Reloadcmd is: ${reloadCmd}"
-            else
-                LOGW "nginx is not installed on this system, its reload would fail on every renewal."
-                LOGI "Keeping default reloadcmd: x-ui restart"
-            fi
-            ;;
-        2)
-            LOGD "It's recommended to put x-ui restart at the end, so it won't raise an error if other services fails"
-            read -rp "Please enter your reloadcmd (example: systemctl reload nginx ; x-ui restart): " reloadCmd
-            LOGI "Your reloadcmd is: ${reloadCmd}"
-            ;;
-        *)
-            LOGI "Keep default reloadcmd"
-            ;;
-        esac
+        echo -e "${yellow}Keep an nginx reload in it, and put x-ui restart at the end.${plain}"
+        read -rp "Please enter your custom reloadcmd: " reloadCmd
+        LOGI "Reloadcmd is: ${reloadCmd}"
     fi
 
-    # install the certificate
-    ~/.acme.sh/acme.sh --installcert -d ${domain} \
-        --key-file /root/cert/${domain}/privkey.pem \
-        --fullchain-file /root/cert/${domain}/fullchain.pem --reloadcmd "${reloadCmd}"
-
-    if [ $? -ne 0 ]; then
-        LOGE "Installing certificate failed, exiting."
-        rm -rf ~/.acme.sh/${domain}
+    # nginx answers the challenge on port 80 from its webroot, so the panel
+    # keeps running and nothing has to give port 80 up.
+    echo -e "${yellow}Port 80 must be reachable from the internet: nginx answers the CA there.${plain}"
+    if ! acme_issue_webroot "${certPath}" "${reloadCmd}" "${domain}"; then
+        echo -e "${red}Issuing certificate failed, please check logs.${plain}"
         return 1
-    else
-        LOGI "Installing certificate succeeded, enabling auto renew..."
     fi
-
-    # enable auto-renew
-    ~/.acme.sh/acme.sh --upgrade --auto-upgrade
-    if [ $? -ne 0 ]; then
-        LOGE "Auto renew failed, certificate details:"
-        ls -lah /root/cert/*
-        chmod 600 $certPath/privkey.pem
-        chmod 644 $certPath/fullchain.pem
-        return 1
-    else
-        LOGI "Auto renew succeeded, certificate details:"
-        ls -lah /root/cert/*
-        chmod 600 $certPath/privkey.pem
-        chmod 644 $certPath/fullchain.pem
-    fi
+    echo -e "${green}Certificate issued and installed; acme.sh renews it from cron:${plain}"
+    ls -lah ${certPath}/
 
     # Prompt user to set panel paths after successful certificate installation
     read -rp "Would you like to set this certificate for the panel? (Y/n): " setPanel

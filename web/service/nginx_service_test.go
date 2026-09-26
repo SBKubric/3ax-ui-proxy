@@ -32,6 +32,11 @@ func newNginxTestServer(t *testing.T) *NginxService {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "x-ui.db")); err != nil {
 		t.Fatalf("InitDB: %v", err)
 	}
+	// Whatever IP certificate the machine running the tests may have is not
+	// part of any test that does not ask for one.
+	prevIPCertDir := ipCertDir
+	ipCertDir = filepath.Join(t.TempDir(), "no-ip-cert")
+	t.Cleanup(func() { ipCertDir = prevIPCertDir })
 	return &NginxService{}
 }
 

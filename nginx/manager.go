@@ -262,6 +262,34 @@ func start() error {
 	return nil
 }
 
+// isEnabled reports whether nginx starts at boot. Without systemd there is no
+// cheap answer, and the stop that consults it then leaves boot alone.
+func isEnabled() bool {
+	if !hasSystemd() {
+		return false
+	}
+	return exec.Command("systemctl", "is-enabled", "--quiet", "nginx").Run() == nil
+}
+
+// stop takes nginx down, and out of the boot sequence as well when disable is
+// set: the undo of a start() that did both.
+func stop(disable bool) error {
+	if hasSystemd() {
+		args := []string{"stop", "nginx"}
+		if disable {
+			args = []string{"disable", "--now", "nginx"}
+		}
+		if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("stop nginx: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		return nil
+	}
+	if out, err := exec.Command(Binary, "-s", "stop").CombinedOutput(); err != nil {
+		return fmt.Errorf("stop nginx: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 func hasSystemd() bool {
 	_, err := exec.LookPath("systemctl")
 	return err == nil
@@ -393,7 +421,7 @@ func (s *Staged) verify() error {
 				want = append(want, struct {
 					port int
 					what string
-				}{port, "the loopback port for " + s.cfg.Site.Domain})
+				}{port, "the loopback port of the HTTP side"})
 			}
 		}
 	}

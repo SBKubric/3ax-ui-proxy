@@ -577,7 +577,7 @@ func (s *NginxService) Plan(in NginxSettings) NginxPlan {
 	}
 
 	if in.Domain != "" {
-		if _, _, _, err := findCertificate(in.Domain); err != nil {
+		if _, _, _, err := s.domainCertificate(in.Domain); err != nil {
 			plan.Blockers = append(plan.Blockers, certWarning(in.Domain, err))
 		} else {
 			plan.Changes = append(plan.Changes, NginxChange{Kind: "serve", Subject: in.Domain})

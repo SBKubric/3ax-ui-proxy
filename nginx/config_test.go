@@ -76,6 +76,62 @@ func TestGeneratedConfigs(t *testing.T) {
 	check(t, "http_only443.conf", must(t, c.HTTPConf))
 }
 
+// goldenIPCert is the Let's Encrypt IP certificate install.sh leaves on every
+// box: what the HTTP side answers with when a client asks by address, with no
+// SNI to route on.
+func goldenIPCert(s *Site) {
+	s.IPCertFile = "/root/cert/ip/fullchain.pem"
+	s.IPKeyFile = "/root/cert/ip/privkey.pem"
+}
+
+func TestGeneratedConfigsWithIPCertificate(t *testing.T) {
+	// Only the IP certificate: a box with no domain of its own still
+	// terminates requests by address.
+	c := goldenConfig()
+	c.Site = goldenSite()
+	c.Site.Domain, c.Site.CertFile, c.Site.KeyFile = "", "", ""
+	goldenIPCert(c.Site)
+	check(t, "stream_ip.conf", must(t, c.StreamConf))
+	check(t, "http_ip.conf", must(t, c.HTTPConf))
+
+	// Both: the domain keeps its own block and certificate, the address gets
+	// the default server with the IP certificate and the same locations.
+	c = goldenConfig()
+	c.Mode = ModeOnly443
+	c.Site = goldenSite()
+	goldenIPCert(c.Site)
+	c.Site.Panel = &Proxy{
+		Name: "panel", Paths: []string{"/uS2J19TzcfZuEAPyNH/"},
+		Target: "127.0.0.1:33757", TLS: true,
+	}
+	c.Site.Sub = &Proxy{
+		Name: "subscriptions", Paths: []string{"/sub-abc123/", "/json/"},
+		Target: "127.0.0.1:2096",
+	}
+	stream := must(t, c.StreamConf)
+	http := must(t, c.HTTPConf)
+	check(t, "stream_only443_ip.conf", stream)
+	check(t, "http_only443_ip.conf", http)
+
+	// What the goldens have to keep saying, spelled out.
+	if !strings.Contains(stream, "    \"\" 127.0.0.1:8080;\n") {
+		t.Error("an empty SNI is not sent to the HTTP side")
+	}
+	if !strings.Contains(stream, "    default 127.0.0.1:8443;\n") {
+		t.Error("an unknown SNI no longer goes to the Reality fallback")
+	}
+	if n := strings.Count(http, "default_server"); n != 1 {
+		t.Fatalf("%d default_server listens, want exactly one", n)
+	}
+	_, ipBlock, _ := strings.Cut(http, "default_server")
+	if !strings.Contains(ipBlock, "server_name _;") || !strings.Contains(ipBlock, "ssl_certificate     /root/cert/ip/fullchain.pem;") {
+		t.Error("the default server does not carry the IP certificate")
+	}
+	if strings.Count(http, "location /uS2J19TzcfZuEAPyNH/ {") != 2 || strings.Count(http, "location /sub-abc123/ {") != 2 {
+		t.Error("the address does not serve the same paths as the domain")
+	}
+}
+
 // TestFallbackPrefersReality guards the reasoning behind the default entry: a
 // prober with an unknown server name has to land on Reality, which answers it
 // by proxying to the site it borrows its identity from. Sending it to our own
@@ -226,6 +282,40 @@ func TestValidate(t *testing.T) {
 			mut: func(c *Config) {
 				c.Site = goldenSite()
 				c.Site.Domain = ""
+			},
+		},
+		{
+			// A box with no domain of its own serves by address alone.
+			name: "site with only an IP certificate",
+			mut: func(c *Config) {
+				c.Site = goldenSite()
+				c.Site.Domain, c.Site.CertFile, c.Site.KeyFile = "", "", ""
+				goldenIPCert(c.Site)
+			},
+		},
+		{
+			name: "site with both a domain and an IP certificate",
+			mut: func(c *Config) {
+				c.Site = goldenSite()
+				goldenIPCert(c.Site)
+			},
+		},
+		{
+			name: "IP certificate without its key",
+			want: "no key for the IP certificate",
+			mut: func(c *Config) {
+				c.Site = goldenSite()
+				goldenIPCert(c.Site)
+				c.Site.IPKeyFile = ""
+			},
+		},
+		{
+			name: "a domain without its certificate next to an IP certificate",
+			want: "no certificate",
+			mut: func(c *Config) {
+				c.Site = goldenSite()
+				goldenIPCert(c.Site)
+				c.Site.CertFile = ""
 			},
 		},
 		{
