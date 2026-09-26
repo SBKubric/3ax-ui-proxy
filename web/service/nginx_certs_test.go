@@ -239,3 +239,20 @@ func hasWarning(warnings []NginxWarning, code string) bool {
 	}
 	return false
 }
+
+// TestBuildConfigRefusesABrokenIPCertificate: an IP certificate that is there
+// but cannot be served is an error, as a broken domain certificate is — not a
+// reason to quietly render the HTTP side away, which would have the reconcile
+// reload nginx (and restart Xray) without the address side. An error keeps
+// the running config and puts the reconcile into backoff.
+func TestBuildConfigRefusesABrokenIPCertificate(t *testing.T) {
+	s := newNginxTestServer(t)
+	seedInbounds(t)
+	dir := useIPCertDir(t)
+	useCertDirs(t, t.TempDir())
+	writeIPCert(t, dir, time.Now().Add(-time.Hour), []string{"203.0.113.5"}, nil)
+
+	if _, err := s.buildConfig(NginxSettings{Mode: string(nginx.ModeShared), RealityPort: 8443}); err == nil {
+		t.Fatal("an expired IP certificate was silently left out of the config")
+	}
+}

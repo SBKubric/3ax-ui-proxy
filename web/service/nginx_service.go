@@ -312,8 +312,9 @@ func (s *NginxService) GetStatus() NginxStatus {
 	// be served is worth a word.
 	if cert, _, expiry, err := ipCertificate(); err == nil {
 		st.IPCertFile, st.IPCertExpiry = cert, expiry.UnixMilli()
-		// Short-lived by design (~6 days), renewed every ~3: two days left
-		// means the renewals have stopped.
+		// Short-lived by design (~160 h) and renewed every 3 days, so a
+		// healthy one never has less than ~2.6 days left: under two means
+		// the renewals have stopped.
 		if time.Until(expiry) < 2*24*time.Hour {
 			st.Warnings = append(st.Warnings, warn("certExpiring", ipCertLabel, expiry.Format("2006-01-02")))
 		}
@@ -492,9 +493,11 @@ func (s *NginxService) buildConfig(set NginxSettings) (nginx.Config, error) {
 	if cert, key, _, err := ipCertificate(); err == nil {
 		site.IPCertFile, site.IPKeyFile = cert, key
 	} else if !errors.Is(err, errNoCertificate) {
-		// Broken, not absent: leave it out rather than hand nginx a
-		// certificate every client would refuse. The status says why.
-		logger.Warning("nginx: not serving requests by address:", err)
+		// Broken, not absent: an error, exactly as for a broken domain
+		// certificate. The running config stays, the reconcile backs off and
+		// the status says why — rather than a quiet reload (and Xray
+		// restart) that drops the address side.
+		return cfg, err
 	}
 	if site.Domain == "" && site.IPCertFile == "" {
 		return cfg, nil
@@ -805,31 +808,20 @@ func ipCertificate() (certFile, keyFile string, expiry time.Time, err error) {
 	if _, err := os.Stat(keyFile); err != nil {
 		return "", "", time.Time{}, fmt.Errorf("IP: %w", errNoCertificate)
 	}
-	raw, err := os.ReadFile(certFile)
+	certs, err := parseCertificates(certFile)
 	if err != nil {
-		return "", "", time.Time{}, fmt.Errorf("read %s: %w", certFile, err)
+		return "", "", time.Time{}, err
 	}
-	var block *pem.Block
-	for {
-		block, raw = pem.Decode(raw)
-		if block == nil || block.Type == "CERTIFICATE" {
-			break
-		}
+	// The leaf comes first in fullchain.pem. It has to name an address; which
+	// one is not checked, because the panel does not reliably know the box's
+	// public address — behind NAT or a floating IP it is on no interface — and
+	// matching the certificate against its own SAN would prove nothing.
+	var leaf *x509.Certificate
+	if len(certs) > 0 {
+		leaf = certs[0]
 	}
-	if block == nil {
-		return "", "", time.Time{}, fmt.Errorf("%s holds no certificate", certFile)
-	}
-	// The leaf comes first in fullchain.pem.
-	leaf, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", "", time.Time{}, fmt.Errorf("parse %s: %w", certFile, err)
-	}
-	if len(leaf.IPAddresses) == 0 {
+	if leaf == nil || len(leaf.IPAddresses) == 0 {
 		return "", "", time.Time{}, fmt.Errorf("%s is not a certificate for an IP address", certFile)
-	}
-	// The address it names has to verify as a host: the check a client makes.
-	if err := leaf.VerifyHostname(leaf.IPAddresses[0].String()); err != nil {
-		return "", "", time.Time{}, fmt.Errorf("%s: %w", certFile, err)
 	}
 	if time.Now().After(leaf.NotAfter) {
 		return "", "", leaf.NotAfter, fmt.Errorf("the IP certificate expired on %s", leaf.NotAfter.Format("2006-01-02"))
@@ -906,12 +898,13 @@ func findCertificate(domain string) (certFile, keyFile string, expiry time.Time,
 // differently to an operator, so they are not the same warning.
 var errNoCertificate = errors.New("no certificate")
 
-// certificateExpiry parses the leaf certificate and verifies it covers domain.
-func certificateExpiry(path, domain string) (time.Time, error) {
+// parseCertificates reads every certificate of a PEM file, leaf first.
+func parseCertificates(path string) ([]*x509.Certificate, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	var certs []*x509.Certificate
 	for len(raw) > 0 {
 		var block *pem.Block
 		block, raw = pem.Decode(raw)
@@ -923,8 +916,20 @@ func certificateExpiry(path, domain string) (time.Time, error) {
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			return time.Time{}, fmt.Errorf("parse %s: %w", path, err)
+			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
+		certs = append(certs, cert)
+	}
+	return certs, nil
+}
+
+// certificateExpiry parses the leaf certificate and verifies it covers domain.
+func certificateExpiry(path, domain string) (time.Time, error) {
+	certs, err := parseCertificates(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	for _, cert := range certs {
 		if cert.VerifyHostname(domain) != nil {
 			// Not the leaf, or a certificate for another name: keep looking
 			// through the chain before giving up.

@@ -1,7 +1,9 @@
 package nginx
 
 import (
+	"crypto/md5"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,11 +50,31 @@ func debianDefaultSite(t *testing.T, root, target string) string {
 	if err := os.WriteFile(filepath.Join(root, "sites-available", "default"), []byte(site), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// dpkg knows the file as nginx-common's conffile, unmodified.
+	useDpkgStatus(t, site)
 	link := filepath.Join(root, "sites-enabled", "default")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
 	return link
+}
+
+// useDpkgStatus points the package at a dpkg status database in which
+// nginx-common ships sites-available/default with the given content.
+func useDpkgStatus(t *testing.T, stock string) {
+	t.Helper()
+	status := "Package: nginx-common\nStatus: install ok installed\nConffiles:\n" +
+		" /etc/nginx/nginx.conf e5398edc0b51497dba606859fb13a86e\n" +
+		" /etc/nginx/sites-available/default " + fmt.Sprintf("%x", md5.Sum([]byte(stock))) + "\n" +
+		"Description: small, powerful, scalable web/proxy server - common files\n\n" +
+		"Package: other\nConffiles:\n /etc/nginx/sites-available/default 00000000000000000000000000000000\n"
+	path := filepath.Join(t.TempDir(), "status")
+	if err := os.WriteFile(path, []byte(status), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := dpkgStatusPath
+	dpkgStatusPath = path
+	t.Cleanup(func() { dpkgStatusPath = prev })
 }
 
 // TestStageACMEFrontTakesPort80FromTheDebianDefault: the package's default site
@@ -160,6 +182,55 @@ func TestStageACMEFrontLeavesForeignSitesAlone(t *testing.T) {
 	}
 }
 
+// TestStageACMEFrontLeavesAnEditedDebianDefault: sites-available/default is
+// a conffile the operator may well have turned into their own site. Only the
+// file exactly as the package shipped it is taken out of the build; an edited
+// one that still claims :80 as default_server stops the run with a message,
+// and one that no longer does is no clash and is left be.
+func TestStageACMEFrontLeavesAnEditedDebianDefault(t *testing.T) {
+	root := acmeTree(t, "conf.d")
+	link := debianDefaultSite(t, root, "../sites-available/default")
+	edited := "server {\n    listen 80 default_server;\n    server_name shop.example.net;\n    root /srv/shop;\n}\n"
+	if err := os.WriteFile(filepath.Join(root, "sites-available", "default"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := stageACMEFront(newTx())
+	if err == nil || !strings.Contains(err.Error(), "default_server") || !strings.Contains(err.Error(), "port 80") {
+		t.Fatalf("an edited default site claiming :80 was not refused clearly: %v", err)
+	}
+	if _, err := os.Readlink(link); err != nil {
+		t.Error("the operator's edited site was disabled")
+	}
+
+	// Edited so that it no longer claims the default on :80: no clash.
+	moved := "server {\n    listen 8080;\n    root /srv/shop;\n}\n"
+	if err := os.WriteFile(filepath.Join(root, "sites-available", "default"), []byte(moved), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stageACMEFront(newTx()); err != nil {
+		t.Fatalf("a site that no longer claims :80 was refused: %v", err)
+	}
+	if _, err := os.Readlink(link); err != nil {
+		t.Error("a site with no clash was disabled")
+	}
+}
+
+// TestStageACMEFrontWithoutDpkgRecordRefuses: with no record of what the
+// package shipped, the default site cannot be told from the operator's own.
+func TestStageACMEFrontWithoutDpkgRecordRefuses(t *testing.T) {
+	root := acmeTree(t, "conf.d")
+	link := debianDefaultSite(t, root, "../sites-available/default")
+	dpkgStatusPath = filepath.Join(t.TempDir(), "missing")
+
+	if _, err := stageACMEFront(newTx()); err == nil {
+		t.Fatal("a default site of unknown origin was taken out of the build")
+	}
+	if _, err := os.Readlink(link); err != nil {
+		t.Error("the site of unknown origin was disabled")
+	}
+}
+
 // TestStageACMEFrontRefusesAHandWrittenFile: a file of that name without our
 // header is somebody's config, and is never overwritten.
 func TestStageACMEFrontRefusesAHandWrittenFile(t *testing.T) {
@@ -182,8 +253,13 @@ func TestStageACMEFrontRefusesAHandWrittenFile(t *testing.T) {
 type fakeNginx struct {
 	testErr   error
 	running   bool
+	enabled   bool
 	reloads   int
 	serveRoot bool
+	// serveAfterReload: the running nginx has not loaded what is on disk
+	// until it is told to.
+	serveAfterReload bool
+	stops            []bool // the disable flag of each stop
 }
 
 func useFakeNginx(t *testing.T, f *fakeNginx) {
@@ -202,7 +278,27 @@ func useFakeNginx(t *testing.T, f *fakeNginx) {
 	acmeOps.installed = func() bool { return true }
 	acmeOps.test = func() error { return f.testErr }
 	acmeOps.running = func() bool { return f.running }
-	acmeOps.reload = func() error { f.reloads++; f.running = true; return nil }
+	acmeOps.reload = func() error {
+		f.reloads++
+		if !f.running {
+			// Reload starts a stopped nginx, and start enables it.
+			f.enabled = true
+		}
+		f.running = true
+		if f.serveAfterReload {
+			f.serveRoot = true
+		}
+		return nil
+	}
+	acmeOps.enabled = func() bool { return f.enabled }
+	acmeOps.stop = func(disable bool) error {
+		f.stops = append(f.stops, disable)
+		f.running = false
+		if disable {
+			f.enabled = false
+		}
+		return nil
+	}
 	acmeProbeBase = srv.URL
 	t.Cleanup(func() { acmeOps, acmeProbeBase = prevOps, prevProbe })
 }
@@ -299,5 +395,47 @@ func TestEnsureACMEFrontNoticesSomethingElseOnPort80(t *testing.T) {
 	}
 	if f.reloads != 2 {
 		t.Errorf("reloads=%d, want the reload and the one that puts the old config back", f.reloads)
+	}
+}
+
+// TestEnsureACMEFrontLeavesAStoppedNginxStopped: on a hop whose nginx has just
+// been installed and not started, a failed attempt must not leave it running
+// — or enabled for the next boot — with the distro default in front of the
+// standalone renewals that still work.
+func TestEnsureACMEFrontLeavesAStoppedNginxStopped(t *testing.T) {
+	for _, wasEnabled := range []bool{false, true} {
+		acmeTree(t, "conf.d")
+		f := &fakeNginx{running: false, enabled: wasEnabled, serveRoot: false}
+		useFakeNginx(t, f)
+
+		if _, err := EnsureACMEFront(); err == nil {
+			t.Fatal("port 80 without the webroot was reported as working")
+		}
+		if f.running {
+			t.Errorf("enabled=%v: a failed attempt left a previously stopped nginx running", wasEnabled)
+		}
+		if f.enabled != wasEnabled {
+			t.Errorf("enabled before=%v, after=%v: the boot-time state changed", wasEnabled, f.enabled)
+		}
+	}
+}
+
+// TestEnsureACMEFrontReloadsANginxThatMissedTheConfig: the file on disk is
+// right but the running nginx never loaded it (written by hand, a reload
+// that failed). One reload before giving up.
+func TestEnsureACMEFrontReloadsANginxThatMissedTheConfig(t *testing.T) {
+	acmeTree(t, "conf.d")
+	f := &fakeNginx{running: true, serveRoot: true}
+	useFakeNginx(t, f)
+	if _, err := EnsureACMEFront(); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	f.serveRoot, f.serveAfterReload = false, true
+	if _, err := EnsureACMEFront(); err != nil {
+		t.Fatalf("an nginx that only needed a reload was reported broken: %v", err)
+	}
+	if f.reloads != 2 {
+		t.Errorf("reloads = %d, want the first run's and one more", f.reloads)
 	}
 }

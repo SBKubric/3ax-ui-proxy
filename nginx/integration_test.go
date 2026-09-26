@@ -138,6 +138,7 @@ func TestNginxAcceptsACMEFront(t *testing.T) {
 	if err := os.Symlink("../sites-available/default", filepath.Join(root, "sites-enabled", "default")); err != nil {
 		t.Fatal(err)
 	}
+	useDpkgStatus(t, site)
 	mainConf := fmt.Sprintf(`worker_processes 1;
 error_log %s/logs/error.log;
 pid %s/logs/nginx.pid;

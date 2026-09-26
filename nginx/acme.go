@@ -1,6 +1,7 @@
 package nginx
 
 import (
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -112,24 +113,42 @@ func disableDistroDefault(tx *fileTx) (bool, error) {
 	// Debian and Ubuntu: sites-enabled/default is a symlink to
 	// sites-available/default. Removing the symlink disables the site and
 	// leaves it where `ln -s` can bring it back.
+	//
+	// That file is a conffile, though, and an operator may have turned it
+	// into their own site. Only the file exactly as the package shipped it is
+	// disabled; an edited one that still claims the default on :80 stops the
+	// run with a message instead, and one that no longer does is no clash.
 	link := filepath.Join(ConfRoot, "sites-enabled", "default")
 	if target, err := os.Readlink(link); err == nil {
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(filepath.Dir(link), target)
 		}
-		if filepath.Clean(target) == filepath.Join(ConfRoot, "sites-available", "default") {
-			if err := tx.remove(link); err != nil {
-				return false, err
+		site := filepath.Join(ConfRoot, "sites-available", "default")
+		if filepath.Clean(target) == site {
+			body, err := os.ReadFile(site)
+			if err != nil {
+				return false, fmt.Errorf("read %s: %w", site, err)
 			}
-			changed = true
+			switch {
+			case debianStockDefault(body):
+				if err := tx.remove(link); err != nil {
+					return false, err
+				}
+				changed = true
+			case claimsDefaultServer(body):
+				return false, fmt.Errorf("%s is enabled, is not the nginx package's stock file, and claims default_server on port 80 — "+
+					"nginx answers the ACME challenge there now. Move your site off default_server/port 80 "+
+					"(or remove %s if it is not needed) and run again", site, link)
+			}
 		}
 	}
 
 	// Alpine: http.d/default.conf, a 404 on every name. Renamed rather than
-	// deleted, so it is still there to compare against after a package
-	// upgrade.
+	// deleted, so it can always be brought back. Unlike dpkg, apk keeps no
+	// checksum of it in /lib/apk/db/installed to tell the stock file from an
+	// edited one, so any version that claims default_server is renamed.
 	def := filepath.Join(ConfRoot, "http.d", "default.conf")
-	if body, err := os.ReadFile(def); err == nil && strings.Contains(string(body), "default_server") {
+	if body, err := os.ReadFile(def); err == nil && claimsDefaultServer(body) {
 		if err := tx.write(def+alpineDisabledSuffix, string(body), 0o644); err != nil {
 			return false, err
 		}
@@ -148,7 +167,9 @@ var acmeOps = struct {
 	test      func() error
 	reload    func() error
 	running   func() bool
-}{IsInstalled, Test, Reload, IsRunning}
+	enabled   func() bool
+	stop      func(disable bool) error
+}{IsInstalled, Test, Reload, IsRunning, isEnabled, stop}
 
 // acmeProbeBase is where the port-80 server is asked for the probe file.
 var acmeProbeBase = "http://127.0.0.1"
@@ -166,6 +187,23 @@ func EnsureACMEFront() (changed bool, err error) {
 	if !acmeOps.installed() {
 		return false, errors.New("nginx is not installed")
 	}
+	// What to return to on failure: an nginx that was not running — a hop's,
+	// installed a moment ago — stays down, and is not left enabled for the
+	// next boot either, or it would come back with the distro's default site
+	// in front of the renewals that still work without it.
+	wasRunning, wasEnabled := acmeOps.running(), acmeOps.enabled()
+	restore := func() {
+		if wasRunning {
+			if err := acmeOps.reload(); err != nil {
+				logger.Errorf("nginx: the port-80 config was rolled back but nginx would not reload: %v", err)
+			}
+			return
+		}
+		if err := acmeOps.stop(!wasEnabled); err != nil {
+			logger.Errorf("nginx: the port-80 config was rolled back but nginx would not stop: %v", err)
+		}
+	}
+
 	tx := newTx()
 	defer tx.done()
 
@@ -175,12 +213,27 @@ func EnsureACMEFront() (changed bool, err error) {
 	}
 	if !changed {
 		tx.commit()
-		if !acmeOps.running() {
+		if !wasRunning {
 			if err := acmeOps.reload(); err != nil {
 				return false, err
 			}
 		}
-		return false, verifyACMEFront()
+		if err := verifyACMEFront(); err == nil {
+			return false, nil
+		}
+		// The file is right, but the running nginx may never have loaded it:
+		// written while nginx was down, or an earlier reload that failed.
+		// One reload before calling it broken.
+		if err := acmeOps.reload(); err != nil {
+			return false, err
+		}
+		if err := verifyACMEFront(); err != nil {
+			if !wasRunning {
+				restore()
+			}
+			return false, err
+		}
+		return false, nil
 	}
 
 	if err := acmeOps.test(); err != nil {
@@ -191,14 +244,12 @@ func EnsureACMEFront() (changed bool, err error) {
 	}
 	if err := acmeOps.reload(); err != nil {
 		tx.rollback()
-		_ = acmeOps.reload()
+		restore()
 		return false, err
 	}
 	if err := verifyACMEFront(); err != nil {
 		tx.rollback()
-		if rerr := acmeOps.reload(); rerr != nil {
-			logger.Errorf("nginx: the port-80 config was rolled back but nginx would not reload: %v", rerr)
-		}
+		restore()
 		return false, err
 	}
 	tx.commit()
@@ -245,4 +296,53 @@ func verifyACMEFront() error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("port 80 does not serve the ACME webroot %s — something other than nginx may hold the port (ss -ltnp 'sport = :80')", ACMEWebroot)
+}
+
+// dpkgStatusPath is dpkg's database of installed packages, where each
+// conffile's md5 as shipped is recorded.
+var dpkgStatusPath = "/var/lib/dpkg/status"
+
+// debianStockDefault reports whether body is sites-available/default exactly
+// as the nginx package shipped it, by the md5 dpkg keeps for that conffile.
+// No record — no dpkg, or nginx installed some other way — means no.
+func debianStockDefault(body []byte) bool {
+	status, err := os.ReadFile(dpkgStatusPath)
+	if err != nil {
+		return false
+	}
+	sum := fmt.Sprintf("%x", md5.Sum(body))
+	for stanza := range strings.SplitSeq(string(status), "\n\n") {
+		pkg := ""
+		for line := range strings.Lines(stanza) {
+			if name, ok := strings.CutPrefix(line, "Package: "); ok {
+				pkg = strings.TrimSpace(name)
+			}
+		}
+		if pkg != "nginx-common" && pkg != "nginx" {
+			continue
+		}
+		for line := range strings.Lines(stanza) {
+			// " /etc/nginx/sites-available/default <md5> [obsolete]"
+			fields := strings.Fields(line)
+			if strings.HasPrefix(line, " ") && len(fields) >= 2 &&
+				fields[0] == "/etc/nginx/sites-available/default" && fields[1] == sum {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// claimsDefaultServer reports whether a config marks a server default_server,
+// ignoring comments.
+func claimsDefaultServer(body []byte) bool {
+	for line := range strings.Lines(string(body)) {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		if strings.Contains(line, "default_server") {
+			return true
+		}
+	}
+	return false
 }
